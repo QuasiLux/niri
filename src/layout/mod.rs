@@ -371,6 +371,11 @@ pub struct Layout<W: LayoutElement> {
     overview_open: bool,
     /// The overview zoom progress.
     overview_progress: Option<OverviewProgress>,
+    /// Free-scroll mode (runtime). Seeded from `layout { free-scroll }` at construction.
+    ///
+    /// Kept off `Options` mutation paths so toggling never re-runs `update_config`
+    /// (which would snap the view via `animate_view_offset_to_column`).
+    free_scroll: bool,
     /// Configurable properties of the layout.
     options: Rc<Options>,
 }
@@ -718,6 +723,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn with_options(clock: Clock, options: Options) -> Self {
+        let free_scroll = options.layout.free_scroll;
         Self {
             monitor_set: MonitorSet::NoOutputs { workspaces: vec![] },
             is_active: true,
@@ -728,6 +734,7 @@ impl<W: LayoutElement> Layout<W> {
             update_render_elements_time: Duration::ZERO,
             overview_open: false,
             overview_progress: None,
+            free_scroll,
             options: Rc::new(options),
         }
     }
@@ -743,6 +750,7 @@ impl<W: LayoutElement> Layout<W> {
             })
             .collect();
 
+        let free_scroll = opts.layout.free_scroll;
         Self {
             monitor_set: MonitorSet::NoOutputs { workspaces },
             is_active: true,
@@ -753,6 +761,7 @@ impl<W: LayoutElement> Layout<W> {
             update_render_elements_time: Duration::ZERO,
             overview_open: false,
             overview_progress: None,
+            free_scroll,
             options: opts,
         }
     }
@@ -1157,8 +1166,9 @@ impl<W: LayoutElement> Layout<W> {
                         }
 
                         // Unlock the view on the workspaces.
+                        let free_scroll = self.free_scroll;
                         for ws in self.workspaces_mut() {
-                            ws.dnd_scroll_gesture_end();
+                            ws.dnd_scroll_gesture_end(free_scroll);
                         }
 
                         return Some(RemovedTile {
@@ -3179,8 +3189,9 @@ impl<W: LayoutElement> Layout<W> {
                     );
 
                     // Unlock the view on the workspaces.
+                    let free_scroll = self.free_scroll;
                     for ws in self.workspaces_mut() {
-                        ws.dnd_scroll_gesture_end();
+                        ws.dnd_scroll_gesture_end(free_scroll);
                     }
                 } else {
                     // Animate the tile back to semitransparent.
@@ -3671,6 +3682,7 @@ impl<W: LayoutElement> Layout<W> {
         workspace_idx: Option<usize>,
         is_touchpad: bool,
     ) {
+        let free_scroll = self.free_scroll;
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => monitors,
             MonitorSet::NoOutputs { .. } => unreachable!(),
@@ -3682,7 +3694,7 @@ impl<W: LayoutElement> Layout<W> {
                 if &monitor.output != output
                     || idx != workspace_idx.unwrap_or(monitor.active_workspace_idx)
                 {
-                    ws.view_offset_gesture_end(None);
+                    ws.view_offset_gesture_end(None, free_scroll);
                     continue;
                 }
 
@@ -3723,6 +3735,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn view_offset_gesture_end(&mut self, is_touchpad: Option<bool>) -> Option<Output> {
+        let free_scroll = self.free_scroll;
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => monitors,
             MonitorSet::NoOutputs { .. } => return None,
@@ -3730,7 +3743,7 @@ impl<W: LayoutElement> Layout<W> {
 
         for monitor in monitors {
             for ws in &mut monitor.workspaces {
-                if ws.view_offset_gesture_end(is_touchpad) {
+                if ws.view_offset_gesture_end(is_touchpad, free_scroll) {
                     return Some(monitor.output.clone());
                 }
             }
@@ -4006,8 +4019,9 @@ impl<W: LayoutElement> Layout<W> {
                 if is_floating {
                     // Unlock the view in case we locked it moving a fullscreen window that is
                     // going to unfullscreen to floating.
+                    let free_scroll = self.free_scroll;
                     for ws in self.workspaces_mut() {
-                        ws.dnd_scroll_gesture_end();
+                        ws.dnd_scroll_gesture_end(free_scroll);
                     }
                 } else {
                     // Animate to semitransparent.
@@ -4119,6 +4133,7 @@ impl<W: LayoutElement> Layout<W> {
                     mon.dnd_scroll_gesture_end();
                 }
 
+                let free_scroll = self.free_scroll;
                 for ws in self.workspaces_mut() {
                     if let Some(tile) = ws.tiles_mut().find(|tile| *tile.window().id() == window_id)
                     {
@@ -4128,11 +4143,11 @@ impl<W: LayoutElement> Layout<W> {
                     }
 
                     // Unlock the view on the workspaces, but if the moved window was active,
-                    // preserve that.
+                    // activate it after unlocking to re-lock the view if necessary.
                     let moved_tile_was_active =
                         ws.active_window().is_some_and(|win| *win.id() == window_id);
 
-                    ws.dnd_scroll_gesture_end();
+                    ws.dnd_scroll_gesture_end(free_scroll);
 
                     if moved_tile_was_active {
                         ws.activate_window(&window_id);
@@ -4158,8 +4173,9 @@ impl<W: LayoutElement> Layout<W> {
 
         // Unlock the view on the workspaces.
         if !move_.is_floating {
+            let free_scroll = self.free_scroll;
             for ws in self.workspaces_mut() {
-                ws.dnd_scroll_gesture_end();
+                ws.dnd_scroll_gesture_end(free_scroll);
             }
 
             // Also animate the tile back to opaque.
@@ -4403,8 +4419,9 @@ impl<W: LayoutElement> Layout<W> {
             mon.dnd_scroll_gesture_end();
         }
 
+        let free_scroll = self.free_scroll;
         for ws in self.workspaces_mut() {
-            ws.dnd_scroll_gesture_end();
+            ws.dnd_scroll_gesture_end(free_scroll);
         }
     }
 
@@ -4635,22 +4652,16 @@ impl<W: LayoutElement> Layout<W> {
     /// Leaving free-scroll does not re-snap the current viewport; the next focus or normal
     /// gesture end will apply ordinary snapping again.
     pub fn toggle_free_scroll(&mut self) {
-        self.set_free_scroll(!self.options.layout.free_scroll);
+        self.set_free_scroll(!self.free_scroll);
     }
 
-    /// Enable or disable free-scroll mode.
+    /// Enable or disable free-scroll mode without re-snapping the viewport.
     pub fn set_free_scroll(&mut self, free_scroll: bool) {
-        if self.options.layout.free_scroll == free_scroll {
-            return;
-        }
-
-        let mut options = Options::clone(&self.options);
-        options.layout.free_scroll = free_scroll;
-        self.update_options(options);
+        self.free_scroll = free_scroll;
     }
 
     pub fn free_scroll(&self) -> bool {
-        self.options.layout.free_scroll
+        self.free_scroll
     }
 
     pub fn open_overview(&mut self) -> bool {
@@ -4913,6 +4924,7 @@ impl<W: LayoutElement> Layout<W> {
             });
         }
 
+        let free_scroll = self.free_scroll;
         match &mut self.monitor_set {
             MonitorSet::Normal {
                 monitors,
@@ -4940,12 +4952,12 @@ impl<W: LayoutElement> Layout<W> {
                             if is_scrolling {
                                 ws.dnd_scroll_gesture_begin();
                             } else {
-                                ws.dnd_scroll_gesture_end();
+                                ws.dnd_scroll_gesture_end(free_scroll);
                             }
                         } else {
                             // Cancel the view offset gesture after workspace switches, moves, etc.
                             if !self.overview_open && ws_idx != mon.active_workspace_idx {
-                                ws.view_offset_gesture_end(None);
+                                ws.view_offset_gesture_end(None, free_scroll);
                             }
                         }
                     }
@@ -4954,7 +4966,7 @@ impl<W: LayoutElement> Layout<W> {
             MonitorSet::NoOutputs { workspaces, .. } => {
                 for ws in workspaces {
                     ws.refresh(false, false);
-                    ws.view_offset_gesture_end(None);
+                    ws.view_offset_gesture_end(None, free_scroll);
                 }
             }
         }

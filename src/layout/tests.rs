@@ -14,6 +14,7 @@ use smithay::utils::Rectangle;
 use super::*;
 
 mod animations;
+mod free_scroll;
 mod fullscreen;
 
 impl<W: LayoutElement> Default for Layout<W> {
