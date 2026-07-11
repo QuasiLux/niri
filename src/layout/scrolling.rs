@@ -23,12 +23,26 @@ use crate::niri_render_elements;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
+use crate::rubber_band::RubberBand;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 use crate::utils::ResizeEdge;
 use crate::window::ResolvedWindowRules;
 
 /// Amount of touchpad movement to scroll the view for the width of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
+
+/// Soft overscroll at free-scroll strip ends (low hold — easy to leave the edge).
+///
+/// Tuned looser than workspace-switch rubber band: resistance without a hard wall.
+const FREE_SCROLL_EDGE_RUBBER: RubberBand = RubberBand {
+    stiffness: 0.35,
+    // Max visual overscroll in logical pixels past the real content bound.
+    limit: 96.,
+};
+
+/// Residual velocity kept when settling back from past an edge (fraction).
+/// Low = loose edge, not magnetically held.
+const FREE_SCROLL_EDGE_VELOCITY_KEEP: f64 = 0.12;
 
 /// A scrollable-tiling space for windows.
 #[derive(Debug)]
@@ -3108,6 +3122,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         timestamp: Duration,
         is_touchpad: bool,
     ) -> Option<bool> {
+        // Precompute free-scroll rubber inputs before mutably borrowing the gesture.
+        let free_band = if self.free_scroll && !self.columns.is_empty() {
+            let active_col_x = self.column_x(self.active_column_idx);
+            let (min_b, max_b) = self.view_pos_scroll_bounds();
+            let (lo, hi) = if min_b <= max_b {
+                (min_b, max_b)
+            } else {
+                (max_b, min_b)
+            };
+            Some((active_col_x, lo, hi))
+        } else {
+            None
+        };
+
         let ViewOffset::Gesture(gesture) = &mut self.view_offset else {
             return None;
         };
@@ -3124,8 +3152,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             1.
         };
         let pos = gesture.tracker.pos() * norm_factor;
-        let view_offset = pos + gesture.delta_from_tracker;
-        gesture.current_view_offset = view_offset;
+        let raw_view_offset = pos + gesture.delta_from_tracker;
+
+        // Free-scroll: soft rubber-band past strip ends (no hard wall mid-gesture).
+        if let Some((active_col_x, lo, hi)) = free_band {
+            let raw_view_pos = active_col_x + raw_view_offset;
+            let banded = FREE_SCROLL_EDGE_RUBBER.clamp(lo, hi, raw_view_pos);
+            gesture.current_view_offset = banded - active_col_x;
+        } else {
+            gesture.current_view_offset = raw_view_offset;
+        }
 
         Some(true)
     }
@@ -3558,17 +3594,31 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let momentum = self.options.layout.free_scroll_momentum.max(0.);
         let target_view_offset =
             current_view_offset + (target_view_offset - current_view_offset) * momentum;
-        let velocity = velocity * momentum;
+        let mut velocity = velocity * momentum;
 
         let active_col_x = self.column_x(self.active_column_idx);
         let mut target_view_pos = active_col_x + target_view_offset;
 
         let (min_view_pos, max_view_pos) = self.view_pos_scroll_bounds();
-        if min_view_pos <= max_view_pos {
-            target_view_pos = target_view_pos.clamp(min_view_pos, max_view_pos);
+        let (lo, hi) = if min_view_pos <= max_view_pos {
+            (min_view_pos, max_view_pos)
         } else {
-            // Content narrower than the view: still keep the stop between the two extremes.
-            target_view_pos = target_view_pos.clamp(max_view_pos, min_view_pos);
+            (max_view_pos, min_view_pos)
+        };
+
+        // Soft edge settle only when the projected stop is past the strip.
+        // Inside the strip: leave the stop where it is (no magnetic edge snap).
+        if target_view_pos < lo {
+            target_view_pos = lo;
+            // Kill outward fling so the edge is not sticky/held.
+            if velocity < 0. {
+                velocity *= FREE_SCROLL_EDGE_VELOCITY_KEEP;
+            }
+        } else if target_view_pos > hi {
+            target_view_pos = hi;
+            if velocity > 0. {
+                velocity *= FREE_SCROLL_EDGE_VELOCITY_KEEP;
+            }
         }
 
         // Pick the column whose center is closest to the viewport center, preferring columns

@@ -1,0 +1,9 @@
+# Rollback free-scroll host install → stock niri 26.04 (8ed0da4)
+
+sudo mv -f /usr/bin/niri.stock-26.04 /usr/bin/niri
+# If stock bak was already moved, restore from package instead:
+#   sudo pacman -S niri
+# Then re-login (or reboot) so the session picks up the binary.
+
+# Free-scroll build was: /home/hermes/niri feature/free-scroll (3c51f273)
+# Install used: atomic mv (running session keeps old binary until re-login)
