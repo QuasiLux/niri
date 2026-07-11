@@ -249,3 +249,46 @@ fn free_scroll_set_from_options_and_runtime() {
     assert!(layout.free_scroll());
 }
 
+
+#[test]
+fn free_scroll_activate_preserves_view() {
+    let mut layout = set_up_three_columns(true);
+    run_view_gesture(&mut layout, 300.);
+    let pos = target_view_pos(&layout);
+    let col_before = active_column_idx(&layout);
+
+    // Activate a different window (column 0 if we scrolled right, or column 2).
+    // Window ids are 1,2,3.
+    Op::FocusWindow(1).apply(&mut layout);
+    // FocusWindow uses activate_window which under free-scroll must not snap.
+    // But FocusWindow op is activate_window - after free gesture active col may be 1.
+    // Force activate window 3.
+    layout.activate_window(&3);
+    Op::CompleteAnimations.apply(&mut layout);
+
+    let pos_after = target_view_pos(&layout);
+    assert!(
+        (pos_after - pos).abs() < 1.,
+        "activate_window under free-scroll must preserve view; before={pos} after={pos_after} col_before={col_before} col_after={}",
+        active_column_idx(&layout)
+    );
+    assert_eq!(active_column_idx(&layout), 2);
+}
+
+#[test]
+fn free_scroll_off_activate_scrolls_into_view() {
+    let mut layout = set_up_three_columns(false);
+    // Manually free-position is hard without free mode; use free mode then toggle off mid-view.
+    layout.set_free_scroll(true);
+    run_view_gesture(&mut layout, 300.);
+    let free_pos = target_view_pos(&layout);
+    layout.set_free_scroll(false);
+    // Activation should now scroll into view.
+    layout.activate_window(&3);
+    Op::CompleteAnimations.apply(&mut layout);
+    let after = target_view_pos(&layout);
+    assert!(
+        (after - free_pos).abs() > 1.,
+        "with free-scroll off, activate should re-fit; free_pos={free_pos} after={after}"
+    );
+}
