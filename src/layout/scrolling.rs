@@ -3163,9 +3163,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         delta_x: f64,
         timestamp: Duration,
         is_touchpad: bool,
+        free_scroll: bool,
     ) -> Option<bool> {
+        // Keep local mirror in sync with Layout runtime flag (source of truth).
+        self.free_scroll = free_scroll;
+
         // Precompute free-scroll rubber inputs before mutably borrowing the gesture.
-        let free_band = if self.free_scroll && !self.columns.is_empty() {
+        let free_band = if free_scroll && !self.columns.is_empty() {
             let active_col_x = self.column_x(self.active_column_idx);
             let (min_b, max_b) = self.view_pos_scroll_bounds();
             let (lo, hi) = if min_b <= max_b {
@@ -3287,6 +3291,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         is_touchpad: Option<bool>,
         free_scroll: bool,
     ) -> bool {
+        // Layout runtime flag is authoritative for this gesture end.
+        self.free_scroll = free_scroll;
+
         let ViewOffset::Gesture(gesture) = &mut self.view_offset else {
             return false;
         };

@@ -2999,6 +2999,8 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     fn update_options(&mut self, options: Options) {
+        // Config free-scroll seeds runtime mode on reload; explicit toggle still overrides until reload.
+        self.free_scroll = options.layout.free_scroll;
         let options = Rc::new(options);
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
@@ -3025,6 +3027,12 @@ impl<W: LayoutElement> Layout<W> {
         }
 
         self.options = options;
+
+        // Ensure scrolling spaces see the runtime free-scroll flag after option rebuild.
+        let free_scroll = self.free_scroll;
+        for ws in self.workspaces_mut() {
+            ws.set_free_scroll(free_scroll);
+        }
     }
 
     pub fn toggle_width(&mut self, forwards: bool) {
@@ -3722,6 +3730,7 @@ impl<W: LayoutElement> Layout<W> {
     ) -> Option<Option<Output>> {
         let zoom = self.overview_zoom();
         let delta_x = delta_x / zoom;
+        let free_scroll = self.free_scroll;
 
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => monitors,
@@ -3731,7 +3740,7 @@ impl<W: LayoutElement> Layout<W> {
         for monitor in monitors {
             for ws in &mut monitor.workspaces {
                 if let Some(refresh) =
-                    ws.view_offset_gesture_update(delta_x, timestamp, is_touchpad)
+                    ws.view_offset_gesture_update(delta_x, timestamp, is_touchpad, free_scroll)
                 {
                     if refresh {
                         return Some(Some(monitor.output.clone()));
