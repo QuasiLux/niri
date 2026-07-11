@@ -2305,6 +2305,12 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
+            Action::ToggleFreeScroll => {
+                self.niri.layout.toggle_free_scroll();
+            }
+            Action::SetFreeScroll(free_scroll) => {
+                self.niri.layout.set_free_scroll(free_scroll);
+            }
             Action::ToggleWindowUrgent(id) => {
                 let window = self
                     .niri

@@ -20,6 +20,11 @@ pub struct Layout {
     pub center_focused_column: CenterFocusedColumn,
     pub always_center_single_column: bool,
     pub empty_workspace_above_first: bool,
+    /// When true, horizontal view gestures end without snapping to column edges.
+    ///
+    /// Keyboard focus and other layout actions still bring windows into view as usual.
+    /// This field is also the runtime state for `toggle-free-scroll`.
+    pub free_scroll: bool,
     pub default_column_display: ColumnDisplay,
     pub gaps: f64,
     pub struts: Struts,
@@ -43,6 +48,7 @@ impl Default for Layout {
             center_focused_column: CenterFocusedColumn::Never,
             always_center_single_column: false,
             empty_workspace_above_first: false,
+            free_scroll: false,
             default_column_display: ColumnDisplay::Normal,
             gaps: 16.,
             struts: Struts::default(),
@@ -67,6 +73,7 @@ impl MergeWith<LayoutPart> for Layout {
             insert_hint,
             always_center_single_column,
             empty_workspace_above_first,
+            free_scroll,
             gaps,
         );
 
@@ -118,6 +125,8 @@ pub struct LayoutPart {
     pub always_center_single_column: Option<Flag>,
     #[knuffel(child)]
     pub empty_workspace_above_first: Option<Flag>,
+    #[knuffel(child)]
+    pub free_scroll: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]
     pub default_column_display: Option<ColumnDisplay>,
     #[knuffel(child, unwrap(argument))]
