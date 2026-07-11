@@ -292,3 +292,30 @@ fn free_scroll_off_activate_scrolls_into_view() {
         "with free-scroll off, activate should re-fit; free_pos={free_pos} after={after}"
     );
 }
+
+#[test]
+fn free_scroll_inside_bounds_not_pulled_to_edge() {
+    let mut layout = set_up_three_columns(true);
+    // Small nudge well inside the strip — must stay near gesture end, not jump to a bound.
+    run_view_gesture(&mut layout, 120.);
+    let after = target_view_pos(&layout);
+    assert!(
+        (after - 120.).abs() < 2.,
+        "inside-strip free-scroll must not magnetic-edge; after={after}"
+    );
+}
+
+#[test]
+fn free_scroll_past_edge_settles_to_bound_not_beyond() {
+    let mut layout = set_up_three_columns(true);
+    run_view_gesture(&mut layout, 50_000.);
+    let after = target_view_pos(&layout);
+    // Should land on the far bound (finite, past start), not overshoot forever.
+    assert!(after.is_finite() && after > 100., "after={after}");
+    let mid = after;
+    run_view_gesture(&mut layout, 50_000.);
+    assert!(
+        (target_view_pos(&layout) - mid).abs() < 1.,
+        "repeated fling past end stays at soft bound"
+    );
+}
