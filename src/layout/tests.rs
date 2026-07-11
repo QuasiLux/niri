@@ -749,6 +749,7 @@ enum Op {
         window: usize,
     },
     ToggleOverview,
+    ToggleFreeScroll,
     UpdateConfig {
         #[proptest(strategy = "arbitrary_layout_part().prop_map(Box::new)")]
         layout_config: Box<niri_config::LayoutPart>,
@@ -1619,6 +1620,9 @@ impl Op {
             }
             Op::ToggleOverview => {
                 layout.toggle_overview();
+            }
+            Op::ToggleFreeScroll => {
+                layout.toggle_free_scroll();
             }
             Op::UpdateConfig { layout_config } => {
                 let options = Options {
