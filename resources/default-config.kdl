@@ -125,6 +125,7 @@ layout {
     // Free-scroll mode: horizontal gestures stop without snapping to column edges.
     // Can also be toggled at runtime with toggle-free-scroll (Mod+Shift+S).
     // free-scroll
+    // free-scroll-momentum 1.0
 
     // You can customize the widths that "switch-preset-column-width" (Mod+R) toggles between.
     preset-column-widths {

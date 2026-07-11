@@ -1486,6 +1486,7 @@ mod tests {
                 always_center_single_column: false,
                 empty_workspace_above_first: false,
                 free_scroll: false,
+                free_scroll_momentum: 1.0,
                 default_column_display: Tabbed,
                 gaps: 8.0,
                 struts: Struts {
@@ -1916,6 +1917,7 @@ mod tests {
                             1.2,
                         ),
                     ),
+                    free_scroll: None,
                     tiled_state: None,
                     background_effect: BackgroundEffectRule {
                         xray: None,

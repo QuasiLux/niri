@@ -173,6 +173,20 @@ Turning free-scroll off does **not** re-snap the current viewport; the view stay
 ```kdl
 layout {
     free-scroll
+    // free-scroll-momentum 1.0
+}
+```
+
+### `free-scroll-momentum`
+
+Multiplier for free-scroll fling inertia after a gesture ends. `1.0` is the default projection; `0` stops immediately at finger-up (still clamped). Values above `1.0` exaggerate the fling.
+
+Only applies while free-scroll is enabled (config or `toggle-free-scroll`).
+
+```kdl
+layout {
+    free-scroll
+    free-scroll-momentum 1.25
 }
 ```
 

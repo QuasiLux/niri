@@ -123,6 +123,9 @@ pub struct ResolvedWindowRules {
     /// Pinch gesture sensitivity for this window.
     pub pinch_sensitivity: Option<f64>,
 
+    /// When true, activating this window does not scroll the view to fit it.
+    pub free_scroll: Option<bool>,
+
     /// Override whether to set the Tiled xdg-toplevel state on the window.
     pub tiled_state: Option<bool>,
 
@@ -311,6 +314,9 @@ impl ResolvedWindowRules {
                 }
                 if let Some(x) = rule.pinch_sensitivity {
                     resolved.pinch_sensitivity = Some(x.0);
+                }
+                if let Some(x) = rule.free_scroll {
+                    resolved.free_scroll = Some(x);
                 }
                 if let Some(x) = rule.tiled_state {
                     resolved.tiled_state = Some(x);
