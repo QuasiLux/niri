@@ -3194,6 +3194,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let end_pos = gesture.tracker.projected_end_pos() * norm_factor;
         let target_view_offset = end_pos + gesture.delta_from_tracker;
 
+        // Free-scroll mode: keep the projected position (with inertia), clamp to content
+        // bounds, and update the active column without snapping the view to column edges.
+        if self.options.layout.free_scroll {
+            return self.finish_view_offset_gesture_free(
+                current_view_offset,
+                target_view_offset,
+                velocity,
+            );
+        }
+
         // Compute the snapping points. These are where the view aligns with column boundaries on
         // either side.
         struct Snap {
@@ -3484,6 +3494,125 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.animate_view_offset_to_column(None, new_col_idx, None);
 
         true
+    }
+
+    /// Finish a view-offset gesture without column-edge snapping (free-scroll mode).
+    fn finish_view_offset_gesture_free(
+        &mut self,
+        current_view_offset: f64,
+        target_view_offset: f64,
+        velocity: f64,
+    ) -> bool {
+        let active_col_x = self.column_x(self.active_column_idx);
+        let mut target_view_pos = active_col_x + target_view_offset;
+
+        let (min_view_pos, max_view_pos) = self.view_pos_scroll_bounds();
+        if min_view_pos <= max_view_pos {
+            target_view_pos = target_view_pos.clamp(min_view_pos, max_view_pos);
+        } else {
+            // Content narrower than the view: still keep the stop between the two extremes.
+            target_view_pos = target_view_pos.clamp(max_view_pos, min_view_pos);
+        }
+
+        // Pick the column whose center is closest to the viewport center, preferring columns
+        // that intersect the final viewport. This updates focus without re-fitting the view.
+        let view_width = self.view_size.w;
+        let view_center = target_view_pos + view_width / 2.;
+        let mut new_col_idx = self.active_column_idx;
+        let mut best_score = f64::INFINITY;
+        for (col_idx, col) in self.columns.iter().enumerate() {
+            let col_x = self.column_x(col_idx);
+            let col_w = col.width();
+            let col_center = col_x + col_w / 2.;
+            let dist = (col_center - view_center).abs();
+            let intersects =
+                col_x < target_view_pos + view_width && target_view_pos < col_x + col_w;
+            let score = if intersects { dist } else { dist + 1_000_000. };
+            if score < best_score {
+                best_score = score;
+                new_col_idx = col_idx;
+            }
+        }
+
+        let new_col_x = self.column_x(new_col_idx);
+        let delta = active_col_x - new_col_x;
+
+        if self.active_column_idx != new_col_idx {
+            self.view_offset_to_restore = None;
+        }
+        self.active_column_idx = new_col_idx;
+
+        let target_view_offset = target_view_pos - new_col_x;
+
+        self.view_offset = ViewOffset::Animation(Animation::new(
+            self.clock.clone(),
+            current_view_offset + delta,
+            target_view_offset,
+            velocity,
+            self.options.animations.horizontal_view_movement.0,
+        ));
+
+        // Intentionally do not call animate_view_offset_to_column — that would snap/fit.
+
+        true
+    }
+
+    /// Absolute view-position bounds used when free-scrolling (and for clamping flings).
+    ///
+    /// Positions are relative to x = 0 at the first column.
+    fn view_pos_scroll_bounds(&self) -> (f64, f64) {
+        if self.columns.is_empty() {
+            return (0., 0.);
+        }
+
+        let gaps = self.options.layout.gaps;
+        let view_width = self.view_size.w;
+        let center = self.is_centering_focused_column();
+
+        let col_snap_edges = |col_x: f64, col: &Column<W>| -> (f64, f64) {
+            let col_w = col.width();
+            let mode = col.sizing_mode();
+            let area = if mode.is_maximized() {
+                self.parent_area
+            } else {
+                self.working_area
+            };
+            let left_strut = area.loc.x;
+            let right_strut = self.view_size.w - area.size.w - area.loc.x;
+
+            if mode.is_fullscreen() {
+                let left = col_x;
+                let right = left + col_w;
+                return (left, right);
+            }
+
+            if center {
+                let view_pos = if area.size.w <= col_w {
+                    col_x - left_strut
+                } else {
+                    col_x - (area.size.w - col_w) / 2. - left_strut
+                };
+                // When centering, left and right snap collapse to the centered position / + view.
+                return (view_pos, view_pos + view_width);
+            }
+
+            let padding = if mode.is_maximized() {
+                0.
+            } else {
+                ((area.size.w - col_w) / 2.).clamp(0., gaps)
+            };
+            let left = col_x - padding - left_strut;
+            let right = col_x + col_w + padding + right_strut;
+            (left, right)
+        };
+
+        let (leftmost, _) = col_snap_edges(0., &self.columns[0]);
+        let last_col_idx = self.columns.len() - 1;
+        let last_col_x = self.column_x(last_col_idx);
+        let (_, rightmost_edge) = col_snap_edges(last_col_x, &self.columns[last_col_idx]);
+        let rightmost = rightmost_edge - view_width;
+
+        (leftmost, rightmost)
     }
 
     pub fn dnd_scroll_gesture_end(&mut self) {

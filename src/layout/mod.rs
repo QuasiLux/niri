@@ -4610,6 +4610,29 @@ impl<W: LayoutElement> Layout<W> {
         self.set_monitors_overview_state();
     }
 
+    /// Toggle free-scroll mode (gesture ends do not snap to column edges).
+    ///
+    /// Leaving free-scroll does not re-snap the current viewport; the next focus or normal
+    /// gesture end will apply ordinary snapping again.
+    pub fn toggle_free_scroll(&mut self) {
+        self.set_free_scroll(!self.options.layout.free_scroll);
+    }
+
+    /// Enable or disable free-scroll mode.
+    pub fn set_free_scroll(&mut self, free_scroll: bool) {
+        if self.options.layout.free_scroll == free_scroll {
+            return;
+        }
+
+        let mut options = Options::clone(&self.options);
+        options.layout.free_scroll = free_scroll;
+        self.update_options(options);
+    }
+
+    pub fn free_scroll(&self) -> bool {
+        self.options.layout.free_scroll
+    }
+
     pub fn open_overview(&mut self) -> bool {
         if self.overview_open {
             return false;
