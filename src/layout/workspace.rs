@@ -1922,8 +1922,13 @@ impl<W: LayoutElement> Workspace<W> {
             .view_offset_gesture_update(delta_x, timestamp, is_touchpad)
     }
 
-    pub fn view_offset_gesture_end(&mut self, is_touchpad: Option<bool>) -> bool {
-        self.scrolling.view_offset_gesture_end(is_touchpad)
+    pub fn view_offset_gesture_end(
+        &mut self,
+        is_touchpad: Option<bool>,
+        free_scroll: bool,
+    ) -> bool {
+        self.scrolling
+            .view_offset_gesture_end(is_touchpad, free_scroll)
     }
 
     pub fn dnd_scroll_gesture_begin(&mut self) {
@@ -1961,8 +1966,8 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.dnd_scroll_gesture_scroll(delta)
     }
 
-    pub fn dnd_scroll_gesture_end(&mut self) {
-        self.scrolling.dnd_scroll_gesture_end();
+    pub fn dnd_scroll_gesture_end(&mut self, free_scroll: bool) {
+        self.scrolling.dnd_scroll_gesture_end(free_scroll);
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
