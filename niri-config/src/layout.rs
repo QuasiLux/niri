@@ -25,6 +25,8 @@ pub struct Layout {
     /// Keyboard focus and other layout actions still bring windows into view as usual.
     /// This field is also the runtime state for `toggle-free-scroll`.
     pub free_scroll: bool,
+    /// Multiplier for free-scroll fling inertia (1.0 = default projection).
+    pub free_scroll_momentum: f64,
     pub default_column_display: ColumnDisplay,
     pub gaps: f64,
     pub struts: Struts,
@@ -50,6 +52,7 @@ impl Default for Layout {
             always_center_single_column: false,
             empty_workspace_above_first: false,
             free_scroll: false,
+            free_scroll_momentum: 1.,
             default_column_display: ColumnDisplay::Normal,
             gaps: 16.,
             struts: Struts::default(),
@@ -76,6 +79,7 @@ impl MergeWith<LayoutPart> for Layout {
             always_center_single_column,
             empty_workspace_above_first,
             free_scroll,
+            free_scroll_momentum,
             gaps,
         );
 
@@ -130,6 +134,8 @@ pub struct LayoutPart {
     pub empty_workspace_above_first: Option<Flag>,
     #[knuffel(child)]
     pub free_scroll: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub free_scroll_momentum: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument, str))]
     pub default_column_display: Option<ColumnDisplay>,
     #[knuffel(child, unwrap(argument))]
