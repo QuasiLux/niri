@@ -3200,7 +3200,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         true
     }
 
-    pub fn view_offset_gesture_end(&mut self, is_touchpad: Option<bool>) -> bool {
+    pub fn view_offset_gesture_end(
+        &mut self,
+        is_touchpad: Option<bool>,
+        free_scroll: bool,
+    ) -> bool {
         let ViewOffset::Gesture(gesture) = &mut self.view_offset else {
             return false;
         };
@@ -3238,7 +3242,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Free-scroll mode: keep the projected position (with inertia), clamp to content
         // bounds, and update the active column without snapping the view to column edges.
-        if self.options.layout.free_scroll {
+        // `free_scroll` is the Layout runtime flag (not Options) so toggles cannot re-snap.
+        if free_scroll {
             return self.finish_view_offset_gesture_free(
                 current_view_offset,
                 target_view_offset,
@@ -3657,7 +3662,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         (leftmost, rightmost)
     }
 
-    pub fn dnd_scroll_gesture_end(&mut self) {
+    pub fn dnd_scroll_gesture_end(&mut self, free_scroll: bool) {
         let ViewOffset::Gesture(gesture) = &mut self.view_offset else {
             return;
         };
@@ -3675,14 +3680,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 self.view_offset = ViewOffset::Static(gesture.delta_from_tracker);
             }
 
-            if !self.columns.is_empty() {
+            if !self.columns.is_empty() && !free_scroll {
                 // Just in case, make sure the active window remains on screen.
+                // Skip when free-scroll is on so DnD can leave a free viewport.
                 self.animate_view_offset_to_column(None, self.active_column_idx, None);
             }
             return;
         }
 
-        self.view_offset_gesture_end(None);
+        self.view_offset_gesture_end(None, free_scroll);
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
