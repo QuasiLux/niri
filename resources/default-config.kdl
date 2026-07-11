@@ -121,6 +121,10 @@ layout {
     //   together with the previously focused column.
     center-focused-column "never"
 
+    // Free-scroll mode: horizontal gestures stop without snapping to column edges.
+    // Can also be toggled at runtime with toggle-free-scroll (Mod+Shift+S).
+    // free-scroll
+
     // You can customize the widths that "switch-preset-column-width" (Mod+R) toggles between.
     preset-column-widths {
         // Proportion sets the width as a fraction of the output width, taking gaps into account.
@@ -398,6 +402,10 @@ binds {
     // You can also move the mouse into the top-left hot corner,
     // or do a four-finger swipe up on a touchpad.
     Mod+O repeat=false { toggle-overview; }
+
+    // Toggle free-scroll mode: horizontal gestures stop without snapping to columns.
+    // Nested niri uses Alt as Mod by default (so this is Alt+Shift+S when nested).
+    Mod+Shift+S { toggle-free-scroll; }
 
     Mod+Q repeat=false { close-window; }
 

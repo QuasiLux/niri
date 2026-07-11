@@ -258,6 +258,7 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
         &Action::ToggleWindowFloating,
         &Action::SwitchFocusBetweenFloatingAndTiling,
         &Action::ToggleOverview,
+        &Action::ToggleFreeScroll,
     ]);
 
     // Screenshot is not as important, can omit if not bound.
@@ -479,6 +480,7 @@ fn action_name(action: &Action) -> String {
             String::from("Switch Focus Between Floating and Tiling")
         }
         Action::ToggleOverview => String::from("Open the Overview"),
+        Action::ToggleFreeScroll => String::from("Toggle Free Scroll"),
         Action::Screenshot(_, _) => String::from("Take a Screenshot"),
         Action::Spawn(args) => format!(
             "Spawn <span face='monospace' bgcolor='#000000'>{}</span>",

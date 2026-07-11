@@ -914,6 +914,17 @@ pub enum Action {
     OpenOverview {},
     /// Close the Overview.
     CloseOverview {},
+    /// Toggle free-scroll mode.
+    ///
+    /// When free-scroll is enabled, horizontal view gestures (trackpad swipe, Mod+middle-click drag,
+    /// etc.) stop at the projected position without snapping to column edges.
+    ToggleFreeScroll {},
+    /// Enable or disable free-scroll mode.
+    SetFreeScroll {
+        /// Whether free-scroll should be enabled.
+        #[cfg_attr(feature = "clap", arg(action = clap::ArgAction::Set))]
+        free_scroll: bool,
+    },
     /// Toggle urgent status of a window.
     ToggleWindowUrgent {
         /// Id of the window to toggle urgent.
