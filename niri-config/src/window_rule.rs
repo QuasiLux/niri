@@ -76,6 +76,9 @@ pub struct WindowRule {
     pub default_floating_position: Option<FloatingPosition>,
     #[knuffel(child, unwrap(argument))]
     pub scroll_factor: Option<FloatOrInt<0, 100>>,
+    /// When true, activating this window does not scroll it into view (even if global free-scroll is off).
+    #[knuffel(child, unwrap(argument))]
+    pub free_scroll: Option<bool>,
     #[knuffel(child, unwrap(argument))]
     pub pinch_sensitivity: Option<FloatOrInt<0, 100>>,
     #[knuffel(child, unwrap(argument))]
