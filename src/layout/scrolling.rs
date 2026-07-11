@@ -90,6 +90,9 @@ pub struct ScrollingSpace<W: LayoutElement> {
     /// Clock for driving animations.
     clock: Clock,
 
+    /// Runtime free-scroll flag (synced from Layout; not via update_config).
+    free_scroll: bool,
+
     /// Configurable properties of the layout.
     options: Rc<Options>,
 }
@@ -292,6 +295,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) -> Self {
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
 
+        let free_scroll = options.layout.free_scroll;
         Self {
             columns: Vec::new(),
             data: Vec::new(),
@@ -306,6 +310,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             parent_area,
             scale,
             clock,
+            free_scroll,
             options,
         }
     }
@@ -328,10 +333,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.working_area = working_area;
         self.parent_area = parent_area;
         self.scale = scale;
+        // Preserve runtime free_scroll; config free_scroll only seeds on construction / explicit set.
         self.options = options;
 
-        // Apply always-center and such right away.
-        if !self.columns.is_empty() && !self.view_offset.is_gesture() {
+        // Apply always-center and such right away — but never when free-scrolling.
+        if !self.columns.is_empty() && !self.view_offset.is_gesture() && !self.free_scroll {
             self.animate_view_offset_to_column(None, self.active_column_idx, None);
         }
     }
@@ -771,6 +777,25 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             idx,
             self.options.animations.horizontal_view_movement.0,
         );
+    }
+
+    /// Change the active column while keeping the absolute view position unchanged.
+    ///
+    /// Used by free-scroll so click/FFM/activation can focus a partially off-screen window
+    /// without snapping the viewport.
+    fn activate_column_preserve_view(&mut self, idx: usize) {
+        if self.active_column_idx == idx {
+            return;
+        }
+
+        let old_x = self.column_x(self.active_column_idx);
+        let new_x = self.column_x(idx);
+        // view_pos = column_x(active) + view_offset — keep view_pos stable.
+        self.view_offset.offset(old_x - new_x);
+        self.active_column_idx = idx;
+        self.activate_prev_column_on_removal = None;
+        self.view_offset_to_restore = None;
+        self.interactive_resize = None;
     }
 
     fn activate_column_with_anim_config(&mut self, idx: usize, config: niri_config::Animation) {
@@ -1432,15 +1457,36 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         (from_view_offset - new_view_offset).abs() / self.working_area.size.w
     }
 
+    pub fn set_free_scroll(&mut self, free_scroll: bool) {
+        self.free_scroll = free_scroll;
+    }
+
+    pub fn free_scroll(&self) -> bool {
+        self.free_scroll
+    }
+
     pub fn activate_window(&mut self, window: &W::Id) -> bool {
         let column_idx = self.columns.iter().position(|col| col.contains(window));
         let Some(column_idx) = column_idx else {
             return false;
         };
-        let column = &mut self.columns[column_idx];
 
+        // Per-window free-scroll rule: activate without scrolling even if global mode is off.
+        let window_free_scroll = self.columns[column_idx]
+            .tiles()
+            .find(|(tile, _)| tile.window().id() == window)
+            .and_then(|(tile, _)| tile.window().rules().free_scroll)
+            .unwrap_or(false);
+
+        let column = &mut self.columns[column_idx];
         column.activate_window(window);
-        self.activate_column(column_idx);
+
+        if self.free_scroll || window_free_scroll {
+            // Click / focus-follows-mouse / typing activation: change focus without scrolling.
+            self.activate_column_preserve_view(column_idx);
+        } else {
+            self.activate_column(column_idx);
+        }
 
         true
     }
@@ -3200,8 +3246,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Free-scroll mode: keep the projected position (with inertia), clamp to content
         // bounds, and update the active column without snapping the view to column edges.
-        // `free_scroll` is the Layout runtime flag (not Options) so toggles cannot re-snap.
-        if free_scroll {
+        // Runtime free-scroll (Layout flag threaded in + local mirror).
+        if free_scroll || self.free_scroll {
             return self.finish_view_offset_gesture_free(
                 current_view_offset,
                 target_view_offset,
@@ -3508,6 +3554,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         target_view_offset: f64,
         velocity: f64,
     ) -> bool {
+        // free-scroll-momentum scales fling distance and residual velocity (1.0 = default).
+        let momentum = self.options.layout.free_scroll_momentum.max(0.);
+        let target_view_offset =
+            current_view_offset + (target_view_offset - current_view_offset) * momentum;
+        let velocity = velocity * momentum;
+
         let active_col_x = self.column_x(self.active_column_idx);
         let mut target_view_pos = active_col_x + target_view_offset;
 

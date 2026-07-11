@@ -728,6 +728,21 @@ window-rule {
 }
 ```
 
+#### `free-scroll`
+
+When `true`, activating this window (click, focus-follows-mouse, app focus) does **not** scroll the view to fit the window. The viewport stays put; the window can remain partially or fully off-screen.
+
+This applies even when global `layout { free-scroll }` is off. Keyboard column-focus commands still scroll/fit as usual.
+
+```kdl
+// Keep terminals from yanking the viewport when they steal focus.
+window-rule {
+    match app-id=r#"^Alacritty$"#
+
+    free-scroll true
+}
+```
+
 #### `draw-border-with-background`
 
 Override whether the border and the focus ring draw with a background.

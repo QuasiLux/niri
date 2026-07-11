@@ -4638,6 +4638,11 @@ impl<W: LayoutElement> Layout<W> {
     /// Enable or disable free-scroll mode without re-snapping the viewport.
     pub fn set_free_scroll(&mut self, free_scroll: bool) {
         self.free_scroll = free_scroll;
+        // Mirror onto scrolling spaces so activate/update_config paths see it without
+        // going through Options::update_config (which would re-snap).
+        for ws in self.workspaces_mut() {
+            ws.set_free_scroll(free_scroll);
+        }
     }
 
     pub fn free_scroll(&self) -> bool {
