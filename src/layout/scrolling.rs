@@ -1454,8 +1454,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             };
 
             // We might need to move the view to ensure the resized window is still visible. But
-            // only do it when the view isn't frozen by an interactive resize or a view gesture.
-            if self.interactive_resize.is_none() && !self.view_offset.is_gesture() {
+            // only do it when the view isn't frozen by an interactive resize or a view gesture,
+            // and when free-scroll is off (a late window-configure event must not yank the user's
+            // manually-scrolled viewport back to a column edge).
+            if self.interactive_resize.is_none()
+                && !self.view_offset.is_gesture()
+                && !self.free_scroll
+            {
                 // Synchronize the horizontal view movement with the resize so that it looks nice.
                 // This is especially important for always-centered view.
                 let config = if ongoing_resize_anim {
@@ -3197,6 +3202,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         } else {
             1.
         };
+        // Hermes feel: apply sensitivity gain on top of the working-area mapping.
+        let norm_factor = norm_factor * SwipeTracker::sensitivity_gain();
         let pos = gesture.tracker.pos() * norm_factor;
         let raw_view_offset = pos + gesture.delta_from_tracker;
 
@@ -3316,6 +3323,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         } else {
             1.
         };
+        let norm_factor = norm_factor * SwipeTracker::sensitivity_gain();
         let velocity = gesture.tracker.velocity() * norm_factor;
         let pos = gesture.tracker.pos() * norm_factor;
         let current_view_offset = pos + gesture.delta_from_tracker;
