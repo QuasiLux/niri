@@ -10,6 +10,7 @@ layout {
     center-focused-column "never"
     always-center-single-column
     empty-workspace-above-first
+    // free-scroll
     default-column-display "tabbed"
     background-color "#003300"
     fullscreen-backdrop-color "#000000ff"
@@ -152,6 +153,27 @@ If set, niri will always add an empty workspace at the very start, in addition t
 ```kdl
 layout {
     empty-workspace-above-first
+}
+```
+
+### `free-scroll`
+
+If set, horizontal view gestures (trackpad three-finger swipe, <kbd>Mod</kbd> + middle-click drag, titlebar horizontal drag) end at the projected position **without snapping** to column left/right/center edges.
+
+Keyboard focus commands and other layout actions still bring the focused column into view as usual.
+
+You can also toggle this at runtime with the `toggle-free-scroll` action (default bind: <kbd>Mod</kbd><kbd>Shift</kbd><kbd>S</kbd>), or set it via IPC:
+
+```bash
+niri msg action toggle-free-scroll
+niri msg action set-free-scroll true
+```
+
+Turning free-scroll off does **not** re-snap the current viewport; the view stays where it is until the next focus change or normal (snapping) gesture end.
+
+```kdl
+layout {
+    free-scroll
 }
 ```
 
