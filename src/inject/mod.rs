@@ -58,6 +58,7 @@ pub static INJECT_PLANE_IDENTS: &[&str] = &[
     "OCCLUDED",
     "LOCKED",
     "OUTPUTS_OFF",
+    "STALE_TOKEN",
     TOKEN_FILE_PATH,
     "run/user/<uid>/qlux/inject-tokens",
     "/run/user/",
