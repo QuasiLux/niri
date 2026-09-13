@@ -456,6 +456,16 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             let casts = state.casts.casts.values().cloned().collect();
             Response::Casts(casts)
         }
+        Request::InjectPlaceholder => {
+            // Keep scaffold idents in the release ELF (thin LTO would
+            // otherwise drop unread `&str` payloads).
+            for ident in crate::inject::INJECT_PLANE_IDENTS {
+                std::hint::black_box(*ident);
+            }
+            return Err(String::from(
+                "inject plane pending v3 (HELLO/AUTH/CLICK/KEY/SCROLL/DRAG)",
+            ));
+        }
     };
 
     Ok(response)
