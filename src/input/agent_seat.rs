@@ -3,13 +3,11 @@
 //! This seat is created with [`SeatState::new_seat`] (no `wl_seat` global) and
 //! holds a [`PointerHandle`] plus a [`KeyboardHandle`]. Construction at
 //! compositor startup (`Niri::new`) is deferred to a follow-up card; this
-//! module only provides the typed handle and a `cfg(test)` constructor.
+//! module only provides the typed handle and constructor.
 
 use smithay::input::keyboard::KeyboardHandle;
 use smithay::input::pointer::PointerHandle;
-use smithay::input::{Seat, SeatHandler};
-#[cfg(test)]
-use smithay::input::SeatState;
+use smithay::input::{Seat, SeatHandler, SeatState};
 
 /// Seat name advertised via [`Seat::name`]. Lowercase; not a `wl_seat` global.
 pub const AGENT_SEAT_NAME: &str = "agent_seat";
@@ -30,7 +28,6 @@ impl<D: SeatHandler + 'static> AgentSeat<D> {
     /// Build pointer + keyboard capabilities on a new extra seat.
     ///
     /// Not wired from `Niri::new` this turn.
-    #[cfg(test)]
     pub fn create(seat_state: &mut SeatState<D>) -> Self {
         let mut seat = seat_state.new_seat(AGENT_SEAT_NAME);
         let pointer = seat.add_pointer();
