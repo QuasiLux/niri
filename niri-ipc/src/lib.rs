@@ -119,6 +119,8 @@ pub enum Request {
     OverviewState,
     /// Request information about screencasts.
     Casts,
+    /// Placeholder for the QuasiLux inject plane (wire format lands in v3).
+    InjectPlaceholder,
 }
 
 /// Reply from niri to client.
@@ -2214,5 +2216,13 @@ mod tests {
         );
         assert!("-".parse::<PositionChange>().is_err());
         assert!("10% ".parse::<PositionChange>().is_err());
+    }
+
+    #[test]
+    fn inject_placeholder_round_trip() {
+        let json = serde_json::to_string(&Request::InjectPlaceholder).unwrap();
+        assert_eq!(json, "\"InjectPlaceholder\"");
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Request::InjectPlaceholder));
     }
 }
