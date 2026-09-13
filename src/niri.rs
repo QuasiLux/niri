@@ -6664,6 +6664,12 @@ impl Niri {
         }
     }
 
+    /// Sentinel for DPMS-driven screen-off; v4.6 always false. Future
+    /// card wires a real listener.
+    pub fn outputs_off(&self) -> bool {
+        false
+    }
+
     pub fn lock(&mut self, confirmation: SessionLocker) {
         // Check if another client is in the process of locking.
         if matches!(
