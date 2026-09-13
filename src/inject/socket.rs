@@ -1,18 +1,27 @@
-//! Unix-socket listener skeleton and inject-client state machine.
+//! Unix-socket listener and inject-client state machine.
 //!
 //! Accepts connections on `$XDG_RUNTIME_DIR/qlux/inject.sock` (falling back to
-//! the process temp dir). Frame parsing lives in [`super::protocol`].
+//! the process temp dir). Parent directories are never created: bind is
+//! fail-closed if the runtime dir is missing. Frame parsing lives in
+//! [`super::protocol`].
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::env;
-use std::io;
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::{self, BufRead};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use async_channel::{Receiver, Sender};
 use calloop::io::Async;
 use futures_util::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use futures_util::AsyncBufReadExt;
+use futures_util::{select_biased, AsyncBufReadExt, FutureExt as _};
 use smithay::backend::input::{Axis, AxisSource, ButtonState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::calloop::generic::Generic;
@@ -29,10 +38,71 @@ use super::protocol::{
 /// grep can find it.
 pub const INJECT_SOCKET_SUFFIX: &str = "qlux/inject.sock";
 
-/// Bound inject-plane listener. Protocol handling is deferred to v3.
+/// Env var that gates compositor-side spawn. Default off (`"1"` to enable).
+pub const QLUX_INJECT_ENABLE: &str = "QLUX_INJECT_ENABLE";
+
+/// Env var overriding the socket suffix under `XDG_RUNTIME_DIR` (tests).
+pub const QLUX_INJECT_SOCKET_SUFFIX: &str = "QLUX_INJECT_SOCKET_SUFFIX";
+
+/// Unix group that owns `/run/user/<uid>/qlux/inject.sock` (mode 0660).
+pub const QLUX_INJECT_GROUP: &str = "qlux-inject";
+
+pub type ConnectionId = u64;
+
+/// In-memory `bot_id → token` map, reloaded from the token file.
+#[derive(Default, Debug)]
+pub struct TokenRegistry {
+    map: HashMap<String, String>,
+}
+
+impl TokenRegistry {
+    pub fn reload_from(&mut self, path: &Path) -> io::Result<()> {
+        let mut map = HashMap::new();
+        let file = match File::open(path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                self.map.clear();
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        for line in io::BufReader::new(file).lines() {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some((bot, tok)) = line.split_once(':') {
+                map.insert(bot.trim().to_string(), tok.trim().to_string());
+            }
+        }
+        self.map = map;
+        Ok(())
+    }
+
+    pub fn contains(&self, bot_id: &str) -> bool {
+        self.map.contains_key(bot_id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+pub(crate) struct ActiveConn {
+    bot_id: String,
+    close_tx: async_channel::Sender<()>,
+}
+
+/// Bound inject-plane listener.
 pub struct InjectServer {
     /// Filesystem path of the bound socket.
     pub socket_path: PathBuf,
+    /// For log lines; never empty.
+    pub socket_path_display: String,
+    pub(crate) token_registry: Arc<Mutex<TokenRegistry>>,
+    pub(crate) connections: Rc<RefCell<HashMap<ConnectionId, ActiveConn>>>,
+    next_id: Cell<u64>,
     _incoming: Sender<UnixStream>,
 }
 
@@ -44,14 +114,19 @@ impl InjectServer {
 
     /// Bind `socket_path` and push accepted streams onto a channel.
     ///
-    /// The event-loop callback only `accept()`s. It does not parse frames.
-    #[allow(dead_code)]
+    /// Fail-closed if the parent directory is missing: do not create it, do
+    /// not panic. The event-loop callback only `accept()`s.
     pub fn start<T: 'static>(
         event_loop: &LoopHandle<'static, T>,
         socket_path: PathBuf,
     ) -> anyhow::Result<(Self, Receiver<UnixStream>)> {
         if let Some(parent) = socket_path.parent() {
-            std::fs::create_dir_all(parent).ok();
+            if !parent.as_os_str().is_empty() && !parent.is_dir() {
+                anyhow::bail!(
+                    "inject runtime dir missing ({}); skipping bind",
+                    parent.display()
+                );
+            }
         }
         let _ = std::fs::remove_file(&socket_path);
 
@@ -59,6 +134,12 @@ impl InjectServer {
         listener
             .set_nonblocking(true)
             .context("error setting inject socket non-blocking")?;
+
+        if let Ok(meta) = std::fs::metadata(&socket_path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o660);
+            let _ = std::fs::set_permissions(&socket_path, perms);
+        }
 
         let (tx, rx) = async_channel::unbounded();
         let tx_source = tx.clone();
@@ -77,13 +158,101 @@ impl InjectServer {
             })
             .unwrap();
 
+        let mut socket_path_display = socket_path.to_string_lossy().into_owned();
+        if socket_path_display.is_empty() {
+            socket_path_display = INJECT_SOCKET_SUFFIX.to_string();
+        }
+
         Ok((
             Self {
                 socket_path,
+                socket_path_display,
+                token_registry: Arc::new(Mutex::new(TokenRegistry::default())),
+                connections: Rc::new(RefCell::new(HashMap::new())),
+                next_id: Cell::new(1),
                 _incoming: tx,
             },
             rx,
         ))
+    }
+
+    /// Register an accepted connection. `bot_id` may be empty until AUTH.
+    pub fn track_connection(&self, bot_id: String) -> (ConnectionId, Receiver<()>) {
+        let id = self.next_id.get();
+        self.next_id.set(id.wrapping_add(1));
+        let (close_tx, close_rx) = async_channel::bounded(1);
+        self.connections.borrow_mut().insert(
+            id,
+            ActiveConn {
+                bot_id,
+                close_tx,
+            },
+        );
+        (id, close_rx)
+    }
+
+    pub fn set_connection_bot_id(&self, id: ConnectionId, bot_id: String) {
+        if let Some(c) = self.connections.borrow_mut().get_mut(&id) {
+            c.bot_id = bot_id;
+        }
+    }
+
+    pub fn close_connection(&self, id: ConnectionId) -> bool {
+        if let Some(c) = self.connections.borrow_mut().remove(&id) {
+            c.close_tx.try_send(()).is_ok()
+        } else {
+            false
+        }
+    }
+
+    pub fn untrack_connection(&self, id: ConnectionId) {
+        self.connections.borrow_mut().remove(&id);
+    }
+
+    pub fn reload_tokens(&self, token_file: &Path) -> io::Result<()> {
+        self.token_registry.lock().unwrap().reload_from(token_file)
+    }
+
+    /// Re-read the token file and close connections whose `bot_id` is gone.
+    pub fn reload_and_close_stale(&self, token_file: &Path) -> io::Result<usize> {
+        let mut reg = self.token_registry.lock().unwrap();
+        reg.reload_from(token_file)?;
+        let stale: Vec<ConnectionId> = self
+            .connections
+            .borrow()
+            .iter()
+            .filter(|(_, c)| !c.bot_id.is_empty() && !reg.contains(&c.bot_id))
+            .map(|(id, _)| *id)
+            .collect();
+        drop(reg);
+        let mut conns = self.connections.borrow_mut();
+        let mut closed = 0;
+        for id in stale {
+            if let Some(c) = conns.remove(&id) {
+                if c.close_tx.try_send(()).is_ok() {
+                    closed += 1;
+                }
+            }
+        }
+        Ok(closed)
+    }
+}
+
+/// Default-off spawn gate used by `Niri::new`.
+pub fn inject_spawn_enabled() -> bool {
+    inject_spawn_enabled_from(env::var_os(QLUX_INJECT_ENABLE).as_deref())
+}
+
+pub fn inject_spawn_enabled_from(val: Option<&OsStr>) -> bool {
+    val == Some(OsStr::new("1"))
+}
+
+/// `$XDG_RUNTIME_DIR` + [`INJECT_SOCKET_SUFFIX`], honoring [`QLUX_INJECT_SOCKET_SUFFIX`].
+pub fn resolve_inject_socket_path() -> PathBuf {
+    let runtime = runtime_dir();
+    match env::var_os(QLUX_INJECT_SOCKET_SUFFIX) {
+        Some(suffix) => runtime.join(suffix),
+        None => runtime.join(INJECT_SOCKET_SUFFIX),
     }
 }
 
@@ -91,6 +260,41 @@ fn runtime_dir() -> PathBuf {
     env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(env::temp_dir)
+}
+
+/// Look up the `qlux-inject` group. `None` if absent (fail-closed, no panic).
+pub fn lookup_inject_group_gid() -> Option<libc::gid_t> {
+    let cname = std::ffi::CString::new(QLUX_INJECT_GROUP).ok()?;
+    let gptr = unsafe { libc::getgrnam(cname.as_ptr()) };
+    if gptr.is_null() {
+        None
+    } else {
+        Some(unsafe { (*gptr).gr_gid })
+    }
+}
+
+/// `chown` group + `chmod 0660` on the bound socket. Failures are logged, not fatal.
+pub fn apply_inject_socket_ownership(path: &Path, gid: libc::gid_t) {
+    use std::os::unix::ffi::OsStrExt;
+
+    let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        warn!("inject socket path is not a valid CString: {}", path.display());
+        return;
+    };
+    let rc = unsafe { libc::chown(cpath.as_ptr(), libc::uid_t::MAX, gid) };
+    if rc != 0 {
+        warn!(
+            "failed to chown inject socket to {QLUX_INJECT_GROUP}: {}",
+            io::Error::last_os_error()
+        );
+    }
+    let rc = unsafe { libc::chmod(cpath.as_ptr(), 0o660) };
+    if rc != 0 {
+        warn!(
+            "failed to chmod inject socket to 0660: {}",
+            io::Error::last_os_error()
+        );
+    }
 }
 
 /// Linux `BTN_LEFT` from `linux/input-event-codes.h`.
@@ -103,20 +307,38 @@ enum ClientPhase<F> {
     Dispatch { focus: F },
 }
 
+enum DispatchOne {
+    Closed,
+    Eof,
+    Frame(Result<Frame, FrameError>),
+}
+
 /// Drive HELLO → AUTH → BIND → dispatch on one accepted inject stream.
 pub async fn handle_inject_client<H: InjectHarness>(
     harness: &mut H,
     stream: Async<'static, UnixStream>,
+) -> anyhow::Result<()> {
+    let (keep_tx, close_rx) = async_channel::bounded(1);
+    let result = handle_inject_client_with_close(harness, stream, close_rx).await;
+    drop(keep_tx);
+    result
+}
+
+/// Like [`handle_inject_client`], but exit when `close_rx` fires (token rotation).
+pub async fn handle_inject_client_with_close<H: InjectHarness>(
+    harness: &mut H,
+    stream: Async<'static, UnixStream>,
+    close_rx: async_channel::Receiver<()>,
 ) -> anyhow::Result<()> {
     let (read, mut write) = stream.split();
     let mut read = BufReader::new(read);
     let mut phase = ClientPhase::Greeting;
 
     loop {
-        let frame = match read_frame(&mut read).await {
-            Ok(None) => return Ok(()),
-            Ok(Some(Ok(frame))) => frame,
-            Ok(Some(Err(err))) => {
+        let frame = match dispatch_one(&mut read, &close_rx).await {
+            Ok(DispatchOne::Closed) | Ok(DispatchOne::Eof) => return Ok(()),
+            Ok(DispatchOne::Frame(Ok(frame))) => frame,
+            Ok(DispatchOne::Frame(Err(err))) => {
                 write_reply(&mut write, &Reply::FrameErr { code: err.code() }).await?;
                 if matches!(err, FrameError::TooBig) {
                     harness.report_permanent_error(ERR_TOO_BIG);
@@ -246,6 +468,23 @@ pub async fn handle_inject_client<H: InjectHarness>(
                 ClientPhase::Dispatch { focus }
             }
         };
+    }
+}
+
+async fn dispatch_one<R>(
+    read: &mut BufReader<R>,
+    close_rx: &async_channel::Receiver<()>,
+) -> io::Result<DispatchOne>
+where
+    R: futures_util::AsyncRead + Unpin,
+{
+    select_biased! {
+        _ = close_rx.recv().fuse() => Ok(DispatchOne::Closed),
+        result = read_frame(read).fuse() => match result {
+            Ok(None) => Ok(DispatchOne::Eof),
+            Ok(Some(frame)) => Ok(DispatchOne::Frame(frame)),
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -485,9 +724,21 @@ fn pointer_drag<H: InjectHarness>(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use smithay::reexports::calloop::EventLoop;
 
     use super::*;
+
+    fn unique_suffix(tag: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("qlux-inject-{tag}-{}-{nanos}", std::process::id())
+    }
 
     #[test]
     fn default_path_and_bind_smoke() {
@@ -499,18 +750,77 @@ mod tests {
         );
 
         let dir = env::temp_dir();
-        let sock = dir.join(format!(
-            "qlux-inject-smoke-{}-{}.sock",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
+        let sock = dir.join(format!("{}.sock", unique_suffix("smoke")));
         let _ = std::fs::remove_file(&sock);
         let listener = UnixListener::bind(&sock).expect("bind smoke");
         assert!(Path::new(&sock).exists());
         drop(listener);
         let _ = std::fs::remove_file(&sock);
+    }
+
+    #[test]
+    fn spawn_gate_respected() {
+        assert!(!inject_spawn_enabled_from(None));
+        assert!(!inject_spawn_enabled_from(Some(OsStr::new("0"))));
+        assert!(!inject_spawn_enabled_from(Some(OsStr::new(""))));
+        assert!(!inject_spawn_enabled_from(Some(OsStr::new("true"))));
+        assert!(inject_spawn_enabled_from(Some(OsStr::new("1"))));
+        // Production helper is the same predicate over QLUX_INJECT_ENABLE.
+        let _ = QLUX_INJECT_ENABLE;
+        let _ = inject_spawn_enabled();
+    }
+
+    #[test]
+    fn socket_bind_fail_closed_when_dir_missing() {
+        let event_loop = EventLoop::<()>::try_new().expect("calloop");
+        let missing = env::temp_dir().join(unique_suffix("missing-dir"));
+        assert!(!missing.exists());
+        let sock = missing.join("qlux").join("inject.sock");
+        let err = match InjectServer::start(&event_loop.handle(), sock) {
+            Err(err) => err,
+            Ok(_) => panic!("bind must fail-closed when parent dir is missing"),
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("inject runtime dir missing"),
+            "unexpected error: {msg}"
+        );
+        assert!(!missing.exists(), "must not create the missing parent dir");
+        drop(event_loop);
+    }
+
+    #[test]
+    fn token_reload_closes_stale_connections() {
+        let event_loop = EventLoop::<()>::try_new().expect("calloop");
+        let dir = env::temp_dir().join(unique_suffix("reload"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("inject.sock");
+        let (server, _rx) =
+            InjectServer::start(&event_loop.handle(), sock.clone()).expect("bind reload test");
+
+        let tokens = dir.join("inject-tokens");
+        std::fs::write(&tokens, "bot-a:AAA\nbot-b:BBB\n").unwrap();
+        server.reload_tokens(&tokens).unwrap();
+        assert!(server.token_registry.lock().unwrap().contains("bot-a"));
+
+        let (_id_a, rx_a) = server.track_connection("bot-a".into());
+        let (_id_b, rx_b) = server.track_connection("bot-b".into());
+
+        std::fs::write(&tokens, "bot-b:BBB\n").unwrap();
+        let closed = server.reload_and_close_stale(&tokens).unwrap();
+        assert_eq!(closed, 1);
+        assert!(rx_a.try_recv().is_ok(), "stale bot-a must be closed");
+        assert!(
+            rx_b.try_recv().is_err(),
+            "still-valid bot-b must stay open"
+        );
+        assert!(!server.token_registry.lock().unwrap().contains("bot-a"));
+        assert!(server.token_registry.lock().unwrap().contains("bot-b"));
+
+        drop(server);
+        drop(event_loop);
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_file(&tokens);
+        let _ = std::fs::remove_dir(&dir);
     }
 }
