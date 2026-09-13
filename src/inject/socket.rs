@@ -31,7 +31,7 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use super::protocol::{
     parse_frame, validate_token, Frame, FrameError, InjectHarness, Reply, TokenError, ERR_BAD_TOKEN,
     ERR_BAD_WINDOW, ERR_IO, ERR_LOCKED, ERR_NO_TOKEN_FILE, ERR_OCCLUDED, ERR_OUTPUTS_OFF,
-    ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN, OPC_AUTH,
+    ERR_STALE_TOKEN, ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN, OPC_AUTH,
 };
 
 /// Path suffix under the runtime dir. Kept as a string so the release ELF
@@ -333,10 +333,27 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
     let (read, mut write) = stream.split();
     let mut read = BufReader::new(read);
     let mut phase = ClientPhase::Greeting;
+    let mut bot_id = String::new();
 
     loop {
         let frame = match dispatch_one(&mut read, &close_rx).await {
-            Ok(DispatchOne::Closed) | Ok(DispatchOne::Eof) => return Ok(()),
+            Ok(DispatchOne::Closed) => {
+                // Token rotation: authenticated connections get a wire-level
+                // STALE_TOKEN reply. Greeting/AwaitAuth may close silently.
+                if matches!(phase, ClientPhase::Dispatch { .. } | ClientPhase::AwaitBind)
+                    && !bot_id.is_empty()
+                {
+                    write_reply(
+                        &mut write,
+                        &Reply::DispatchErr {
+                            code: ERR_STALE_TOKEN,
+                        },
+                    )
+                    .await?;
+                }
+                return Ok(());
+            }
+            Ok(DispatchOne::Eof) => return Ok(()),
             Ok(DispatchOne::Frame(Ok(frame))) => frame,
             Ok(DispatchOne::Frame(Err(err))) => {
                 write_reply(&mut write, &Reply::FrameErr { code: err.code() }).await?;
@@ -366,8 +383,9 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
             }
             (ClientPhase::AwaitAuth { retries }, Frame::Auth(token)) => {
                 match validate_token(&token, harness.token_file_path()) {
-                    Ok(bot_id) => {
-                        write_reply(&mut write, &Reply::AuthOk { bot_id }).await?;
+                    Ok(id) => {
+                        write_reply(&mut write, &Reply::AuthOk { bot_id: id.clone() }).await?;
+                        bot_id = id;
                         ClientPhase::AwaitBind
                     }
                     Err(TokenError::NoFile) => {
@@ -725,10 +743,31 @@ fn pointer_drag<H: InjectHarness>(
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
-    use std::path::Path;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::future::Future;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::path::{Path, PathBuf};
+    use std::task::{Context, Poll};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    use smithay::backend::input::KeyState;
+    use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
+    use smithay::input::pointer::{
+        AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
+        GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
+        GestureSwipeEndEvent, GestureSwipeUpdateEvent, MotionEvent, PointerTarget,
+        RelativeMotionEvent,
+    };
+    use smithay::input::touch::{
+        DownEvent, FrameMarker, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent,
+        TouchTarget, UpEvent,
+    };
+    use smithay::input::{Seat, SeatHandler, SeatState};
     use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+    use smithay::utils::{IsAlive, Serial};
+
+    use crate::inject::AgentSeat;
 
     use super::*;
 
@@ -738,6 +777,216 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         format!("qlux-inject-{tag}-{}-{nanos}", std::process::id())
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Focus;
+
+    impl IsAlive for Focus {
+        fn alive(&self) -> bool {
+            true
+        }
+    }
+
+    impl PointerTarget<ReloadHarness> for Focus {
+        fn enter(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &MotionEvent) {
+        }
+        fn motion(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &MotionEvent) {
+        }
+        fn relative_motion(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &RelativeMotionEvent,
+        ) {
+        }
+        fn button(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &ButtonEvent) {}
+        fn axis(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _frame: AxisFrame) {}
+        fn frame(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness) {}
+        fn leave(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _serial: Serial,
+            _time: u32,
+        ) {
+        }
+        fn gesture_swipe_begin(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &GestureSwipeBeginEvent,
+        ) {
+        }
+        fn gesture_swipe_update(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &GestureSwipeUpdateEvent,
+        ) {
+        }
+        fn gesture_swipe_end(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &GestureSwipeEndEvent,
+        ) {
+        }
+        fn gesture_pinch_begin(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &GesturePinchBeginEvent,
+        ) {
+        }
+        fn gesture_pinch_update(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &GesturePinchUpdateEvent,
+        ) {
+        }
+        fn gesture_pinch_end(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &GesturePinchEndEvent,
+        ) {
+        }
+        fn gesture_hold_begin(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &GestureHoldBeginEvent,
+        ) {
+        }
+        fn gesture_hold_end(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &GestureHoldEndEvent,
+        ) {
+        }
+    }
+
+    impl KeyboardTarget<ReloadHarness> for Focus {
+        fn enter(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _keys: Vec<KeysymHandle<'_>>,
+            _serial: Serial,
+        ) {
+        }
+        fn leave(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _serial: Serial) {}
+        fn key(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _key: KeysymHandle<'_>,
+            _state: KeyState,
+            _serial: Serial,
+            _time: u32,
+        ) {
+        }
+        fn modifiers(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _modifiers: ModifiersState,
+            _serial: Serial,
+        ) {
+        }
+    }
+
+    impl TouchTarget<ReloadHarness> for Focus {
+        fn down(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &DownEvent) {}
+        fn up(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &UpEvent) {}
+        fn motion(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &TouchMotionEvent,
+        ) {
+        }
+        fn frame(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _marker: FrameMarker) {}
+        fn cancel(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _marker: FrameMarker) {}
+        fn shape(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &ShapeEvent) {}
+        fn orientation(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &OrientationEvent,
+        ) {
+        }
+        fn last_frame(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+        ) -> Option<FrameMarker> {
+            None
+        }
+    }
+
+    struct ReloadHarness {
+        seat_state: SeatState<Self>,
+        agent_seat: AgentSeat<Self>,
+        token_path: PathBuf,
+    }
+
+    impl ReloadHarness {
+        fn new(token_path: PathBuf) -> Self {
+            let mut seat_state = SeatState::new();
+            let agent_seat = AgentSeat::create(&mut seat_state);
+            ReloadHarness {
+                seat_state,
+                agent_seat,
+                token_path,
+            }
+        }
+    }
+
+    impl SeatHandler for ReloadHarness {
+        type KeyboardFocus = Focus;
+        type PointerFocus = Focus;
+        type TouchFocus = Focus;
+
+        fn seat_state(&mut self) -> &mut SeatState<Self> {
+            &mut self.seat_state
+        }
+    }
+
+    impl InjectHarness for ReloadHarness {
+        type AgentState = Self;
+
+        fn agent_seat(&mut self) -> &mut AgentSeat<Self> {
+            &mut self.agent_seat
+        }
+
+        fn agent_state(&mut self) -> &mut Self {
+            self
+        }
+
+        fn resolve_window(&mut self, _window_id: u64) -> Option<WlSurface> {
+            None
+        }
+
+        fn token_file_path(&self) -> &Path {
+            &self.token_path
+        }
+    }
+
+    fn drain_client(client: &mut UnixStream, buf: &mut Vec<u8>) {
+        let mut tmp = [0u8; 256];
+        loop {
+            match client.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
     }
 
     #[test]
@@ -791,7 +1040,7 @@ mod tests {
 
     #[test]
     fn token_reload_closes_stale_connections() {
-        let event_loop = EventLoop::<()>::try_new().expect("calloop");
+        let mut event_loop = EventLoop::<()>::try_new().expect("calloop");
         let dir = env::temp_dir().join(unique_suffix("reload"));
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("inject.sock");
@@ -803,13 +1052,53 @@ mod tests {
         server.reload_tokens(&tokens).unwrap();
         assert!(server.token_registry.lock().unwrap().contains("bot-a"));
 
-        let (_id_a, rx_a) = server.track_connection("bot-a".into());
+        let (id_a, rx_a) = server.track_connection(String::new());
+        server.set_connection_bot_id(id_a, "bot-a".into());
         let (_id_b, rx_b) = server.track_connection("bot-b".into());
 
+        let (mut client, server_stream) = UnixStream::pair().expect("inject socket pair");
+        client.set_nonblocking(true).expect("client nonblocking");
+        let async_stream = event_loop
+            .handle()
+            .adapt_io(server_stream)
+            .expect("adapt inject stream");
+
+        let mut harness = ReloadHarness::new(tokens.clone());
+        let mut fut = std::pin::pin!(handle_inject_client_with_close(
+            &mut harness,
+            async_stream,
+            rx_a,
+        ));
+
+        client
+            .write_all(b"HELLO\nAUTH\nAAA\n")
+            .expect("write hello/auth");
+
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        let start = Instant::now();
+        let mut replies = Vec::new();
+        loop {
+            if fut.as_mut().poll(&mut cx).is_ready() {
+                panic!("handler returned before token rotation");
+            }
+            event_loop
+                .dispatch(Some(Duration::from_millis(20)), &mut ())
+                .expect("dispatch inject event loop");
+            drain_client(&mut client, &mut replies);
+            let text = String::from_utf8_lossy(&replies);
+            if text.contains("AUTH OK bot-a\n") {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(8) {
+                panic!("timeout waiting for AUTH OK, got: {text}");
+            }
+        }
+
+        client.write_all(b"CLICK 0 0\n").expect("write click frame");
         std::fs::write(&tokens, "bot-b:BBB\n").unwrap();
         let closed = server.reload_and_close_stale(&tokens).unwrap();
         assert_eq!(closed, 1);
-        assert!(rx_a.try_recv().is_ok(), "stale bot-a must be closed");
         assert!(
             rx_b.try_recv().is_err(),
             "still-valid bot-b must stay open"
@@ -817,10 +1106,93 @@ mod tests {
         assert!(!server.token_registry.lock().unwrap().contains("bot-a"));
         assert!(server.token_registry.lock().unwrap().contains("bot-b"));
 
+        loop {
+            match fut.as_mut().poll(&mut cx) {
+                Poll::Ready(result) => {
+                    result.expect("handle_inject_client_with_close");
+                    break;
+                }
+                Poll::Pending => {
+                    event_loop
+                        .dispatch(Some(Duration::from_millis(20)), &mut ())
+                        .expect("dispatch inject event loop");
+                }
+            }
+            if start.elapsed() > Duration::from_secs(8) {
+                panic!("inject protocol future timed out");
+            }
+        }
+        drain_client(&mut client, &mut replies);
+        let text = String::from_utf8_lossy(&replies);
+        assert!(
+            text.contains("DISPATCH ERR STALE_TOKEN\n"),
+            "stale connection must get a wire reply, got: {text}"
+        );
+
         drop(server);
         drop(event_loop);
         let _ = std::fs::remove_file(&sock);
         let _ = std::fs::remove_file(&tokens);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn token_reload_keeps_fresh_connections_alive() {
+        let event_loop = EventLoop::<()>::try_new().expect("calloop");
+        let dir = env::temp_dir().join(unique_suffix("reload-fresh"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("inject.sock");
+        let (server, _rx) =
+            InjectServer::start(&event_loop.handle(), sock.clone()).expect("bind fresh test");
+
+        let tokens = dir.join("inject-tokens");
+        std::fs::write(&tokens, "bot-a:AAA\nbot-b:BBB\n").unwrap();
+        server.reload_tokens(&tokens).unwrap();
+
+        let (_id_a, rx_a) = server.track_connection("bot-a".into());
+
+        std::fs::write(&tokens, "bot-a:AAA\nbot-b:BBB\n").unwrap();
+        let closed = server.reload_and_close_stale(&tokens).unwrap();
+        assert_eq!(closed, 0);
+        assert!(
+            rx_a.try_recv().is_err(),
+            "still-valid bot-a must stay open after identical reload"
+        );
+        assert!(server.token_registry.lock().unwrap().contains("bot-a"));
+        assert!(server.token_registry.lock().unwrap().contains("bot-b"));
+
+        drop(server);
+        drop(event_loop);
+        let _ = std::fs::remove_file(&sock);
+        let _ = std::fs::remove_file(&tokens);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn token_reload_handles_missing_file() {
+        let event_loop = EventLoop::<()>::try_new().expect("calloop");
+        let dir = env::temp_dir().join(unique_suffix("reload-missing"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("inject.sock");
+        let (server, _rx) =
+            InjectServer::start(&event_loop.handle(), sock.clone()).expect("bind missing test");
+
+        let tokens = dir.join("inject-tokens");
+        std::fs::write(&tokens, "bot-a:AAA\n").unwrap();
+        server.reload_tokens(&tokens).unwrap();
+        assert!(server.token_registry.lock().unwrap().contains("bot-a"));
+
+        std::fs::remove_file(&tokens).unwrap();
+        let closed = server.reload_and_close_stale(&tokens).unwrap();
+        assert_eq!(closed, 0);
+        assert!(
+            server.token_registry.lock().unwrap().is_empty(),
+            "missing token file must clear the registry"
+        );
+
+        drop(server);
+        drop(event_loop);
+        let _ = std::fs::remove_file(&sock);
         let _ = std::fs::remove_dir(&dir);
     }
 }
