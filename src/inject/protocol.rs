@@ -6,6 +6,7 @@
 
 use std::fs::File;
 use std::io::{self, BufRead};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use smithay::input::SeatHandler;
@@ -50,6 +51,10 @@ pub const TOKEN_FILE_PATH: &str = "/run/user/<uid>/qlux/inject-tokens";
 /// Resolve [`TOKEN_FILE_PATH`] for the current user (`libc::getuid()`).
 pub fn token_file_path() -> PathBuf {
     let uid = unsafe { libc::getuid() };
+    // `handle_inject_client` is generic and not yet monomorphized in the niri
+    // binary, so LTO would otherwise drop `validate_token` (and its warn-only
+    // file-mode check). Keep the function live without changing the path.
+    let _ = std::hint::black_box(validate_token as fn(&str, &Path) -> Result<String, TokenError>);
     PathBuf::from(TOKEN_FILE_PATH.replace("<uid>", &uid.to_string()))
 }
 
@@ -270,6 +275,18 @@ pub fn validate_token(token_hex: &str, path: &Path) -> Result<String, TokenError
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(TokenError::NoFile),
         Err(e) => return Err(TokenError::Io(e)),
     };
+    match std::fs::metadata(path).map(|m| m.permissions().mode() & 0o777) {
+        Ok(0o600) => {}
+        Ok(mode) => {
+            tracing::warn!(
+                "inject tokens file mode is {:o}, expected 0600; continuing with permissive mode",
+                mode
+            );
+        }
+        Err(err) => {
+            tracing::warn!("could not stat inject tokens file: {}; continuing", err);
+        }
+    }
     for line in io::BufReader::new(file).lines() {
         let line = line.map_err(TokenError::Io)?;
         let line = line.trim();
