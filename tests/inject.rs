@@ -4,6 +4,7 @@
 //! Unix-socket pair. The agent seat is a real Smithay `PointerHandle`; the
 //! user-seat proxy fields on the harness must stay untouched.
 
+use std::cell::RefCell;
 use std::fs;
 use std::future::Future;
 use std::io::{Read, Write};
@@ -108,6 +109,8 @@ struct Harness {
     known_window: u64,
     transient_errors: Vec<String>,
     permanent_errors: Vec<String>,
+    lock_override: RefCell<bool>,
+    outputs_off_override: RefCell<bool>,
     _surface_keep: SurfaceKeep,
 }
 
@@ -127,6 +130,8 @@ impl Harness {
             known_window: KNOWN_WINDOW,
             transient_errors: Vec::new(),
             permanent_errors: Vec::new(),
+            lock_override: RefCell::new(false),
+            outputs_off_override: RefCell::new(false),
             _surface_keep: keep,
         }
     }
@@ -325,6 +330,14 @@ impl InjectHarness for Harness {
         let _ = xkb_name;
         true
     }
+
+    fn is_locked(&self) -> bool {
+        *self.lock_override.borrow()
+    }
+
+    fn outputs_off(&self) -> bool {
+        *self.outputs_off_override.borrow()
+    }
 }
 
 fn token_file() -> PathBuf {
@@ -504,4 +517,54 @@ fn key_dispatch_does_not_mutate_user_focus() {
     assert_eq!(harness.user_focused_window, USER_FOCUS);
     assert_eq!(harness.user_scroll_offset, Point::from(USER_SCROLL));
     assert_user_seat_untouched(&harness);
+}
+
+#[test]
+fn lock_screen_refuses_post_bind_click() {
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    *harness.lock_override.borrow_mut() = true;
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("DISPATCH ERR LOCKED\n"), "{replies:?}");
+    assert!(!replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert!(replies.ends_with("DISPATCH ERR LOCKED\n"), "{replies:?}");
+    assert_eq!(harness.surface_target.lock().unwrap().motion_count, 0);
+    assert_user_seat_untouched(&harness);
+}
+
+#[test]
+fn outputs_off_refuses_post_bind_click() {
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    *harness.outputs_off_override.borrow_mut() = true;
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(replies.contains("DISPATCH ERR OUTPUTS_OFF\n"), "{replies:?}");
+    assert!(!replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert!(replies.ends_with("DISPATCH ERR OUTPUTS_OFF\n"), "{replies:?}");
+    assert_eq!(harness.surface_target.lock().unwrap().motion_count, 0);
+    assert_user_seat_untouched(&harness);
+}
+
+#[test]
+fn lock_screen_does_not_refuse_pre_bind() {
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    *harness.lock_override.borrow_mut() = true;
+    let req = format!("{}\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(!replies.contains("DISPATCH ERR"), "{replies:?}");
+    assert_eq!(harness.permanent_errors, Vec::<String>::new());
 }
