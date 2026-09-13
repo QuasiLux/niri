@@ -40,6 +40,7 @@ pub const ERR_NOT_BOUND: &str = "NOT_BOUND";
 pub const ERR_OCCLUDED: &str = "OCCLUDED";
 pub const ERR_LOCKED: &str = "LOCKED";
 pub const ERR_OUTPUTS_OFF: &str = "OUTPUTS_OFF";
+pub const ERR_STALE_TOKEN: &str = "STALE_TOKEN";
 
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
 
