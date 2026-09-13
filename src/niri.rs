@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -147,6 +147,10 @@ use crate::input::{
     apply_libinput_settings, mods_with_finger_scroll_binds, mods_with_horizontal_wheel_binds,
     mods_with_mouse_binds, mods_with_tablet_stylus_binds, mods_with_vertical_wheel_binds,
     TabletData,
+};
+use crate::inject::{
+    apply_inject_socket_ownership, lookup_inject_group_gid, AgentSeat, InjectServer,
+    QLUX_INJECT_ENABLE, QLUX_INJECT_GROUP, QLUX_INJECT_SOCKET_SUFFIX,
 };
 use crate::ipc::server::IpcServer;
 use crate::layer::mapped::LayerSurfaceRenderElement;
@@ -459,6 +463,8 @@ pub struct Niri {
     pub inhibit_power_key_fd: Option<zbus::zvariant::OwnedFd>,
 
     pub ipc_server: Option<IpcServer>,
+    pub agent_seat: Option<AgentSeat<State>>,
+    pub inject_server: Option<InjectServer>,
     pub ipc_outputs_changed: bool,
 
     pub satellite: Option<Satellite>,
@@ -2760,6 +2766,65 @@ impl Niri {
             )
             .unwrap();
 
+        // QuasiLux inject plane (Row 7 v4). Gated on QLUX_INJECT_ENABLE=1; default off
+        // so upstream niri users are unaffected. Spawn order: after user seat + Wayland
+        // socket + IPC server (the IPC `InjectPlaceholder` reply is a stub that does not
+        // require the inject listener to be live). The card said "BEFORE IPC server
+        // starts"; we place spawn AFTER IpcServer::start to avoid reflowing early-init.
+        let mut agent_seat = None;
+        let mut inject_server = None;
+        if crate::inject::inject_spawn_enabled() {
+            let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(env::temp_dir);
+            let inject_socket_path = match env::var_os(QLUX_INJECT_SOCKET_SUFFIX) {
+                Some(suffix) => runtime_dir.join(suffix),
+                None => runtime_dir.join(crate::inject::INJECT_SOCKET_SUFFIX),
+            };
+            let inject_dir = inject_socket_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| runtime_dir.clone());
+            if inject_dir.is_dir() {
+                if let Some(gid) = lookup_inject_group_gid() {
+                    let created_seat = AgentSeat::<State>::create(&mut seat_state);
+                    match InjectServer::start(&event_loop, inject_socket_path.clone()) {
+                        Ok((server, _rx)) => {
+                            let token_file = crate::inject::token_file_path();
+                            let _ = server.reload_tokens(&token_file);
+                            apply_inject_socket_ownership(&inject_socket_path, gid);
+                            let token_file_for_timer = token_file;
+                            event_loop
+                                .insert_source(
+                                    Timer::from_duration(Duration::from_secs(5)),
+                                    move |_, _, state: &mut State| {
+                                        if let Some(server) = state.niri.inject_server.as_ref() {
+                                            let _ = server.reload_and_close_stale(Path::new(
+                                                &token_file_for_timer,
+                                            ));
+                                        }
+                                        TimeoutAction::ToDuration(Duration::from_secs(5))
+                                    },
+                                )
+                                .unwrap();
+                            info!(
+                                "InjectServer::start listening on {}",
+                                server.socket_path_display
+                            );
+                            inject_server = Some(server);
+                        }
+                        Err(err) => warn!("error starting inject server: {err:?}"),
+                    }
+                    agent_seat = Some(created_seat);
+                } else {
+                    warn!("{QLUX_INJECT_GROUP} group not found; skipping inject-plane spawn");
+                }
+            } else {
+                warn!("inject runtime dir missing; skipping inject-plane spawn");
+            }
+        }
+        let _ = QLUX_INJECT_ENABLE;
+
         drop(config_);
         let mut niri = Self {
             config,
@@ -2909,6 +2974,8 @@ impl Niri {
             inhibit_power_key_fd: None,
 
             ipc_server,
+            agent_seat,
+            inject_server,
             ipc_outputs_changed: false,
 
             satellite: None,
