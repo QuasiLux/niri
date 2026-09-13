@@ -47,6 +47,7 @@ struct TargetRecord {
     motion_count: u32,
     last_motion: Option<Point<f64, Logical>>,
     key_count: u32,
+    axis_count: u32,
     motions: Vec<Point<f64, Logical>>,
 }
 
@@ -163,7 +164,9 @@ impl PointerTarget<Harness> for Focus {
     ) {
     }
     fn button(&self, _seat: &Seat<Harness>, _data: &mut Harness, _event: &ButtonEvent) {}
-    fn axis(&self, _seat: &Seat<Harness>, _data: &mut Harness, _frame: AxisFrame) {}
+    fn axis(&self, _seat: &Seat<Harness>, data: &mut Harness, _frame: AxisFrame) {
+        data.surface_target.lock().unwrap().axis_count += 1;
+    }
     fn frame(&self, _seat: &Seat<Harness>, _data: &mut Harness) {}
     fn leave(&self, _seat: &Seat<Harness>, _data: &mut Harness, _serial: Serial, _time: u32) {}
     fn gesture_swipe_begin(
@@ -316,6 +319,12 @@ impl InjectHarness for Harness {
     fn token_file_path(&self) -> &Path {
         &self.token_path
     }
+
+    fn key_press(&mut self, xkb_name: &str) -> bool {
+        self.surface_target.lock().unwrap().key_count += 1;
+        let _ = xkb_name;
+        true
+    }
 }
 
 fn token_file() -> PathBuf {
@@ -463,5 +472,36 @@ fn drag_synthesizes_motion_button_motion_button() {
     assert_eq!(rec.motions[0], Point::from((10.0, 20.0)));
     assert_eq!(rec.motions[1], Point::from((30.0, 40.0)));
     drop(rec);
+    assert_user_seat_untouched(&harness);
+}
+
+#[test]
+fn scroll_does_not_consume_user_seat_offset() {
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    let scroll_before = harness.user_scroll_offset;
+    let req = format!("{}BIND {KNOWN_WINDOW}\nSCROLL 10 20\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert_eq!(harness.user_scroll_offset, scroll_before);
+    assert_eq!(harness.user_focused_window, USER_FOCUS);
+    assert_eq!(harness.surface_target.lock().unwrap().axis_count, 1);
+    assert_user_seat_untouched(&harness);
+}
+
+#[test]
+fn key_dispatch_does_not_mutate_user_focus() {
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    let req = format!("{}BIND {KNOWN_WINDOW}\nKEY XF86XK_AudioMute\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert_eq!(harness.surface_target.lock().unwrap().key_count, 1);
+    assert_eq!(harness.user_focused_window, USER_FOCUS);
+    assert_eq!(harness.user_scroll_offset, Point::from(USER_SCROLL));
     assert_user_seat_untouched(&harness);
 }
