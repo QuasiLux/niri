@@ -13,6 +13,7 @@ pub mod frame_clock;
 pub mod handlers;
 pub mod input;
 pub mod inject;
+pub mod inject_e2e;
 pub mod ipc;
 pub mod layer;
 pub mod layout;
