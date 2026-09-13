@@ -6,7 +6,7 @@
 
 use std::fs::File;
 use std::io::{self, BufRead};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use smithay::input::SeatHandler;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -43,8 +43,14 @@ pub const ERR_OUTPUTS_OFF: &str = "OUTPUTS_OFF";
 
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
 
-/// Literal placeholder path. Production resolution is owned by the spawn card.
+/// Literal placeholder path. Production resolution substitutes `<uid>` via [`token_file_path`].
 pub const TOKEN_FILE_PATH: &str = "/run/user/<uid>/qlux/inject-tokens";
+
+/// Resolve [`TOKEN_FILE_PATH`] for the current user (`libc::getuid()`).
+pub fn token_file_path() -> PathBuf {
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(TOKEN_FILE_PATH.replace("<uid>", &uid.to_string()))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
