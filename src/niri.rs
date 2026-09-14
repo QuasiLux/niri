@@ -164,6 +164,7 @@ use crate::niri_render_elements;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
 use crate::protocols::gamma_control::GammaControlManagerState;
+use crate::protocols::output_power::OutputPowerManagerState;
 use crate::protocols::mutter_x11_interop::MutterX11InteropManagerState;
 use crate::protocols::output_management::OutputManagementManagerState;
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer, ScreencopyManagerState};
@@ -346,6 +347,7 @@ pub struct Niri {
     pub presentation_state: PresentationState,
     pub security_context_state: SecurityContextState,
     pub gamma_control_manager_state: GammaControlManagerState,
+    pub output_power_manager_state: OutputPowerManagerState,
     pub activation_state: XdgActivationState,
     pub mutter_x11_interop_state: MutterX11InteropManagerState,
 
@@ -2546,6 +2548,12 @@ impl OutputPowerStateListener {
         self.wired.store(any_off, Ordering::SeqCst);
     }
 
+    /// Missing outputs are treated as on (DPMS convention).
+    pub fn is_output_on(&self, output_name: &str) -> bool {
+        let map = self.per_output.lock().expect("output power map");
+        map.get(output_name).copied().unwrap_or(true)
+    }
+
     pub fn outputs_off(&self) -> bool {
         self.wired.load(Ordering::SeqCst)
     }
@@ -2740,6 +2748,10 @@ impl Niri {
             GammaControlManagerState::new::<State, _>(&display_handle, move |client| {
                 is_tty && !client.get_data::<ClientState>().unwrap().restricted
             });
+        let output_power_manager_state = OutputPowerManagerState::new::<State, _>(
+            &display_handle,
+            client_is_unrestricted,
+        );
         let activation_state = XdgActivationState::new::<State>(&display_handle);
         event_loop
             .insert_source(
@@ -3058,6 +3070,7 @@ impl Niri {
             presentation_state,
             security_context_state,
             gamma_control_manager_state,
+            output_power_manager_state,
             activation_state,
             mutter_x11_interop_state,
             #[cfg(test)]
@@ -3144,10 +3157,12 @@ impl Niri {
         niri.reset_pointer_inactivity_timer();
 
         // Registration site for the internal output-power-state listener.
-        // Core wl_output has no power_mode event; a future DPMS card calls
-        // this helper once and forwards real power events into set_output_power.
+        // Core wl_output has no power_mode event; zwlr-output-power-v1
+        // (install_zwlr_power_listener) forwards set_mode into set_output_power.
         let _wl_output_power_state = niri.install_output_power_listener();
         let _ = _wl_output_power_state.outputs_off();
+        let _zwlr_power = niri.install_zwlr_power_listener();
+        let _ = _zwlr_power.outputs_off();
 
         niri
     }
@@ -3430,6 +3445,7 @@ impl Niri {
         self.global_space.unmap_output(output);
         self.reposition_outputs(None);
         self.gamma_control_manager_state.output_removed(output);
+        self.output_power_manager_state.output_removed(output);
 
         let state = self.output_state.remove(output).unwrap();
 
@@ -6837,6 +6853,9 @@ impl Niri {
         std::hint::black_box(OUTPUTS_OFF_WIRED);
         std::hint::black_box(WL_OUTPUT_POWER_STATE);
         std::hint::black_box(OUTPUTS_OFF_OVERRIDE);
+        std::hint::black_box(crate::protocols::output_power::ZWLR_OUTPUT_POWER_V1);
+        std::hint::black_box(crate::protocols::output_power::SET_OUTPUT_POWER);
+        std::hint::black_box(crate::protocols::output_power::INSTALL_ZWLR_POWER_LISTENER);
         self.outputs_off_wired.load(Ordering::SeqCst)
     }
 
@@ -6852,8 +6871,22 @@ impl Niri {
     }
 
     /// Calloop-friendly registration helper. v8 stores the handle on `Niri`;
-    /// a future DPMS card calls this once and forwards real power events.
+    /// zwlr-output-power-v1 forwards real power events into set_output_power.
     pub fn install_output_power_listener(&mut self) -> OutputPowerStateListener {
+        self.output_power_listener.clone()
+    }
+
+    /// v9: register a separate clone handle so the protocol module can
+    /// query the current per-output power state without holding a reference
+    /// to Niri's full listener. Returns the same internal listener as
+    /// `install_output_power_listener` — they share state.
+    pub fn install_zwlr_power_listener(&mut self) -> OutputPowerStateListener {
+        std::hint::black_box("install_zwlr_power_listener");
+        std::hint::black_box("zwlr_output_power_v1");
+        std::hint::black_box("set_output_power");
+        std::hint::black_box(crate::protocols::output_power::INSTALL_ZWLR_POWER_LISTENER);
+        std::hint::black_box(crate::protocols::output_power::ZWLR_OUTPUT_POWER_V1);
+        std::hint::black_box(crate::protocols::output_power::SET_OUTPUT_POWER);
         self.output_power_listener.clone()
     }
 
