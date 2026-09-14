@@ -2827,6 +2827,17 @@ impl Niri {
                                             let token_path = crate::inject::token_file_path();
                                             let (_id, close_rx) =
                                                 server.track_connection(String::new());
+                                            let mut surface_map: HashMap<u64, WlSurface> =
+                                                HashMap::new();
+                                            for (_, m) in state.niri.layout.windows() {
+                                                if let Some(toplevel) = m.window.toplevel() {
+                                                    surface_map.insert(
+                                                        m.id().get(),
+                                                        toplevel.wl_surface().clone(),
+                                                    );
+                                                }
+                                            }
+                                            let surface_map = Arc::new(Mutex::new(surface_map));
                                             thread::spawn(move || {
                                                 let _ = crate::inject::dispatch::dispatch_inject_connection(
                                                     stream,
@@ -2834,6 +2845,7 @@ impl Niri {
                                                     outputs_off,
                                                     token_path,
                                                     close_rx,
+                                                    surface_map,
                                                 );
                                             });
                                         }

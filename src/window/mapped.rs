@@ -213,6 +213,11 @@ impl MappedId {
         MappedId(MAPPED_ID_COUNTER.next())
     }
 
+    /// Reconstruct a [`MappedId`] from a raw `u64` (inject-plane wire `window.id`).
+    pub fn from_raw(raw: u64) -> Self {
+        MappedId(raw)
+    }
+
     pub fn get(self) -> u64 {
         self.0
     }
@@ -233,6 +238,19 @@ impl MappedId {
     /// This namespace can be extended in the future, with any non-numeric prefix to disambiguate.
     pub fn to_protocol_identifier(self) -> String {
         format!("{}", self.0)
+    }
+}
+
+#[cfg(test)]
+mod mapped_id_tests {
+    use super::MappedId;
+
+    #[test]
+    fn from_raw_roundtrips_wire_u64() {
+        let id = MappedId::from_raw(42);
+        assert_eq!(id.get(), 42);
+        assert_eq!(MappedId::from_raw(0).get(), 0);
+        assert_eq!(MappedId::from_raw(u64::MAX).get(), u64::MAX);
     }
 }
 
