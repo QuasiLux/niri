@@ -78,6 +78,9 @@ use crate::protocols::foreign_toplevel::{
     self, ForeignToplevelHandler, ForeignToplevelManagerState,
 };
 use crate::protocols::gamma_control::{GammaControlHandler, GammaControlManagerState};
+use crate::protocols::output_power::{
+    broadcast_power_mode, OutputPowerHandler, OutputPowerManagerState,
+};
 use crate::protocols::mutter_x11_interop::MutterX11InteropHandler;
 use crate::protocols::output_management::{OutputManagementHandler, OutputManagementManagerState};
 use crate::protocols::screencopy::{Screencopy, ScreencopyHandler, ScreencopyManagerState};
@@ -696,6 +699,25 @@ impl DrmLeaseHandler for State {
             .get_device_from_node(node)
             .unwrap()
             .remove_lease(lease_id);
+    }
+}
+
+impl OutputPowerHandler for State {
+    fn output_power_manager_state(&mut self) -> &mut OutputPowerManagerState {
+        &mut self.niri.output_power_manager_state
+    }
+
+    fn apply_output_power(&mut self, output: &Output, on: bool) {
+        // Update v8 listener aggregate (also calls
+        // OutputPowerStateListener::set_output → recompute).
+        self.niri.set_output_power(&output.name(), on);
+        // Broadcast mode event to all active clients holding a
+        // zwlr_output_power_v1 for this output.
+        broadcast_power_mode(&mut self.niri.output_power_manager_state, output, on);
+    }
+
+    fn initial_output_power(&mut self, output: &Output) -> bool {
+        self.niri.output_power_listener.is_output_on(&output.name())
     }
 }
 
