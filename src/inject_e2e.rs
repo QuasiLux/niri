@@ -2,6 +2,7 @@
 //! forked child's main entry point. NOT a public API.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
 use std::os::unix::net::UnixStream;
@@ -25,7 +26,7 @@ use smithay::input::touch::{
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_server::backend::ClientData;
 use smithay::reexports::wayland_server::protocol::wl_surface::{self, WlSurface};
-use smithay::reexports::wayland_server::{Client, Dispatch, Display, DisplayHandle};
+use smithay::reexports::wayland_server::{Client, Dispatch, Display, DisplayHandle, Resource};
 use smithay::utils::{IsAlive, Logical, Point, Serial};
 
 use crate::inject::{
@@ -96,6 +97,9 @@ struct Harness {
     user_focused_window: Option<u64>,
     user_scroll_offset: Point<f64, Logical>,
     bound_surface: Option<WlSurface>,
+    surface_map: HashMap<u64, WlSurface>,
+    resolved_window_id: Option<u64>,
+    resolved_surface_id: Option<u32>,
     surface_target: Arc<Mutex<TargetRecord>>,
     token_path: PathBuf,
     known_window: u64,
@@ -109,12 +113,17 @@ impl Harness {
         let keep = dummy_surface();
         let mut seat_state = SeatState::new();
         let agent_seat = AgentSeat::create(&mut seat_state);
+        let mut surface_map = HashMap::new();
+        surface_map.insert(KNOWN_WINDOW, keep.surface.clone());
         Harness {
             seat_state,
             agent_seat,
             user_focused_window: USER_FOCUS,
             user_scroll_offset: Point::from(USER_SCROLL),
             bound_surface: Some(keep.surface.clone()),
+            surface_map,
+            resolved_window_id: None,
+            resolved_surface_id: None,
             surface_target: Arc::new(Mutex::new(TargetRecord::default())),
             token_path,
             known_window: KNOWN_WINDOW,
@@ -281,11 +290,12 @@ impl InjectHarness for Harness {
     }
 
     fn resolve_window(&mut self, window_id: u64) -> Option<WlSurface> {
-        if window_id == self.known_window {
-            self.bound_surface.clone()
-        } else {
-            None
+        let surface = self.surface_map.get(&window_id).cloned();
+        if let Some(ref s) = surface {
+            self.resolved_window_id = Some(window_id);
+            self.resolved_surface_id = Some(s.id().protocol_id());
         }
+        surface
     }
 
     fn resolve_pointer_focus(&mut self, window_id: u64) -> Option<Focus> {
@@ -341,8 +351,21 @@ fn write_output(path: &Path, harness: &Harness) {
         .last_motion
         .map(|p| format!("{},{}", p.x, p.y))
         .unwrap_or_else(|| "none".into());
+    let resolved_window_id = harness
+        .resolved_window_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "none".into());
+    let resolved_surface_id = harness
+        .resolved_surface_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "none".into());
+    let bound_surface_id = harness
+        .bound_surface
+        .as_ref()
+        .map(|s| s.id().protocol_id().to_string())
+        .unwrap_or_else(|| "none".into());
     let body = format!(
-        "agent_seat={}\nmotion_count={}\nlast_motion={last}\naxis_count={}\nkey_count={}\nuser_focused_window={}\nuser_scroll_x={}\nuser_scroll_y={}\n",
+        "agent_seat={}\nmotion_count={}\nlast_motion={last}\naxis_count={}\nkey_count={}\nuser_focused_window={}\nuser_scroll_x={}\nuser_scroll_y={}\nresolved_window_id={resolved_window_id}\nresolved_surface_id={resolved_surface_id}\nbound_surface_id={bound_surface_id}\n",
         harness.agent_seat.seat.name(),
         rec.motion_count,
         rec.axis_count,
