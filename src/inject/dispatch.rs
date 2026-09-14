@@ -3,11 +3,14 @@
 //! v4.7. The compositor event loop spawns one OS thread per accepted stream
 //! and feeds it `handle_inject_client_with_close` via a private calloop.
 //! The harness on the worker thread wraps this small proxy struct — it has
-//! no access to `niri::State`. Lock-screen and outputs-off snapshots are
-//! captured at the moment of accept (the spec calls for "idempotency check
-//! on is_locked()"); subsequent events are still gated on the cached flag.
+//! no access to `niri::State`. Lock-screen, outputs-off, and window-id →
+//! [`WlSurface`] snapshots are captured at the moment of accept (the spec
+//! calls for "idempotency check on is_locked()"); subsequent events are
+//! still gated on the cached flag. `resolve_window` reads the snapshot map
+//! rather than calling into production state from the worker thread.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::future::Future;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -44,6 +47,7 @@ use crate::inject::socket::handle_inject_client_with_close;
 pub struct DispatchState {
     pub is_locked: bool,
     pub outputs_off: bool,
+    pub surface_map: Arc<Mutex<HashMap<u64, WlSurface>>>,
     pub motion_count: Rc<RefCell<u32>>,
     pub agent_seat: AgentSeat<DispatchState>,
     pub seat_state: SeatState<DispatchState>,
@@ -85,7 +89,12 @@ pub struct NoopClientData;
 impl ClientData for NoopClientData {}
 
 impl DispatchState {
-    pub fn new(is_locked: bool, outputs_off: bool, token_path: PathBuf) -> Self {
+    pub fn new(
+        is_locked: bool,
+        outputs_off: bool,
+        token_path: PathBuf,
+        surface_map: Arc<Mutex<HashMap<u64, WlSurface>>>,
+    ) -> Self {
         let display = Display::<DispatchHost>::new().expect("display");
         let mut dh = display.handle();
         let (server, client_stream) = UnixStream::pair().expect("surface socket pair");
@@ -100,6 +109,7 @@ impl DispatchState {
         Self {
             is_locked,
             outputs_off,
+            surface_map,
             motion_count: Rc::new(RefCell::new(0)),
             agent_seat,
             seat_state,
@@ -295,8 +305,9 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         self.state
     }
 
-    fn resolve_window(&mut self, _window_id: u64) -> Option<WlSurface> {
-        self.state.bound_surface.clone()
+    fn resolve_window(&mut self, window_id: u64) -> Option<WlSurface> {
+        let map = self.state.surface_map.lock().unwrap();
+        map.get(&window_id).cloned()
     }
 
     fn resolve_pointer_focus(&mut self, _window_id: u64) -> Option<DispatchFocus> {
@@ -347,8 +358,9 @@ pub fn dispatch_inject_connection(
     outputs_off: bool,
     token_path: PathBuf,
     close_rx: async_channel::Receiver<()>,
+    surface_map: Arc<Mutex<HashMap<u64, WlSurface>>>,
 ) -> anyhow::Result<()> {
-    let mut state = DispatchState::new(is_locked, outputs_off, token_path);
+    let mut state = DispatchState::new(is_locked, outputs_off, token_path, surface_map);
     let mut harness = DispatchHarness::new(&mut state);
     let mut event_loop = EventLoop::<()>::try_new().expect("dispatch event loop");
     let async_stream = event_loop
@@ -365,15 +377,55 @@ pub fn dispatch_inject_connection(
 mod tests {
     use super::*;
 
+    fn empty_surface_map() -> Arc<Mutex<HashMap<u64, WlSurface>>> {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
     #[test]
     fn dispatch_state_caches_is_locked() {
-        let s = DispatchState::new(true, false, PathBuf::from("/dev/null"));
+        let s = DispatchState::new(true, false, PathBuf::from("/dev/null"), empty_surface_map());
         assert!(s.is_locked);
     }
 
     #[test]
     fn dispatch_state_caches_outputs_off() {
-        let s = DispatchState::new(false, true, PathBuf::from("/dev/null"));
+        let s = DispatchState::new(false, true, PathBuf::from("/dev/null"), empty_surface_map());
         assert!(s.outputs_off);
+    }
+
+    #[test]
+    fn dispatch_harness_resolve_window_uses_surface_map() {
+        let mut state = DispatchState::new(
+            false,
+            false,
+            PathBuf::from("/dev/null"),
+            empty_surface_map(),
+        );
+        let expected = state.bound_surface.clone().expect("dummy surface");
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(42, expected.clone());
+        let mut harness = DispatchHarness::new(&mut state);
+        let got = harness
+            .resolve_window(42)
+            .expect("mapped window_id must resolve");
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn dispatch_harness_resolve_window_unknown_returns_none() {
+        let mut state = DispatchState::new(
+            false,
+            false,
+            PathBuf::from("/dev/null"),
+            empty_surface_map(),
+        );
+        let surface = state.bound_surface.clone().expect("dummy surface");
+        state.surface_map.lock().unwrap().insert(42, surface);
+        let mut harness = DispatchHarness::new(&mut state);
+        assert!(harness.resolve_window(999_999).is_none());
+        assert!(harness.resolve_window(0).is_none());
     }
 }

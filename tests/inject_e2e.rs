@@ -249,3 +249,80 @@ fn lock_screen_refuses_post_bind_click_e2e() {
     let _ = fs::remove_file(&output);
     let _ = fs::remove_dir_all(&runtime);
 }
+
+#[test]
+fn resolve_window_e2e() {
+    if std::env::var_os("QLUX_INJECT_E2E_HARNESS").is_some() {
+        return;
+    }
+
+    let runtime = unique_dir();
+    let qlux = runtime.join("qlux");
+    let socket = qlux.join("inject.sock");
+    let tokens = runtime.join("inject-tokens");
+    let output = runtime.join("harness.out");
+    fs::write(&tokens, format!("bot-a:{TOKEN_A}\n")).unwrap();
+
+    let exe = std::env::current_exe().expect("current_exe");
+    let mut child = Command::new(&exe)
+        .env("QLUX_INJECT_E2E_HARNESS", "1")
+        .env("QLUX_INJECT_E2E_TOKENS", &tokens)
+        .env("QLUX_INJECT_E2E_OUTPUT", &output)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("QLUX_INJECT_SOCKET_SUFFIX", "qlux/inject.sock")
+        .env("QLUX_INJECT_ENABLE", "1")
+        .args(["--exact", "child_run_harness", "--nocapture"])
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn e2e harness child");
+
+    let mut stream = connect_with_retry(&socket);
+
+    send(&mut stream, b"HELLO\n");
+    let hello = read_line(&mut stream);
+    assert_eq!(hello, "HELLO OK\n", "{hello:?}");
+
+    send(&mut stream, format!("AUTH\n{TOKEN_A}\n").as_bytes());
+    let auth = read_line(&mut stream);
+    assert_eq!(auth, "AUTH OK bot-a\n", "{auth:?}");
+
+    send(&mut stream, b"BIND 999999\n");
+    let unknown = read_line(&mut stream);
+    assert_eq!(unknown, "FRAME ERR BAD_WINDOW_ID\n", "{unknown:?}");
+
+    send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
+    let bind = read_line(&mut stream);
+    assert_eq!(bind, "BIND OK\n", "{bind:?}");
+
+    send(&mut stream, b"CLICK 100 200\n");
+    let click = read_line(&mut stream);
+    assert_eq!(click, "DISPATCH OK\n", "{click:?}");
+
+    stream.shutdown(Shutdown::Write).ok();
+    let status = child.wait().expect("wait e2e child");
+    assert!(status.success(), "harness child failed: {status}");
+
+    let body = fs::read_to_string(&output).expect("read harness output");
+    assert!(
+        body.contains("resolved_window_id=42"),
+        "BIND must record the mapped window id, got:\n{body}"
+    );
+    assert!(
+        body.contains("resolved_surface_id="),
+        "BIND must record the resolved surface id, got:\n{body}"
+    );
+    assert!(
+        !body.contains("resolved_surface_id=none"),
+        "known window must resolve to a live surface id, got:\n{body}"
+    );
+    assert!(
+        body.contains("motion_count=1"),
+        "CLICK after BIND must produce one pointer motion, got:\n{body}"
+    );
+
+    let _ = fs::remove_file(&socket);
+    let _ = fs::remove_file(&tokens);
+    let _ = fs::remove_file(&output);
+    let _ = fs::remove_dir_all(&runtime);
+}
