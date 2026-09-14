@@ -31,7 +31,7 @@ use pipewire::spa::utils::{
 };
 use pipewire::spa::{self};
 use pipewire::stream::{Stream, StreamFlags, StreamListener, StreamRc, StreamState};
-use pipewire::sys::{pw_buffer, pw_check_library_version, pw_stream_queue_buffer};
+use pipewire::sys::{pw_buffer, pw_get_library_version, pw_stream_queue_buffer};
 use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
@@ -1568,7 +1568,28 @@ impl CastState {
 fn pw_version_supports_cursor_metadata() -> bool {
     // This PipeWire version fixed a critical memory issue with cursor metadata:
     // https://gitlab.freedesktop.org/pipewire/pipewire/-/merge_requests/2538
-    unsafe { pw_check_library_version(1, 4, 8) }
+    // pw_check_library_version was removed in libpipewire 0.3.65+; use
+    // pw_get_library_version (returns NUL-terminated "major.minor.patch" string)
+    // and compare lexicographically against "1.4.8".
+    let version = unsafe { pw_get_library_version() };
+    if version.is_null() {
+        return false;
+    }
+    let Ok(version) = unsafe { std::ffi::CStr::from_ptr(version) }.to_str() else {
+        return false;
+    };
+    let parse_or_zero = |s: &str| s.parse::<u32>().unwrap_or(0);
+    let lib: Vec<u32> = version.split('.').map(parse_or_zero).collect();
+    let required = [1u32, 4, 8];
+    for (l, r) in lib.iter().chain(std::iter::repeat(&0)).zip(required.iter()) {
+        if l > r {
+            return true;
+        }
+        if l < r {
+            return false;
+        }
+    }
+    true
 }
 
 fn make_pod(buffer: &mut Vec<u8>, object: pod::Object) -> &Pod {
