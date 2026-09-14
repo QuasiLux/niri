@@ -4,11 +4,13 @@
 //! validation live here. Compositor-startup wiring is gated on
 //! [`QLUX_INJECT_ENABLE`] inside `Niri::new`.
 
+pub mod dispatch;
 pub mod harness;
 pub mod protocol;
 pub mod socket;
 
 pub use crate::input::agent_seat::{AgentSeat, AGENT_SEAT_NAME};
+pub use dispatch::{dispatch_inject_connection, DispatchHarness, DispatchState};
 pub use harness::NiriInjectHarness;
 pub use protocol::{
     token_file_path, validate_token, Frame, FrameError, InjectHarness, Reply, MAX_FRAME_LEN,
