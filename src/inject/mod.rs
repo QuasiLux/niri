@@ -78,3 +78,11 @@ pub static INJECT_PLANE_IDENTS: &[&str] = &[
     "ERR_LOCKED",
     "ERR_OUTPUTS_OFF",
 ];
+
+/// v8 ELF idents (separate #[used] static; original list unchanged).
+#[used]
+pub static OUTPUT_POWER_PLANE_IDENTS: &[&str] = &[
+    "outputs_off_wired",
+    "wl_output_power_state",
+    "outputs_off_override",
+];

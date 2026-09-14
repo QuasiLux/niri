@@ -8,6 +8,12 @@
 //! calls for "idempotency check on is_locked()"); subsequent events are
 //! still gated on the cached flag. `resolve_window` reads the snapshot map
 //! rather than calling into production state from the worker thread.
+//!
+//! v8: `outputs_off` remains a snapshot captured at accept (same as
+//! `is_locked` and `surface_map`). Live state lives on
+//! `Niri::outputs_off_wired`; production [`crate::inject::NiriInjectHarness`]
+//! reads it live. Switching the worker to a shared `Arc<AtomicBool>` would
+//! break snapshot idempotency for already-accepted connections.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -322,6 +328,7 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         self.state.is_locked
     }
     fn outputs_off(&self) -> bool {
+        // Snapshot captured at accept; not a live read of Niri::outputs_off_wired.
         self.state.outputs_off
     }
     fn is_occluded(&mut self) -> bool {
@@ -427,5 +434,18 @@ mod tests {
         let mut harness = DispatchHarness::new(&mut state);
         assert!(harness.resolve_window(999_999).is_none());
         assert!(harness.resolve_window(0).is_none());
+    }
+
+    #[test]
+    fn dispatch_harness_reads_outputs_off_snapshot() {
+        let mut state =
+            DispatchState::new(false, true, PathBuf::from("/dev/null"), empty_surface_map());
+        {
+            let harness = DispatchHarness::new(&mut state);
+            assert!(InjectHarness::outputs_off(&harness));
+        }
+        state.outputs_off = false;
+        let harness = DispatchHarness::new(&mut state);
+        assert!(!InjectHarness::outputs_off(&harness));
     }
 }

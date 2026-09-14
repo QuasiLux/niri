@@ -632,3 +632,79 @@ fn resolve_window_returns_mapped_surface() {
     );
     assert_user_seat_untouched(&harness);
 }
+
+#[test]
+fn outputs_off_override_via_wl_output_listener() {
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    let focus_before = harness.user_focused_window;
+    let scroll_before = harness.user_scroll_offset;
+    *harness.outputs_off_override.borrow_mut() = true;
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+
+    assert!(
+        replies.contains("DISPATCH ERR OUTPUTS_OFF\n"),
+        "{replies:?}"
+    );
+    assert!(!replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert_eq!(harness.surface_target.lock().unwrap().motion_count, 0);
+    assert_eq!(harness.user_focused_window, focus_before);
+    assert_eq!(harness.user_scroll_offset, scroll_before);
+    assert_eq!(harness.user_focused_window, USER_FOCUS);
+    assert_eq!(harness.user_scroll_offset, Point::from(USER_SCROLL));
+    assert_user_seat_untouched(&harness);
+
+    *harness.outputs_off_override.borrow_mut() = false;
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert!(!replies.contains("DISPATCH ERR OUTPUTS_OFF\n"), "{replies:?}");
+    assert_eq!(harness.surface_target.lock().unwrap().motion_count, 1);
+    assert_user_seat_untouched(&harness);
+}
+
+#[test]
+fn inject_locked_or_outputs_off_after_power_off() {
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    *harness.outputs_off_override.borrow_mut() = true;
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(
+        replies.contains("DISPATCH ERR OUTPUTS_OFF\n"),
+        "{replies:?}"
+    );
+    assert!(!replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert_eq!(harness.surface_target.lock().unwrap().motion_count, 0);
+    assert_user_seat_untouched(&harness);
+}
+
+#[test]
+fn outputs_off_does_not_affect_user_seat() {
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    let focus_before = harness.user_focused_window;
+    let scroll_before = harness.user_scroll_offset;
+    *harness.outputs_off_override.borrow_mut() = true;
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(
+        replies.contains("DISPATCH ERR OUTPUTS_OFF\n"),
+        "{replies:?}"
+    );
+    assert_eq!(harness.user_focused_window, focus_before);
+    assert_eq!(harness.user_scroll_offset, scroll_before);
+    assert_eq!(harness.user_focused_window, USER_FOCUS);
+    assert_eq!(harness.user_scroll_offset, Point::from(USER_SCROLL));
+    assert_user_seat_untouched(&harness);
+}
