@@ -1,6 +1,7 @@
 //! QuasiLux inject-plane e2e harness. Used by `tests/inject_e2e.rs` as the
 //! forked child's main entry point. NOT a public API.
 
+use std::cell::RefCell;
 use std::fs;
 use std::future::Future;
 use std::os::unix::net::UnixStream;
@@ -99,6 +100,7 @@ struct Harness {
     token_path: PathBuf,
     known_window: u64,
     keys: Vec<String>,
+    lock_override: RefCell<bool>,
     _surface_keep: SurfaceKeep,
 }
 
@@ -117,8 +119,13 @@ impl Harness {
             token_path,
             known_window: KNOWN_WINDOW,
             keys: Vec::new(),
+            lock_override: RefCell::new(false),
             _surface_keep: keep,
         }
+    }
+
+    pub fn set_locked(&mut self, locked: bool) {
+        *self.lock_override.borrow_mut() = locked;
     }
 }
 
@@ -293,6 +300,10 @@ impl InjectHarness for Harness {
         &self.token_path
     }
 
+    fn is_locked(&self) -> bool {
+        *self.lock_override.borrow()
+    }
+
     fn key_press(&mut self, xkb_name: &str) -> bool {
         self.keys.push(xkb_name.to_string());
         true
@@ -350,7 +361,19 @@ fn write_output(path: &Path, harness: &Harness) {
 
 /// Bind `socket_path`, accept one client, run HELLO→…→dispatch, write stats.
 pub fn run_harness(socket_path: PathBuf, token_file: PathBuf, output_file: PathBuf) {
+    run_harness_ex(socket_path, token_file, output_file, false);
+}
+
+/// Locked-screen variant: post-bind dispatch replies `DISPATCH ERR LOCKED`.
+pub fn run_harness_locked(socket_path: PathBuf, token_file: PathBuf, output_file: PathBuf) {
+    run_harness_ex(socket_path, token_file, output_file, true);
+}
+
+fn run_harness_ex(socket_path: PathBuf, token_file: PathBuf, output_file: PathBuf, locked: bool) {
     let mut harness = Harness::new(token_file);
+    if locked {
+        harness.set_locked(true);
+    }
     let mut event_loop = EventLoop::<()>::try_new().expect("calloop");
     let (server, rx) =
         InjectServer::start(&event_loop.handle(), socket_path).expect("InjectServer::start");
