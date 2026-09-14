@@ -2,14 +2,14 @@
 //!
 //! `niri::State` owns [`Niri`], not the reverse, so this wrapper holds
 //! `&mut State` and reads lock / output-power flags through it. Window
-//! lookup is deferred (TODO v4.7). The inject-socket receiver is not
-//! plumbed through this type.
+//! lookup maps the wire `u64` through [`MappedId`] onto the live layout.
 
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::input::agent_seat::AgentSeat;
 use crate::inject::protocol::InjectHarness;
 use crate::niri::{Niri, State};
+use crate::window::mapped::MappedId;
 
 /// Production inject harness. Construct around compositor [`State`] once a
 /// connection is accepted (receiver plumbing is a later card).
@@ -51,9 +51,11 @@ impl InjectHarness for NiriInjectHarness<'_> {
     }
 
     fn resolve_window(&mut self, window_id: u64) -> Option<WlSurface> {
-        let _ = window_id;
-        // TODO v4.7: map window_id through MappedId to the live WlSurface.
-        None
+        let id = MappedId::from_raw(window_id);
+        self.state
+            .niri
+            .find_window_by_id(id)
+            .and_then(|window| window.toplevel().map(|t| t.wl_surface().clone()))
     }
 
     fn is_locked(&self) -> bool {

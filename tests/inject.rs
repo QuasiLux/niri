@@ -5,6 +5,7 @@
 //! user-seat proxy fields on the harness must stay untouched.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
 use std::io::{Read, Write};
@@ -576,7 +577,19 @@ fn lock_screen_does_not_refuse_pre_bind() {
 #[test]
 fn proxy_lock_snapshot_refuses_dispatch() {
     let tokens = token_file();
-    let mut state = DispatchState::new(true, false, tokens.clone());
+    let mut state = DispatchState::new(
+        true,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
     let mut harness = DispatchHarness::new(&mut state);
     let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
     let replies = run_protocol_on(&mut harness, req.as_bytes());
@@ -587,4 +600,35 @@ fn proxy_lock_snapshot_refuses_dispatch() {
     assert!(replies.contains("DISPATCH ERR LOCKED\n"), "{replies:?}");
     assert!(!replies.contains("DISPATCH OK\n"), "{replies:?}");
     assert_eq!(state.snapshot_motion_count(), 0);
+}
+
+#[test]
+fn resolve_window_returns_mapped_surface() {
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    let expected = harness.bound_surface.clone();
+    assert_eq!(
+        InjectHarness::resolve_window(&mut harness, KNOWN_WINDOW),
+        expected,
+        "known window_id must map to the harness dummy surface"
+    );
+    assert!(
+        InjectHarness::resolve_window(&mut harness, 999_999).is_none(),
+        "unknown window_id must not resolve"
+    );
+
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 10 20\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert_eq!(harness.surface_target.lock().unwrap().motion_count, 1);
+    assert_eq!(
+        InjectHarness::resolve_window(&mut harness, KNOWN_WINDOW),
+        expected
+    );
+    assert_user_seat_untouched(&harness);
 }
