@@ -65,6 +65,7 @@ impl InjectHarness for NiriInjectHarness<'_> {
     }
 
     fn outputs_off(&self) -> bool {
+        // Live read of `Niri::outputs_off_wired` (not a snapshot).
         let off = self.state.niri.outputs_off();
         trace!(off, "outputs_off");
         off
@@ -80,7 +81,8 @@ impl InjectHarness for NiriInjectHarness<'_> {
 mod tests {
     use super::*;
     use crate::inject::protocol::{ERR_LOCKED, ERR_OUTPUTS_OFF};
-    use crate::inject::INJECT_PLANE_IDENTS;
+    use crate::inject::{INJECT_PLANE_IDENTS, OUTPUT_POWER_PLANE_IDENTS};
+    use crate::niri::{OUTPUTS_OFF_OVERRIDE, OUTPUTS_OFF_WIRED, WL_OUTPUT_POWER_STATE};
 
     #[test]
     fn idents_keep_is_locked() {
@@ -103,5 +105,19 @@ mod tests {
     fn idents_keep_err_outputs_off() {
         assert!(INJECT_PLANE_IDENTS.iter().any(|s| *s == "ERR_OUTPUTS_OFF"));
         assert_eq!(ERR_OUTPUTS_OFF, "OUTPUTS_OFF");
+    }
+
+    #[test]
+    fn idents_keep_outputs_off_wired() {
+        assert_eq!(OUTPUTS_OFF_WIRED, "outputs_off_wired");
+        assert_eq!(WL_OUTPUT_POWER_STATE, "wl_output_power_state");
+        assert!(OUTPUT_POWER_PLANE_IDENTS.contains(&"outputs_off_wired"));
+        assert!(OUTPUT_POWER_PLANE_IDENTS.contains(&"wl_output_power_state"));
+    }
+
+    #[test]
+    fn idents_keep_outputs_off_override() {
+        assert_eq!(OUTPUTS_OFF_OVERRIDE, "outputs_off_override");
+        assert!(OUTPUT_POWER_PLANE_IDENTS.contains(&"outputs_off_override"));
     }
 }

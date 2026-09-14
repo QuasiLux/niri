@@ -467,6 +467,14 @@ pub struct Niri {
     pub inject_server: Option<InjectServer>,
     pub ipc_outputs_changed: bool,
 
+    /// Aggregate outputs-off flag. Canonical v8 handle shared with
+    /// [`OutputPowerStateListener`]. A future DPMS card writes here via
+    /// [`Niri::set_output_power`].
+    pub outputs_off_wired: Arc<AtomicBool>,
+    /// Internal listener-style registration handle. Not a Wayland
+    /// `wl_output::Listener` — core `wl_output` has no power_mode event.
+    pub output_power_listener: OutputPowerStateListener,
+
     pub satellite: Option<Satellite>,
 
     #[cfg(feature = "xdp-gnome-screencast")]
@@ -2494,6 +2502,107 @@ impl State {
     }
 }
 
+/// Named v8 ELF symbols (acceptance #10). Referenced from [`Niri::outputs_off`]
+/// so thin LTO cannot drop them.
+#[used]
+pub static OUTPUTS_OFF_WIRED: &str = "outputs_off_wired";
+#[used]
+pub static WL_OUTPUT_POWER_STATE: &str = "wl_output_power_state";
+#[used]
+pub static OUTPUTS_OFF_OVERRIDE: &str = "outputs_off_override";
+
+/// Internal output-power-state source.
+///
+/// Core `wl_output` has no `power_mode` event, so this is not a Wayland
+/// protocol binding. It is the plumbing a future DPMS card will call into
+/// from the compositor event loop (`install_output_power_listener` is the
+/// registration helper).
+#[derive(Clone)]
+pub struct OutputPowerStateListener {
+    /// Aggregate "outputs are off" flag, shared with [`Niri::outputs_off_wired`].
+    pub wired: Arc<AtomicBool>,
+    /// Per-output power: `true` = on, `false` = off. Missing treated as on.
+    per_output: Arc<Mutex<HashMap<String, bool>>>,
+}
+
+impl OutputPowerStateListener {
+    pub fn new() -> Self {
+        Self {
+            wired: Arc::new(AtomicBool::new(false)),
+            per_output: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// `on == true` means outputs are powered on (`outputs_off()` is false).
+    pub fn set(&self, on: bool) {
+        self.wired.store(!on, Ordering::SeqCst);
+    }
+
+    pub fn set_output(&self, output_name: &str, on: bool) {
+        let mut map = self.per_output.lock().expect("output power map");
+        map.insert(output_name.to_string(), on);
+        let any_off = map.values().any(|powered_on| !*powered_on);
+        drop(map);
+        self.wired.store(any_off, Ordering::SeqCst);
+    }
+
+    pub fn outputs_off(&self) -> bool {
+        self.wired.load(Ordering::SeqCst)
+    }
+
+    /// In-process test helper: set the aggregate outputs-off flag directly.
+    pub fn wire_outputs_off_for_test(&self, off: bool) {
+        self.wired.store(off, Ordering::SeqCst);
+    }
+}
+
+impl Default for OutputPowerStateListener {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod output_power_state_tests {
+    use super::*;
+
+    #[test]
+    fn outputs_off_default_is_false() {
+        let listener = OutputPowerStateListener::new();
+        assert!(!listener.outputs_off());
+        assert!(!listener.wired.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn set_flips_outputs_off_aggregate() {
+        let listener = OutputPowerStateListener::new();
+        listener.set(false);
+        assert!(listener.outputs_off());
+        listener.set(true);
+        assert!(!listener.outputs_off());
+    }
+
+    #[test]
+    fn set_output_any_off_sets_aggregate() {
+        let listener = OutputPowerStateListener::new();
+        listener.set_output("eDP-1", true);
+        assert!(!listener.outputs_off());
+        listener.set_output("HDMI-A-1", false);
+        assert!(listener.outputs_off());
+        listener.set_output("HDMI-A-1", true);
+        assert!(!listener.outputs_off());
+    }
+
+    #[test]
+    fn wire_outputs_off_for_test_sets_aggregate() {
+        let listener = OutputPowerStateListener::new();
+        listener.wire_outputs_off_for_test(true);
+        assert!(listener.outputs_off());
+        listener.wire_outputs_off_for_test(false);
+        assert!(!listener.outputs_off());
+    }
+}
+
 impl Niri {
     pub fn new(
         config: Rc<RefCell<Config>>,
@@ -2866,6 +2975,8 @@ impl Niri {
         let _ = QLUX_INJECT_ENABLE;
 
         drop(config_);
+        let output_power_listener = OutputPowerStateListener::new();
+        let outputs_off_wired = Arc::clone(&output_power_listener.wired);
         let mut niri = Self {
             config,
             config_file_output_config,
@@ -3018,6 +3129,9 @@ impl Niri {
             inject_server,
             ipc_outputs_changed: false,
 
+            outputs_off_wired,
+            output_power_listener,
+
             satellite: None,
 
             #[cfg(feature = "xdp-gnome-screencast")]
@@ -3028,6 +3142,12 @@ impl Niri {
         };
 
         niri.reset_pointer_inactivity_timer();
+
+        // Registration site for the internal output-power-state listener.
+        // Core wl_output has no power_mode event; a future DPMS card calls
+        // this helper once and forwards real power events into set_output_power.
+        let _wl_output_power_state = niri.install_output_power_listener();
+        let _ = _wl_output_power_state.outputs_off();
 
         niri
     }
@@ -6704,10 +6824,37 @@ impl Niri {
         }
     }
 
-    /// Sentinel for DPMS-driven screen-off; v4.6 always false. Future
-    /// card wires a real listener.
+    /// Returns true when the internal output-power-state source says screens
+    /// are off. Production [`crate::inject::NiriInjectHarness`] reads this
+    /// live; per-connection [`crate::inject::DispatchHarness`] snapshots the
+    /// value at accept.
     pub fn outputs_off(&self) -> bool {
-        false
+        // Keep v8 idents in the release ELF (thin LTO would otherwise drop
+        // unread `&str` payloads). Same pattern as Request::InjectPlaceholder.
+        for ident in crate::inject::OUTPUT_POWER_PLANE_IDENTS {
+            std::hint::black_box(*ident);
+        }
+        std::hint::black_box(OUTPUTS_OFF_WIRED);
+        std::hint::black_box(WL_OUTPUT_POWER_STATE);
+        std::hint::black_box(OUTPUTS_OFF_OVERRIDE);
+        self.outputs_off_wired.load(Ordering::SeqCst)
+    }
+
+    /// Per-output power update. `on == true` means that output is powered on.
+    /// The aggregate [`Niri::outputs_off`] is true iff any named output is off.
+    pub fn set_output_power(&mut self, output_name: &str, on: bool) {
+        self.output_power_listener.set_output(output_name, on);
+    }
+
+    /// In-process test helper: set the aggregate outputs-off flag directly.
+    pub fn wire_outputs_off_for_test(&mut self, on: bool) {
+        self.output_power_listener.wire_outputs_off_for_test(on);
+    }
+
+    /// Calloop-friendly registration helper. v8 stores the handle on `Niri`;
+    /// a future DPMS card calls this once and forwards real power events.
+    pub fn install_output_power_listener(&mut self) -> OutputPowerStateListener {
+        self.output_power_listener.clone()
     }
 
     pub fn lock(&mut self, confirmation: SessionLocker) {
