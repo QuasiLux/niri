@@ -2657,7 +2657,7 @@ impl Niri {
                 if let Some(gid) = lookup_inject_group_gid() {
                     let created_seat = AgentSeat::<State>::create(&mut seat_state);
                     match InjectServer::start(&event_loop, inject_socket_path.clone()) {
-                        Ok((server, _rx)) => {
+                        Ok((server, rx)) => {
                             let token_file = crate::inject::token_file_path();
                             let _ = server.reload_tokens(&token_file);
                             apply_inject_socket_ownership(&inject_socket_path, gid);
@@ -2672,6 +2672,34 @@ impl Niri {
                                             ));
                                         }
                                         TimeoutAction::ToDuration(Duration::from_secs(5))
+                                    },
+                                )
+                                .unwrap();
+                            event_loop
+                                .insert_source(
+                                    Timer::from_duration(Duration::from_millis(50)),
+                                    move |_, _, state: &mut State| {
+                                        while let Ok(stream) = rx.try_recv() {
+                                            let locked = state.niri.is_locked();
+                                            let outputs_off = state.niri.outputs_off();
+                                            let Some(server) = state.niri.inject_server.as_ref()
+                                            else {
+                                                break;
+                                            };
+                                            let token_path = crate::inject::token_file_path();
+                                            let (_id, close_rx) =
+                                                server.track_connection(String::new());
+                                            thread::spawn(move || {
+                                                let _ = crate::inject::dispatch::dispatch_inject_connection(
+                                                    stream,
+                                                    locked,
+                                                    outputs_off,
+                                                    token_path,
+                                                    close_rx,
+                                                );
+                                            });
+                                        }
+                                        TimeoutAction::ToDuration(Duration::from_millis(50))
                                     },
                                 )
                                 .unwrap();

@@ -80,7 +80,11 @@ fn child_run_harness() {
     let socket = niri::inject::resolve_inject_socket_path();
     let tokens = PathBuf::from(std::env::var("QLUX_INJECT_E2E_TOKENS").unwrap());
     let output = PathBuf::from(std::env::var("QLUX_INJECT_E2E_OUTPUT").unwrap());
-    niri::inject_e2e::run_harness(socket, tokens, output);
+    if std::env::var_os("QLUX_INJECT_E2E_LOCKED").is_some() {
+        niri::inject_e2e::run_harness_locked(socket, tokens, output);
+    } else {
+        niri::inject_e2e::run_harness(socket, tokens, output);
+    }
 }
 
 #[test]
@@ -176,6 +180,68 @@ fn e2e_hello_auth_bind_click_scroll_key_drag() {
     assert!(
         body.contains("user_scroll_y=2.5"),
         "user-seat scroll_offset must not be consumed, got:\n{body}"
+    );
+
+    let _ = fs::remove_file(&socket);
+    let _ = fs::remove_file(&tokens);
+    let _ = fs::remove_file(&output);
+    let _ = fs::remove_dir_all(&runtime);
+}
+
+#[test]
+fn lock_screen_refuses_post_bind_click_e2e() {
+    if std::env::var_os("QLUX_INJECT_E2E_HARNESS").is_some() {
+        return;
+    }
+
+    let runtime = unique_dir();
+    let qlux = runtime.join("qlux");
+    let socket = qlux.join("inject.sock");
+    let tokens = runtime.join("inject-tokens");
+    let output = runtime.join("harness.out");
+    fs::write(&tokens, format!("bot-a:{TOKEN_A}\n")).unwrap();
+
+    let exe = std::env::current_exe().expect("current_exe");
+    let mut child = Command::new(&exe)
+        .env("QLUX_INJECT_E2E_HARNESS", "1")
+        .env("QLUX_INJECT_E2E_LOCKED", "1")
+        .env("QLUX_INJECT_E2E_TOKENS", &tokens)
+        .env("QLUX_INJECT_E2E_OUTPUT", &output)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("QLUX_INJECT_SOCKET_SUFFIX", "qlux/inject.sock")
+        .env("QLUX_INJECT_ENABLE", "1")
+        .args(["--exact", "child_run_harness", "--nocapture"])
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn e2e harness child");
+
+    let mut stream = connect_with_retry(&socket);
+
+    send(&mut stream, b"HELLO\n");
+    let hello = read_line(&mut stream);
+    assert_eq!(hello, "HELLO OK\n", "{hello:?}");
+
+    send(&mut stream, format!("AUTH\n{TOKEN_A}\n").as_bytes());
+    let auth = read_line(&mut stream);
+    assert_eq!(auth, "AUTH OK bot-a\n", "{auth:?}");
+
+    send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
+    let bind = read_line(&mut stream);
+    assert_eq!(bind, "BIND OK\n", "{bind:?}");
+
+    send(&mut stream, b"CLICK 100 200\n");
+    let click = read_line(&mut stream);
+    assert_eq!(click, "DISPATCH ERR LOCKED\n", "{click:?}");
+
+    stream.shutdown(Shutdown::Write).ok();
+    let status = child.wait().expect("wait e2e child");
+    assert!(status.success(), "harness child failed: {status}");
+
+    let body = fs::read_to_string(&output).expect("read harness output");
+    assert!(
+        body.contains("motion_count=0"),
+        "locked CLICK must not move the pointer, got:\n{body}"
     );
 
     let _ = fs::remove_file(&socket);
