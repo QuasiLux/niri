@@ -711,6 +711,8 @@ impl OutputPowerHandler for State {
         // Update v8 listener aggregate (also calls
         // OutputPowerStateListener::set_output → recompute).
         self.niri.set_output_power(&output.name(), on);
+        // v10: manager-level broadcast fires BEFORE v9 per-output fire-and-forget.
+        self.niri.output_power_manager_state.broadcast_manager_power_mode(output, on);
         // Broadcast mode event to all active clients holding a
         // zwlr_output_power_v1 for this output.
         broadcast_power_mode(&mut self.niri.output_power_manager_state, output, on);
