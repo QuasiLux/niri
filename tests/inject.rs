@@ -35,7 +35,7 @@ use niri::inject::smithay::reexports::wayland_server::{
     Client, Dispatch, Display, DisplayHandle,
 };
 use niri::inject::smithay::utils::{IsAlive, Logical, Point, Serial};
-use niri::inject::{AgentSeat, InjectHarness};
+use niri::inject::{AgentSeat, DispatchHarness, DispatchState, InjectHarness};
 
 const KNOWN_WINDOW: u64 = 42;
 const TOKEN_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -375,7 +375,7 @@ fn block_on_loop<F: Future>(event_loop: &mut EventLoop<'static, ()>, fut: F) -> 
     }
 }
 
-fn run_protocol(harness: &mut Harness, requests: &[u8]) -> String {
+fn run_protocol_on<H: InjectHarness>(harness: &mut H, requests: &[u8]) -> String {
     let (mut client, server) = UnixStream::pair().expect("inject socket pair");
     client.write_all(requests).expect("write inject frames");
     client.shutdown(Shutdown::Write).expect("shutdown write");
@@ -394,6 +394,10 @@ fn run_protocol(harness: &mut Harness, requests: &[u8]) -> String {
     let mut buf = Vec::new();
     client.read_to_end(&mut buf).expect("read inject replies");
     String::from_utf8(buf).expect("utf8 replies")
+}
+
+fn run_protocol(harness: &mut Harness, requests: &[u8]) -> String {
+    run_protocol_on(harness, requests)
 }
 
 fn assert_user_seat_untouched(harness: &Harness) {
@@ -567,4 +571,20 @@ fn lock_screen_does_not_refuse_pre_bind() {
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
     assert!(!replies.contains("DISPATCH ERR"), "{replies:?}");
     assert_eq!(harness.permanent_errors, Vec::<String>::new());
+}
+
+#[test]
+fn proxy_lock_snapshot_refuses_dispatch() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(true, false, tokens.clone());
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("DISPATCH ERR LOCKED\n"), "{replies:?}");
+    assert!(!replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert_eq!(state.snapshot_motion_count(), 0);
 }
