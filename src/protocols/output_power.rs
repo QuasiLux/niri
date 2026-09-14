@@ -81,6 +81,17 @@ impl OutputPowerManagerState {
     }
 }
 
+impl OutputPowerManagerState {
+    /// v10: manager-level broadcast. Iterates `self.outputs` for `output`
+    /// and fires `mode(Mode::On|Mode::Off)` on every active per-output
+    /// `zwlr_output_power_v1`. Panic-free when the HashMap returns None.
+    pub fn broadcast_manager_power_mode(&mut self, output: &Output, on: bool) {
+        if let Some(power) = self.outputs.get(output) {
+            power.mode(if on { Mode::On } else { Mode::Off });
+        }
+    }
+}
+
 fn emit_failed(power: &ZwlrOutputPowerV1, reason: &'static str) {
     tracing::error!(reason, "zwlr_output_power_v1 failed");
     power.failed();
@@ -282,5 +293,48 @@ mod tests {
         std::hint::black_box(SET_OUTPUT_POWER);
         std::hint::black_box(INSTALL_ZWLR_POWER_LISTENER);
         drop(state);
+    }
+
+    fn test_output(name: &str) -> Output {
+        Output::new(
+            name.to_string(),
+            PhysicalProperties {
+                size: Size::from((0, 0)),
+                subpixel: Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn manager_broadcast_mode_off_propagates() {
+        // Fresh manager state has no tracked zwlr_output_power_v1. The
+        // helper must accept Mode::Off without panic (HashMap None path).
+        let mut state = OutputPowerManagerState::default();
+        let output = test_output("eDP-1");
+        state.broadcast_manager_power_mode(&output, false);
+        assert!(state.outputs.get(&output).is_none());
+    }
+
+    #[test]
+    fn manager_broadcast_no_active_objects_does_not_panic() {
+        let mut state = OutputPowerManagerState::default();
+        let output = test_output("eDP-1");
+        state.broadcast_manager_power_mode(&output, true);
+        assert!(state.outputs.is_empty());
+    }
+
+    #[test]
+    fn manager_broadcast_v9_per_object_intact() {
+        // v10 manager-level helper and v9 free function both complete
+        // without panic; the exclusive entry map stays consistent.
+        let mut state = OutputPowerManagerState::default();
+        let output = test_output("eDP-1");
+        state.broadcast_manager_power_mode(&output, false);
+        broadcast_power_mode(&mut state, &output, false);
+        assert!(state.outputs.is_empty());
+        assert!(state.outputs.get(&output).is_none());
     }
 }
