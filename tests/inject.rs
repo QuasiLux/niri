@@ -770,3 +770,56 @@ fn key_dispatch_unknown_xkb_name_returns_not_bound() {
     );
     assert_eq!(state.surface_target.lock().unwrap().key_count, 0);
 }
+
+// SCROLL on the proxy DispatchHarness (direct trait call, not through the wire).
+// e2e SCROLL coverage already lives in e2e_hello_auth_bind_click_scroll_key_drag.
+#[test]
+fn scroll_dispatch_on_proxy_harness_increments_axis_count() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let ok = <DispatchHarness as InjectHarness>::scroll(&mut harness, 0.0, 120.0);
+    let _ = fs::remove_file(&tokens);
+    assert!(ok, "scroll must return true on finite axes");
+    let rec = state.surface_target.lock().unwrap();
+    assert_eq!(rec.axis_count, 2, "axis fired twice on (0.0, 120.0)");
+}
+
+#[test]
+fn scroll_dispatch_nan_axis_returns_false() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let ok = <DispatchHarness as InjectHarness>::scroll(&mut harness, f64::NAN, 0.0);
+    let _ = fs::remove_file(&tokens);
+    assert!(!ok, "scroll must return false on NaN axis");
+    assert_eq!(
+        state.surface_target.lock().unwrap().axis_count,
+        0,
+        "no axis fired when helper returns false"
+    );
+}

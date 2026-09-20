@@ -13,6 +13,9 @@ use crate::window::mapped::MappedId;
 
 /// Production inject harness. Construct around compositor [`State`] once a
 /// connection is accepted (receiver plumbing is a later card).
+///
+/// `scroll` / `drag` overrides are not present in this step; they land in
+/// step 2 and step 3 sibling cards on the same branch.
 pub struct NiriInjectHarness<'a> {
     pub state: &'a mut State,
 }
