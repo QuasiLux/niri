@@ -1397,3 +1397,78 @@ fn grant_deny_clears_pending_keeps_bind_denied() {
         "{replies:?}"
     );
 }
+
+#[test]
+fn app_catalog_zen_is_atspi_chrome_background_unavailable_canvas_only() {
+    // Catalog lookup: zen is Gecko, AtSpiChrome, raw_inject_eligible, NOT hud_skip.
+    use niri::inject::app_catalog::{app_id_routes, CaptureStrategy, SemanticStrength, Toolkit};
+    let r = app_id_routes("zen");
+    assert_eq!(r.toolkit, Some(Toolkit::Gecko));
+    assert_eq!(r.capture, CaptureStrategy::WindowCast);
+    // AtSpiChrome: AT-SPI sees chrome (buttons/fields) but the canvas is
+    // `background_unavailable` to AT-SPI — raw inject is required for canvas/media.
+    assert_eq!(r.semantic, SemanticStrength::AtSpiChrome);
+    assert!(r.raw_inject_eligible);
+    assert!(!r.hud_skip);
+}
+
+#[test]
+fn app_catalog_gnome_calculator_is_atspi_strong() {
+    use niri::inject::app_catalog::{app_id_routes, CaptureStrategy, SemanticStrength, Toolkit};
+    let r = app_id_routes("gnome-calculator");
+    assert_eq!(r.toolkit, Some(Toolkit::Gtk3));
+    assert_eq!(r.capture, CaptureStrategy::WindowCast);
+    assert_eq!(r.semantic, SemanticStrength::AtSpiStrong);
+    assert!(r.raw_inject_eligible);
+    assert!(!r.hud_skip);
+}
+
+#[test]
+fn app_catalog_alacritty_is_raw_inject_required() {
+    use niri::inject::app_catalog::{app_id_routes, CaptureStrategy, SemanticStrength, Toolkit};
+    let r = app_id_routes("Alacritty");
+    assert_eq!(r.toolkit, Some(Toolkit::Winit));
+    assert_eq!(r.capture, CaptureStrategy::WindowCast);
+    assert_eq!(r.semantic, SemanticStrength::Weak);
+    assert!(r.raw_inject_eligible);
+    assert!(!r.hud_skip);
+}
+
+#[test]
+fn app_catalog_hermes_desktop_hud_skip_is_true() {
+    // Catalog lookup AND production-harness override: both return hud_skip=true.
+    use niri::inject::app_catalog::{app_id_routes, Toolkit};
+    let r = app_id_routes("hermes-desktop");
+    assert!(r.hud_skip);
+    assert_eq!(r.toolkit, Some(Toolkit::Electron));
+    assert!(!r.raw_inject_eligible);
+    // Production code path: is_blocked_app_id must still return true.
+    assert!(niri::inject::grant_confirm::is_blocked_app_id("hermes-desktop"));
+}
+
+#[test]
+fn app_catalog_unknown_app_id_routes_to_unknown() {
+    use niri::inject::app_catalog::{app_id_routes, AppRoutes, CaptureStrategy, SemanticStrength};
+    let r = app_id_routes("definitely-not-in-catalog-zzz");
+    assert_eq!(r, AppRoutes::unknown());
+    // Capture is BackgroundUnavailable for unknowns; semantic is None;
+    // raw_inject_eligible is false; hud_skip is false.
+    assert_eq!(r.capture, CaptureStrategy::BackgroundUnavailable);
+    assert_eq!(r.semantic, SemanticStrength::None);
+    assert!(!r.raw_inject_eligible);
+    assert!(!r.hud_skip);
+}
+
+#[test]
+fn app_catalog_blocked_app_id_includes_hermes_desktop() {
+    // Row 11b's is_blocked_app_id must consult the catalog AND keep its
+    // existing filter (hermes-desktop + niri-*). zen / gnome-calculator /
+    // Alacritty must NOT be blocked.
+    assert!(niri::inject::grant_confirm::is_blocked_app_id("hermes-desktop"));
+    assert!(niri::inject::grant_confirm::is_blocked_app_id("niri-config"));
+    assert!(niri::inject::grant_confirm::is_blocked_app_id("niri-ipc"));
+    assert!(!niri::inject::grant_confirm::is_blocked_app_id("zen"));
+    assert!(!niri::inject::grant_confirm::is_blocked_app_id("gnome-calculator"));
+    assert!(!niri::inject::grant_confirm::is_blocked_app_id("Alacritty"));
+    assert!(!niri::inject::grant_confirm::is_blocked_app_id("org.gnome.Nautilus"));
+}
