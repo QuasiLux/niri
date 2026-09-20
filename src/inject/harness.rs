@@ -4,6 +4,8 @@
 //! `&mut State` and reads lock / output-power flags through it. Window
 //! lookup maps the wire `u64` through [`MappedId`] onto the live layout.
 
+use std::time::Duration;
+
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::input::agent_seat::AgentSeat;
@@ -30,6 +32,23 @@ impl<'a> NiriInjectHarness<'a> {
 
     pub fn niri_mut(&mut self) -> &mut Niri {
         &mut self.state.niri
+    }
+
+    pub fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
+        {
+            let pending = self.state.niri.grant_confirm.pending();
+            let g = pending.lock().unwrap();
+            if let Some(existing) = g.as_ref() {
+                if existing.requested_at.elapsed() < Duration::from_secs(30) {
+                    return false;
+                }
+            }
+        }
+        self.state
+            .niri
+            .grant_confirm
+            .record(bot_id.to_string(), token_fingerprint);
+        true
     }
 }
 
@@ -75,6 +94,10 @@ impl InjectHarness for NiriInjectHarness<'_> {
 
     fn grant_present(&self, bot_id: &str, window_id: u64) -> bool {
         self.state.niri.grant_map.has_grant(bot_id, window_id)
+    }
+
+    fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
+        NiriInjectHarness::request_grant(self, bot_id, token_fingerprint)
     }
 
     fn is_occluded(&mut self) -> bool {
