@@ -32,9 +32,7 @@ use niri::inject::smithay::input::touch::{
 use niri::inject::smithay::input::{Seat, SeatHandler, SeatState};
 use niri::inject::smithay::reexports::wayland_server::backend::ClientData;
 use niri::inject::smithay::reexports::wayland_server::protocol::wl_surface::{self, WlSurface};
-use niri::inject::smithay::reexports::wayland_server::{
-    Client, Dispatch, Display, DisplayHandle,
-};
+use niri::inject::smithay::reexports::wayland_server::{Client, Dispatch, Display, DisplayHandle};
 use niri::inject::smithay::utils::{IsAlive, Logical, Point, Serial};
 use niri::inject::{
     AgentSeat, ClickOutcome, DispatchHarness, DispatchState, GrantResolution, InjectHarness,
@@ -403,11 +401,8 @@ fn run_protocol_on<H: InjectHarness>(harness: &mut H, requests: &[u8]) -> String
         .handle()
         .adapt_io(server)
         .expect("adapt inject stream");
-    block_on_loop(
-        &mut event_loop,
-        handle_inject_client(harness, async_server),
-    )
-    .expect("handle_inject_client");
+    block_on_loop(&mut event_loop, handle_inject_client(harness, async_server))
+        .expect("handle_inject_client");
 
     let mut buf = Vec::new();
     client.read_to_end(&mut buf).expect("read inject replies");
@@ -468,19 +463,13 @@ fn auth_mismatch_closes_after_retry() {
 fn bind_unknown_window_returns_err_and_keeps_open() {
     let tokens = token_file();
     let mut harness = Harness::new(tokens.clone());
-    let req = format!(
-        "{}BIND 999999\nBIND {KNOWN_WINDOW}\n",
-        hello_auth()
-    );
+    let req = format!("{}BIND 999999\nBIND {KNOWN_WINDOW}\n", hello_auth());
     let replies = run_protocol(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
 
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
-    assert!(
-        replies.contains("FRAME ERR BAD_WINDOW_ID\n"),
-        "{replies:?}"
-    );
+    assert!(replies.contains("FRAME ERR BAD_WINDOW_ID\n"), "{replies:?}");
     assert!(replies.contains("BIND OK\n"), "{replies:?}");
     let bind_err = replies.find("FRAME ERR BAD_WINDOW_ID\n").unwrap();
     let bind_ok = replies.find("BIND OK\n").unwrap();
@@ -491,10 +480,7 @@ fn bind_unknown_window_returns_err_and_keeps_open() {
 fn drag_synthesizes_motion_button_motion_button() {
     let tokens = token_file();
     let mut harness = Harness::new(tokens.clone());
-    let req = format!(
-        "{}BIND {KNOWN_WINDOW}\nDRAG 10 20 30 40\n",
-        hello_auth()
-    );
+    let req = format!("{}BIND {KNOWN_WINDOW}\nDRAG 10 20 30 40\n", hello_auth());
     let replies = run_protocol(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
 
@@ -530,7 +516,10 @@ fn scroll_does_not_consume_user_seat_offset() {
 fn key_dispatch_does_not_mutate_user_focus() {
     let tokens = token_file();
     let mut harness = Harness::new(tokens.clone());
-    let req = format!("{}BIND {KNOWN_WINDOW}\nKEY XF86XK_AudioMute\n", hello_auth());
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nKEY XF86XK_AudioMute\n",
+        hello_auth()
+    );
     let replies = run_protocol(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
 
@@ -569,9 +558,15 @@ fn outputs_off_refuses_post_bind_click() {
     let replies = run_protocol(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
 
-    assert!(replies.contains("DISPATCH ERR OUTPUTS_OFF\n"), "{replies:?}");
+    assert!(
+        replies.contains("DISPATCH ERR OUTPUTS_OFF\n"),
+        "{replies:?}"
+    );
     assert!(!replies.contains("DISPATCH OK\n"), "{replies:?}");
-    assert!(replies.ends_with("DISPATCH ERR OUTPUTS_OFF\n"), "{replies:?}");
+    assert!(
+        replies.ends_with("DISPATCH ERR OUTPUTS_OFF\n"),
+        "{replies:?}"
+    );
     assert_eq!(harness.surface_target.lock().unwrap().motion_count, 0);
     assert_user_seat_untouched(&harness);
 }
@@ -685,7 +680,10 @@ fn outputs_off_override_via_wl_output_listener() {
     let _ = fs::remove_file(&tokens);
 
     assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
-    assert!(!replies.contains("DISPATCH ERR OUTPUTS_OFF\n"), "{replies:?}");
+    assert!(
+        !replies.contains("DISPATCH ERR OUTPUTS_OFF\n"),
+        "{replies:?}"
+    );
     assert_eq!(harness.surface_target.lock().unwrap().motion_count, 1);
     assert_user_seat_untouched(&harness);
 }
@@ -760,7 +758,10 @@ fn key_dispatch_on_proxy_harness_increments_key_count() {
         .unwrap()
         .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
     let mut harness = DispatchHarness::new(&mut state);
-    let req = format!("{}BIND {KNOWN_WINDOW}\nKEY XF86XK_AudioMute\n", hello_auth());
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nKEY XF86XK_AudioMute\n",
+        hello_auth()
+    );
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
@@ -802,10 +803,7 @@ fn key_dispatch_unknown_xkb_name_returns_not_bound() {
     );
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(
-        replies.ends_with("DISPATCH ERR NOT_BOUND\n"),
-        "{replies:?}"
-    );
+    assert!(replies.ends_with("DISPATCH ERR NOT_BOUND\n"), "{replies:?}");
     assert_eq!(state.surface_target.lock().unwrap().key_count, 0);
 }
 
@@ -938,7 +936,10 @@ fn drag_dispatch_on_proxy_harness_increments_motion_count() {
     let _ = fs::remove_file(&tokens);
     assert!(ok, "drag must return true on finite coordinates");
     let rec = state.surface_target.lock().unwrap();
-    assert_eq!(rec.motion_count, 2, "drag fires pointer.motion twice (from then to)");
+    assert_eq!(
+        rec.motion_count, 2,
+        "drag fires pointer.motion twice (from then to)"
+    );
     assert_eq!(rec.last_motion, Some(Point::from((30.0, 40.0))));
 }
 
@@ -1443,7 +1444,9 @@ fn app_catalog_hermes_desktop_hud_skip_is_true() {
     assert_eq!(r.toolkit, Some(Toolkit::Electron));
     assert!(!r.raw_inject_eligible);
     // Production code path: is_blocked_app_id must still return true.
-    assert!(niri::inject::grant_confirm::is_blocked_app_id("hermes-desktop"));
+    assert!(niri::inject::grant_confirm::is_blocked_app_id(
+        "hermes-desktop"
+    ));
 }
 
 #[test]
@@ -1464,11 +1467,148 @@ fn app_catalog_blocked_app_id_includes_hermes_desktop() {
     // Row 11b's is_blocked_app_id must consult the catalog AND keep its
     // existing filter (hermes-desktop + niri-*). zen / gnome-calculator /
     // Alacritty must NOT be blocked.
-    assert!(niri::inject::grant_confirm::is_blocked_app_id("hermes-desktop"));
-    assert!(niri::inject::grant_confirm::is_blocked_app_id("niri-config"));
+    assert!(niri::inject::grant_confirm::is_blocked_app_id(
+        "hermes-desktop"
+    ));
+    assert!(niri::inject::grant_confirm::is_blocked_app_id(
+        "niri-config"
+    ));
     assert!(niri::inject::grant_confirm::is_blocked_app_id("niri-ipc"));
     assert!(!niri::inject::grant_confirm::is_blocked_app_id("zen"));
-    assert!(!niri::inject::grant_confirm::is_blocked_app_id("gnome-calculator"));
+    assert!(!niri::inject::grant_confirm::is_blocked_app_id(
+        "gnome-calculator"
+    ));
     assert!(!niri::inject::grant_confirm::is_blocked_app_id("Alacritty"));
-    assert!(!niri::inject::grant_confirm::is_blocked_app_id("org.gnome.Nautilus"));
+    assert!(!niri::inject::grant_confirm::is_blocked_app_id(
+        "org.gnome.Nautilus"
+    ));
+}
+
+#[test]
+fn atspi_strong_route_routes_to_element_for_gnome_calculator() {
+    use niri::inject::atspi_ladder::{route, AtSpiAction, AtSpiRoute};
+    let r = route(
+        "gnome-calculator",
+        &AtSpiAction::LabelClick {
+            acc_role: "push button".into(),
+            name_query: "7".into(),
+        },
+    );
+    assert!(matches!(
+        r,
+        AtSpiRoute::Element { role, query } if role == "push button" && query == "7"
+    ));
+}
+
+#[test]
+fn atspi_chrome_button_routes_to_element_for_zen() {
+    use niri::inject::atspi_ladder::{route, AtSpiAction, AtSpiRoute};
+    let r = route(
+        "zen",
+        &AtSpiAction::LabelClick {
+            acc_role: "push button".into(),
+            name_query: "Reload".into(),
+        },
+    );
+    assert!(matches!(r, AtSpiRoute::Element { .. }));
+}
+
+#[test]
+fn atspi_chrome_canvas_routes_to_background_unavailable_for_zen() {
+    use niri::inject::atspi_ladder::{route, AtSpiAction, AtSpiRoute, REASON_BG_UNAVAILABLE};
+    let r = route(
+        "zen",
+        &AtSpiAction::Canvas {
+            query: "page body".into(),
+        },
+    );
+    assert_eq!(
+        r,
+        AtSpiRoute::CanvasRaw {
+            reason: REASON_BG_UNAVAILABLE.into()
+        }
+    );
+}
+
+#[test]
+fn atspi_raw_inject_route_for_alacritty_uses_raw_path() {
+    use niri::inject::atspi_ladder::{route, AtSpiAction, AtSpiRoute};
+    let r = route(
+        "Alacritty",
+        &AtSpiAction::LabelClick {
+            acc_role: "push button".into(),
+            name_query: "x".into(),
+        },
+    );
+    assert_eq!(r, AtSpiRoute::RawInject);
+}
+
+#[test]
+fn atspi_unknown_app_id_returns_background_unavailable_never_raw() {
+    use niri::inject::atspi_ladder::{route, AtSpiAction, AtSpiRoute, REASON_BG_UNAVAILABLE};
+    let r = route(
+        "definitely-not-in-catalog-zzz",
+        &AtSpiAction::LabelClick {
+            acc_role: "push button".into(),
+            name_query: "x".into(),
+        },
+    );
+    assert_eq!(
+        r,
+        AtSpiRoute::CanvasRaw {
+            reason: REASON_BG_UNAVAILABLE.into()
+        }
+    );
+    assert!(!matches!(r, AtSpiRoute::RawInject));
+}
+
+#[test]
+fn atspi_strong_route_returns_background_unavailable_when_element_not_found() {
+    // Row 13 doesn't walk the AX tree; Element routes resolve to typed
+    // BACKGROUND_UNAVAILABLE at the dispatch layer (see socket.rs).
+    // Verify the wire reply shape directly.
+    use niri::inject::Reply;
+    let rep = Reply::AtElementReply {
+        payload: "BACKGROUND_UNAVAILABLE".into(),
+    };
+    assert_eq!(rep.to_bytes(), b"AT_ELEMENT_REPLY BACKGROUND_UNAVAILABLE\n");
+}
+
+#[test]
+fn atspi_per_action_policy_no_silent_fallback_to_user_seat() {
+    use niri::inject::app_catalog::SemanticStrength;
+    use niri::inject::atspi_ladder::{route, AtSpiAction, AtSpiRoute};
+    let strong_apps = ["gnome-calculator"];
+    for app in strong_apps {
+        for action in [
+            AtSpiAction::LabelClick {
+                acc_role: "push button".into(),
+                name_query: "x".into(),
+            },
+            AtSpiAction::EditInsert {
+                acc_role: "text".into(),
+                name_query: "y".into(),
+                text: "z".into(),
+            },
+            AtSpiAction::Canvas {
+                query: "page".into(),
+            },
+        ] {
+            let r = route(app, &action);
+            assert!(
+                !matches!(r, AtSpiRoute::RawInject),
+                "{app} → {action:?} unexpectedly returned RawInject"
+            );
+        }
+    }
+    let chrome_r = route(
+        "zen",
+        &AtSpiAction::LabelClick {
+            acc_role: "push button".into(),
+            name_query: "x".into(),
+        },
+    );
+    assert!(!matches!(chrome_r, AtSpiRoute::RawInject));
+    let calc = niri::inject::app_catalog::app_id_routes("gnome-calculator");
+    assert_eq!(calc.semantic, SemanticStrength::AtSpiStrong);
 }
