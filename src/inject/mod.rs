@@ -3,6 +3,9 @@
 //! Wire format (HELLO / AUTH / BIND / CLICK / KEY / SCROLL / DRAG) and token
 //! validation live here. Compositor-startup wiring is gated on
 //! [`QLUX_INJECT_ENABLE`] inside `Niri::new`.
+//!
+//! Override [`InjectHarness::key_press`] in production harnesses; the trait
+//! default returns false and produces `DISPATCH ERR NOT_BOUND`.
 
 pub mod dispatch;
 pub mod harness;

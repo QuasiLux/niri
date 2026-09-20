@@ -27,7 +27,10 @@ use std::time::Duration;
 
 use calloop::EventLoop;
 use smithay::backend::input::KeyState;
-use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
+use smithay::input::keyboard::{
+    FilterResult, KeyboardHandle, KeyboardTarget, KeysymHandle, ModifiersState, xkb,
+    keysyms::KEY_NoSymbol,
+};
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
@@ -41,7 +44,7 @@ use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_server::backend::ClientData;
 use smithay::reexports::wayland_server::protocol::wl_surface::{self, WlSurface};
 use smithay::reexports::wayland_server::{Client, Dispatch, Display, DisplayHandle};
-use smithay::utils::{IsAlive, Logical, Point, Serial};
+use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER, Serial};
 
 use crate::input::agent_seat::AgentSeat;
 use crate::inject::protocol::InjectHarness;
@@ -71,6 +74,7 @@ pub struct DispatchTarget {
     pub key_count: u32,
     pub axis_count: u32,
     pub last_motion: Option<Point<f64, Logical>>,
+    pub last_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -300,6 +304,77 @@ impl<'a> DispatchHarness<'a> {
     }
 }
 
+/// Decode a wire xkb name. `XF86XK_AudioMute` is accepted as `XF86AudioMute`.
+fn lookup_inject_keysym(name: &str) -> Option<xkb::Keysym> {
+    fn try_parse(name: &str) -> Option<xkb::Keysym> {
+        let mut keysym = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+        if keysym.raw() == KEY_NoSymbol {
+            keysym = xkb::keysym_from_name(name, xkb::KEYSYM_CASE_INSENSITIVE);
+        }
+        if keysym.raw() == KEY_NoSymbol {
+            None
+        } else {
+            Some(keysym)
+        }
+    }
+    if let Some(keysym) = try_parse(name) {
+        return Some(keysym);
+    }
+    // Wire names like XF86XK_AudioMute; xkbcommon uses XF86AudioMute.
+    let stripped = name.replace("XK_", "");
+    if stripped != name {
+        try_parse(&stripped)
+    } else {
+        None
+    }
+}
+
+/// Press+release on the agent seat. Returns false when the keysym is missing
+/// from the keymap (distinct from a missing `InjectHarness::key_press` hook).
+///
+/// architecture-delta:
+/// - what changed: DispatchHarness::key_press and NiriInjectHarness::key_press
+///   override the trait default; xkb_name → keysym_from_name →
+///   keycode_for_keysym → agent_seat.keyboard.input Pressed/Released.
+/// - why: trait default false mapped every KEY frame to NOT_BOUND; tests
+///   passed only because the test Harness overrode the hook.
+/// - supersedes: parked t_f00a4116 root-cause analysis.
+/// - next cards must: when adding InjectHarness methods, do not default a
+///   bool to false if the wire maps false to NOT_BOUND — provide a hook.
+/// - scroll/drag: already shipped via pointer_*; only KEY was the stub.
+pub(crate) fn inject_agent_key_press<D: SeatHandler + 'static>(
+    keyboard: &KeyboardHandle<D>,
+    state: &mut D,
+    xkb_name: &str,
+    time: u32,
+) -> bool {
+    let Some(keysym) = lookup_inject_keysym(xkb_name) else {
+        return false;
+    };
+    let Some(keycode) = keyboard.keycode_for_keysym(keysym) else {
+        return false;
+    };
+    let serial = SERIAL_COUNTER.next_serial();
+    keyboard.input(
+        state,
+        keycode,
+        KeyState::Pressed,
+        serial,
+        time,
+        |_d, _mods, _handle| FilterResult::<()>::Forward,
+    );
+    let serial = SERIAL_COUNTER.next_serial();
+    keyboard.input(
+        state,
+        keycode,
+        KeyState::Released,
+        serial,
+        time,
+        |_d, _mods, _handle| FilterResult::<()>::Forward,
+    );
+    true
+}
+
 impl<'a> InjectHarness for DispatchHarness<'a> {
     type AgentState = DispatchState;
 
@@ -333,6 +408,18 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     }
     fn is_occluded(&mut self) -> bool {
         false
+    }
+
+    fn key_press(&mut self, xkb_name: &str) -> bool {
+        let keyboard = self.state.agent_seat.keyboard.clone();
+        let time = self.now_ms();
+        if !inject_agent_key_press(&keyboard, self.state, xkb_name, time) {
+            return false;
+        }
+        let mut rec = self.state.surface_target.lock().unwrap();
+        rec.last_key = Some(xkb_name.to_string());
+        rec.key_count += 1;
+        true
     }
 }
 
