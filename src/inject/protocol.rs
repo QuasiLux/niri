@@ -14,6 +14,11 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::input::agent_seat::AgentSeat;
 
+pub use crate::inject::grant_confirm::{
+    is_blocked_app_id, ClickOutcome, ConfirmRow, GrantClickHost, GrantConfirmSurface,
+    GrantResolution, GrantSlot, PointerClick, Rect, SeatKind,
+};
+
 pub const OPC_HELLO: &str = "HELLO";
 pub const OPC_AUTH: &str = "AUTH";
 pub const OPC_BIND: &str = "BIND";
@@ -38,6 +43,7 @@ pub const REP_AUTH_ERR: &str = "AUTH ERR";
 pub const REP_GRANT_ACK: &str = "GRANT ACK";
 pub const REP_GRANT_QUEUED: &str = "QUEUED";
 pub const REP_GRANT_DENIED_W: &str = "DENIED";
+pub const REP_GRANT_ACK_OK_W: &str = "OK";
 
 pub const ERR_TOO_BIG: &str = "TOO_BIG";
 pub const ERR_MALFORMED: &str = "MALFORMED";
@@ -119,6 +125,8 @@ pub enum Reply {
     FrameErr { code: &'static str },
     AuthErr { code: &'static str },
     GrantAck { queued: bool },
+    GrantAckOk,
+    GrantAckDenied,
 }
 
 impl Reply {
@@ -133,6 +141,8 @@ impl Reply {
             Reply::AuthErr { code } => format!("{REP_AUTH_ERR} {code}\n"),
             Reply::GrantAck { queued: true } => format!("{REP_GRANT_ACK} {REP_GRANT_QUEUED}\n"),
             Reply::GrantAck { queued: false } => format!("{REP_GRANT_ACK} {REP_GRANT_DENIED_W}\n"),
+            Reply::GrantAckOk => format!("{REP_GRANT_ACK} {REP_GRANT_ACK_OK_W}\n"),
+            Reply::GrantAckDenied => format!("{REP_GRANT_ACK} {REP_GRANT_DENIED_W}\n"),
         };
         s.into_bytes()
     }
@@ -212,6 +222,18 @@ pub trait InjectHarness {
         let _ = (bot_id, token_fingerprint);
         false
     }
+    /// Apply a resolved grant-confirm click. Default is a no-op miss.
+    fn apply_grant_confirm_click(
+        &mut self,
+        bot_id: &str,
+        window_id: u64,
+        app_id: &str,
+        seat: SeatKind,
+        resolution: GrantResolution,
+    ) -> ClickOutcome {
+        let _ = (bot_id, window_id, app_id, seat, resolution);
+        ClickOutcome::IgnoredNoRow
+    }
     fn is_occluded(&mut self) -> bool {
         false
     }
@@ -223,7 +245,10 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
     if input.len() > MAX_FRAME_LEN {
         return Err(FrameError::TooBig);
     }
-    let nl = input.iter().position(|&b| b == b'\n').ok_or(FrameError::Incomplete)?;
+    let nl = input
+        .iter()
+        .position(|&b| b == b'\n')
+        .ok_or(FrameError::Incomplete)?;
     if nl > MAX_FRAME_LEN {
         return Err(FrameError::TooBig);
     }
@@ -243,7 +268,10 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
             if parts.next().is_some() {
                 return Err(FrameError::Malformed);
             }
-            let nl2 = after.iter().position(|&b| b == b'\n').ok_or(FrameError::Incomplete)?;
+            let nl2 = after
+                .iter()
+                .position(|&b| b == b'\n')
+                .ok_or(FrameError::Incomplete)?;
             if nl + 1 + nl2 > MAX_FRAME_LEN {
                 return Err(FrameError::TooBig);
             }
@@ -377,10 +405,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!(
-            "qlux-inject-tokens-{}-{nanos}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("qlux-inject-tokens-{}-{nanos}", std::process::id()));
         fs::write(&path, body).unwrap();
         path
     }

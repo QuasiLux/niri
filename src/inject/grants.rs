@@ -15,9 +15,15 @@ impl GrantMap {
         Self::default()
     }
 
-    #[allow(dead_code)]
+    pub fn from_arc(inner: Arc<Mutex<HashMap<(String, u64), ()>>>) -> Self {
+        Self(inner)
+    }
+
     pub fn apply_grant(&self, bot_id: impl Into<String>, window_id: u64) {
-        self.0.lock().unwrap().insert((bot_id.into(), window_id), ());
+        self.0
+            .lock()
+            .unwrap()
+            .insert((bot_id.into(), window_id), ());
     }
 
     pub fn has_grant(&self, bot_id: &str, window_id: u64) -> bool {

@@ -36,7 +36,10 @@ use niri::inject::smithay::reexports::wayland_server::{
     Client, Dispatch, Display, DisplayHandle,
 };
 use niri::inject::smithay::utils::{IsAlive, Logical, Point, Serial};
-use niri::inject::{AgentSeat, DispatchHarness, DispatchState, InjectHarness, PendingGrant};
+use niri::inject::{
+    AgentSeat, ClickOutcome, DispatchHarness, DispatchState, GrantResolution, InjectHarness,
+    PendingGrant, SeatKind,
+};
 
 const KNOWN_WINDOW: u64 = 42;
 const TOKEN_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1223,4 +1226,174 @@ fn grant_request_token_fingerprint_is_captured() {
     let pending = state.pending.lock().unwrap();
     let recorded = pending.as_ref().expect("pending grant recorded");
     assert_eq!(recorded.token_fingerprint, [0u8; 8]);
+}
+
+#[test]
+fn grant_click_inserts_grant_into_map() {
+    let tokens = token_file();
+    let state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let outcome = state.grant_confirm.apply_resolved(
+        &state.grants,
+        KNOWN_WINDOW,
+        "firefox",
+        SeatKind::User,
+        GrantResolution::Granted,
+    );
+    assert_eq!(outcome, ClickOutcome::Granted { wid: KNOWN_WINDOW });
+    assert!(state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+    assert!(state.pending.lock().unwrap().is_none());
+    let _ = fs::remove_file(&tokens);
+}
+
+#[test]
+fn grant_click_by_agent_seat_is_ignored() {
+    let tokens = token_file();
+    let state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let outcome = state.grant_confirm.apply_resolved(
+        &state.grants,
+        KNOWN_WINDOW,
+        "firefox",
+        SeatKind::Agent,
+        GrantResolution::Granted,
+    );
+    assert_eq!(outcome, ClickOutcome::IgnoredAgentSeat);
+    assert!(!state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+    assert!(state.pending.lock().unwrap().is_none());
+    let _ = fs::remove_file(&tokens);
+}
+
+#[test]
+fn grant_click_on_own_app_id_denied() {
+    let tokens = token_file();
+    let state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let outcome = state.grant_confirm.apply_resolved(
+        &state.grants,
+        KNOWN_WINDOW,
+        "hermes-desktop",
+        SeatKind::User,
+        GrantResolution::Granted,
+    );
+    assert_eq!(outcome, ClickOutcome::IgnoredNoRow);
+    assert!(!state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+    assert!(state.pending.lock().unwrap().is_none());
+    let _ = fs::remove_file(&tokens);
+}
+
+#[test]
+fn grant_click_then_bind_succeeds() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let outcome = state.grant_confirm.apply_resolved(
+        &state.grants,
+        KNOWN_WINDOW,
+        "firefox",
+        SeatKind::User,
+        GrantResolution::Granted,
+    );
+    assert_eq!(outcome, ClickOutcome::Granted { wid: KNOWN_WINDOW });
+    assert!(state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(!replies.contains("NOT_GRANTED"), "{replies:?}");
+}
+
+#[test]
+fn grant_deny_clears_pending_keeps_bind_denied() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let outcome = state.grant_confirm.apply_resolved(
+        &state.grants,
+        KNOWN_WINDOW,
+        "firefox",
+        SeatKind::User,
+        GrantResolution::Denied,
+    );
+    assert_eq!(outcome, ClickOutcome::Denied);
+    assert!(state.pending.lock().unwrap().is_none());
+    assert!(!state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(
+        replies.contains("DISPATCH ERR NOT_GRANTED\n"),
+        "{replies:?}"
+    );
 }
