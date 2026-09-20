@@ -165,6 +165,11 @@ pub trait InjectHarness {
         let _ = (_h_axis, _v_axis);
         false
     }
+    /// DRAG hook. Return true to reply DISPATCH OK; false → NOT_BOUND.
+    /// Returns false when any coordinate is NaN (and the default always returns false).
+    fn drag(&mut self, _from_x: f64, _from_y: f64, _to_x: f64, _to_y: f64) -> bool {
+        false
+    }
     fn is_locked(&self) -> bool {
         false
     }
