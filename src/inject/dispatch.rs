@@ -76,6 +76,8 @@ pub struct DispatchState {
     pub pending: Arc<Mutex<Option<PendingGrant>>>,
     pub grant_confirm: GrantConfirmState,
     pub pending_resolution: Arc<Mutex<HashMap<String, GrantResolution>>>,
+    /// Row 13 test hook; production leaves `None` until Row 14.
+    pub bound_app_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -147,11 +149,20 @@ impl DispatchState {
             pending,
             grant_confirm,
             pending_resolution,
+            bound_app_id: None,
         }
     }
 
     pub fn snapshot_motion_count(&self) -> u32 {
         *self.motion_count.borrow()
+    }
+
+    pub fn app_id_for(&self, _window_id: u64) -> Option<String> {
+        self.bound_app_id.clone()
+    }
+
+    pub fn set_bound_app_id(&mut self, app_id: impl Into<String>) {
+        self.bound_app_id = Some(app_id.into());
     }
 }
 
@@ -589,6 +600,18 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     fn app_id_routes(&self, app_id: &str) -> AppRoutes {
         crate::inject::app_catalog::app_id_routes(app_id)
     }
+
+    fn route(
+        &self,
+        app_id: &str,
+        action: &crate::inject::atspi_ladder::AtSpiAction,
+    ) -> crate::inject::atspi_ladder::AtSpiRoute {
+        crate::inject::atspi_ladder::route(app_id, action)
+    }
+
+    fn app_id_for(&self, window_id: u64) -> Option<String> {
+        self.state.app_id_for(window_id)
+    }
     fn is_occluded(&mut self) -> bool {
         false
     }
@@ -684,6 +707,11 @@ pub fn dispatch_inject_connection(
     let _ = core::hint::black_box(b"ERR_NOT_GRANTED\0");
     let _ = core::hint::black_box(b"GRANT_REQUEST\0");
     let _ = core::hint::black_box(b"ERR_GRANT_DENIED\0");
+    let _ = core::hint::black_box(b"AT_ELEMENT_REQ\0");
+    let _ = core::hint::black_box(b"AT_ELEMENT_REPLY\0");
+    let _ = core::hint::black_box(b"BACKGROUND_UNAVAILABLE\0");
+    let _ = core::hint::black_box(b"AT_SPI_STRONG\0");
+    let _ = core::hint::black_box(b"AT_SPI_CHROME\0");
     let _ = core::hint::black_box(b"apply_grant_confirm_click\0");
     let _ = core::hint::black_box(Reply::GrantAckOk.to_bytes());
     let _ = core::hint::black_box(Reply::GrantAckDenied.to_bytes());
