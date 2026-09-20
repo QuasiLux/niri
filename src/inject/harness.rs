@@ -14,7 +14,7 @@ use crate::window::mapped::MappedId;
 /// Production inject harness. Construct around compositor [`State`] once a
 /// connection is accepted (receiver plumbing is a later card).
 ///
-/// `scroll` override lands in step 2 (this card); `drag` lands in step 3.
+/// `scroll` calls `inject_agent_scroll` with `None` focus; `drag` is not in this card.
 pub struct NiriInjectHarness<'a> {
     pub state: &'a mut State,
 }
@@ -90,40 +90,14 @@ impl InjectHarness for NiriInjectHarness<'_> {
     }
 
     fn scroll(&mut self, h_axis: f64, v_axis: f64) -> bool {
-        // Mirror inject_agent_scroll (dispatch.rs) but inlined: the helper
-        // requires `D::PointerFocus: Default`, which `State::PointerFocus =
-        // WlSurface` cannot satisfy (WlSurface has no Default impl). The body
-        // marks dispatch.rs out of scope, so we inline the three Smithay
-        // calls here and reproduce the helper's observable behavior: motion
-        // nudge, axis(AxisFrame) twice, frame. axis_count on the seat's
-        // PointerTarget therefore increments by 2, matching DispatchHarness.
-        if h_axis.is_nan() || v_axis.is_nan() {
-            return false;
-        }
-        use smithay::backend::input::{Axis, AxisSource};
-        use smithay::input::pointer::{AxisFrame, MotionEvent};
-        use smithay::utils::{Logical, Point, SERIAL_COUNTER};
         let pointer = self.agent_seat().pointer.clone();
-        let time = 0u32;
-        let origin = Point::<f64, Logical>::from((0.0, 0.0));
-        let serial = SERIAL_COUNTER.next_serial();
-        pointer.motion(
+        crate::inject::dispatch::inject_agent_scroll(
+            &pointer,
             self.agent_state(),
             None,
-            &MotionEvent {
-                location: origin,
-                serial,
-                time,
-            },
-        );
-        let frame = AxisFrame::new(time)
-            .source(AxisSource::Wheel)
-            .value(Axis::Horizontal, h_axis)
-            .value(Axis::Vertical, v_axis);
-        pointer.axis(self.agent_state(), frame);
-        pointer.axis(self.agent_state(), frame);
-        pointer.frame(self.agent_state());
-        true
+            h_axis,
+            v_axis,
+        )
     }
 }
 

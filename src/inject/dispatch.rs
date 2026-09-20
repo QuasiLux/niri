@@ -378,24 +378,24 @@ pub(crate) fn inject_agent_key_press<D: SeatHandler + 'static>(
 /// Dispatch a wheel scroll on the agent seat. Returns false when either axis is NaN.
 ///
 /// architecture-delta:
-/// - what changed: inject_agent_scroll helper + DispatchHarness::scroll trait override.
-/// - why: parallel to v11 key_press (factor free helper out of socket.rs::pointer_scroll).
-/// - supersedes: card body step 3 (the proposed pointer.axis(0, h_axis) signature is
-///   wrong for smithay@4cf0b62 — PointerHandle::axis takes an AxisFrame, not (usize, f64)).
-/// - next cards must: when adding a new InjectHarness pointer override, mirror the
-///   pointer.motion(...) focus-nudge + pointer.axis(state, AxisFrame) + pointer.frame()
-///   pattern from socket.rs::pointer_scroll. Do NOT invent pointer.axis(usize, f64) —
-///   that signature does not exist.
-/// - drag: not in this card (step 3 sibling).
+/// - what changed: inject_agent_scroll accepts focus: Option<(D::PointerFocus, Point)>
+///   and drops D::PointerFocus: Default; NiriInjectHarness::scroll calls the helper
+///   with None.
+/// - why: State::PointerFocus = WlSurface has no Default, which forced step-2 to
+///   inline the three Smithay calls.
+/// - supersedes: step-2 inlined NiriInjectHarness::scroll workaround on 70d2ef04.
+/// - next cards must: call the helper (do not re-inline); drag can reuse the same
+///   Option-focus shape; do not reintroduce Default on PointerFocus.
+/// - drag: not in this card.
 pub(crate) fn inject_agent_scroll<D>(
     pointer: &PointerHandle<D>,
     state: &mut D,
+    focus: Option<(<D as SeatHandler>::PointerFocus, Point<f64, Logical>)>,
     h_axis: f64,
     v_axis: f64,
 ) -> bool
 where
     D: SeatHandler + 'static,
-    D::PointerFocus: Default,
 {
     if h_axis.is_nan() || v_axis.is_nan() {
         return false;
@@ -405,7 +405,7 @@ where
     let serial = SERIAL_COUNTER.next_serial();
     pointer.motion(
         state,
-        Some((D::PointerFocus::default(), origin)),
+        focus,
         &MotionEvent {
             location: origin,
             serial,
@@ -474,7 +474,14 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
 
     fn scroll(&mut self, h_axis: f64, v_axis: f64) -> bool {
         let pointer = self.state.agent_seat.pointer.clone();
-        inject_agent_scroll(&pointer, self.state, h_axis, v_axis)
+        let origin = Point::from((0.0, 0.0));
+        inject_agent_scroll(
+            &pointer,
+            self.state,
+            Some((DispatchFocus, origin)),
+            h_axis,
+            v_axis,
+        )
     }
 }
 
