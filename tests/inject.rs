@@ -708,3 +708,65 @@ fn outputs_off_does_not_affect_user_seat() {
     assert_eq!(harness.user_scroll_offset, Point::from(USER_SCROLL));
     assert_user_seat_untouched(&harness);
 }
+
+// KEY after BIND on the proxy DispatchHarness (not the test Harness override).
+// e2e KEY acceptance is already covered by e2e_hello_auth_bind_click_scroll_key_drag
+// (key_count=1 via the e2e harness keys Vec); no duplicate in inject_e2e.rs.
+#[test]
+fn key_dispatch_on_proxy_harness_increments_key_count() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\nKEY XF86XK_AudioMute\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
+    let rec = state.surface_target.lock().unwrap();
+    assert_eq!(rec.key_count, 1);
+    assert_eq!(rec.last_key.as_deref(), Some("XF86XK_AudioMute"));
+}
+
+#[test]
+fn key_dispatch_unknown_xkb_name_returns_not_bound() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nKEY XF86XK_ThisKeyDoesNotExist12345\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(
+        replies.ends_with("DISPATCH ERR NOT_BOUND\n"),
+        "{replies:?}"
+    );
+    assert_eq!(state.surface_target.lock().unwrap().key_count, 0);
+}

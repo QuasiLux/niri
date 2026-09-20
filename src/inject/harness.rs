@@ -75,6 +75,17 @@ impl InjectHarness for NiriInjectHarness<'_> {
         trace!("is_occluded");
         false
     }
+
+    fn key_press(&mut self, xkb_name: &str) -> bool {
+        let keyboard = self.agent_seat().keyboard.clone();
+        let time = self.now_ms();
+        crate::inject::dispatch::inject_agent_key_press(
+            &keyboard,
+            self.agent_state(),
+            xkb_name,
+            time,
+        )
+    }
 }
 
 #[cfg(test)]
