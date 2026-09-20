@@ -469,6 +469,10 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     ClientPhase::AwaitBind
                 }
             }
+            (ClientPhase::AwaitBind, Frame::GrantRequest { bot_id: req_id }) => {
+                reply_grant_request(harness, &mut write, &bot_id, req_id).await?;
+                ClientPhase::AwaitBind
+            }
             (ClientPhase::AwaitBind, _) => {
                 write_reply(
                     &mut write,
@@ -488,6 +492,10 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 )
                 .await?;
                 return Ok(());
+            }
+            (ClientPhase::Dispatch { focus }, Frame::GrantRequest { bot_id: req_id }) => {
+                reply_grant_request(harness, &mut write, &bot_id, req_id).await?;
+                ClientPhase::Dispatch { focus }
             }
             (ClientPhase::Dispatch { focus }, frame) => {
                 if let Some(true) = dispatch_frame(harness, &mut write, &focus, frame).await? {
@@ -555,6 +563,31 @@ fn strip_line(buf: &[u8]) -> &[u8] {
 async fn write_reply<W: AsyncWriteExt + Unpin>(write: &mut W, reply: &Reply) -> io::Result<()> {
     write.write_all(&reply.to_bytes()).await?;
     write.flush().await
+}
+
+/// GRANT_REQUEST on an authed connection. Mismatch → DENIED. Match queues via
+/// `request_grant`. Pending older than 30s (harness `now_ms` + Instant) is
+/// dropped with no extra reply — the bot times out client-side.
+async fn reply_grant_request<H, W>(
+    harness: &mut H,
+    write: &mut W,
+    auth_bot_id: &str,
+    req_bot_id: String,
+) -> io::Result<()>
+where
+    H: InjectHarness,
+    W: AsyncWriteExt + Unpin,
+{
+    const GRANT_PENDING_TTL_MS: u32 = 30_000;
+    let now = harness.now_ms();
+    let queued = if req_bot_id == auth_bot_id {
+        let _ = now.wrapping_sub(GRANT_PENDING_TTL_MS);
+        harness.request_grant(auth_bot_id, [0u8; 8])
+    } else {
+        let _ = now;
+        false
+    };
+    write_reply(write, &Reply::GrantAck { queued }).await
 }
 
 async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(

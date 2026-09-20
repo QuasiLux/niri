@@ -21,6 +21,12 @@ pub const OPC_CLICK: &str = "CLICK";
 pub const OPC_KEY: &str = "KEY";
 pub const OPC_SCROLL: &str = "SCROLL";
 pub const OPC_DRAG: &str = "DRAG";
+pub const OPC_GRANT_REQUEST: &str = "GRANT_REQUEST";
+
+/// Keep the wire-ident name in the release ELF (`strings | grep GRANT_REQUEST`).
+#[used]
+#[allow(dead_code)]
+static OPC_GRANT_REQUEST_IDENT: &str = "GRANT_REQUEST";
 
 pub const REP_HELLO_OK: &str = "HELLO OK";
 pub const REP_AUTH_OK: &str = "AUTH OK";
@@ -29,6 +35,9 @@ pub const REP_DISPATCH_OK: &str = "DISPATCH OK";
 pub const REP_DISPATCH_ERR: &str = "DISPATCH ERR";
 pub const REP_FRAME_ERR: &str = "FRAME ERR";
 pub const REP_AUTH_ERR: &str = "AUTH ERR";
+pub const REP_GRANT_ACK: &str = "GRANT ACK";
+pub const REP_GRANT_QUEUED: &str = "QUEUED";
+pub const REP_GRANT_DENIED_W: &str = "DENIED";
 
 pub const ERR_TOO_BIG: &str = "TOO_BIG";
 pub const ERR_MALFORMED: &str = "MALFORMED";
@@ -43,11 +52,17 @@ pub const ERR_LOCKED: &str = "LOCKED";
 pub const ERR_OUTPUTS_OFF: &str = "OUTPUTS_OFF";
 pub const ERR_STALE_TOKEN: &str = "STALE_TOKEN";
 pub const ERR_NOT_GRANTED: &str = "NOT_GRANTED";
+pub const ERR_GRANT_DENIED: &str = "GRANT_DENIED";
 
 /// Keep the wire-ident name in the release ELF (`strings | grep ERR_NOT_GRANTED`).
 #[used]
 #[allow(dead_code)]
 static ERR_NOT_GRANTED_IDENT: &str = "ERR_NOT_GRANTED";
+
+/// Reserved for Row 11b denial path; required in the release ELF now.
+#[used]
+#[allow(dead_code)]
+static ERR_GRANT_DENIED_IDENT: &str = "ERR_GRANT_DENIED";
 
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
 
@@ -73,6 +88,7 @@ pub enum Frame {
     Key(String),
     Scroll { dx: f64, dy: f64 },
     Drag { from: (f64, f64), to: (f64, f64) },
+    GrantRequest { bot_id: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +118,7 @@ pub enum Reply {
     DispatchErr { code: &'static str },
     FrameErr { code: &'static str },
     AuthErr { code: &'static str },
+    GrantAck { queued: bool },
 }
 
 impl Reply {
@@ -114,6 +131,8 @@ impl Reply {
             Reply::DispatchErr { code } => format!("{REP_DISPATCH_ERR} {code}\n"),
             Reply::FrameErr { code } => format!("{REP_FRAME_ERR} {code}\n"),
             Reply::AuthErr { code } => format!("{REP_AUTH_ERR} {code}\n"),
+            Reply::GrantAck { queued: true } => format!("{REP_GRANT_ACK} {REP_GRANT_QUEUED}\n"),
+            Reply::GrantAck { queued: false } => format!("{REP_GRANT_ACK} {REP_GRANT_DENIED_W}\n"),
         };
         s.into_bytes()
     }
@@ -188,6 +207,11 @@ pub trait InjectHarness {
         let _ = (bot_id, window_id);
         false
     }
+    /// Queue a pending grant request. Default denies (no queue on stub harnesses).
+    fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
+        let _ = (bot_id, token_fingerprint);
+        false
+    }
     fn is_occluded(&mut self) -> bool {
         false
     }
@@ -241,6 +265,18 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
             Ok((Frame::Key(name.to_string()), after))
         }
         OPC_SCROLL => parse_two_f64(parts).map(|(dx, dy)| (Frame::Scroll { dx, dy }, after)),
+        OPC_GRANT_REQUEST => {
+            let bot_id = parts.next().ok_or(FrameError::Malformed)?;
+            if parts.next().is_some() {
+                return Err(FrameError::Malformed);
+            }
+            Ok((
+                Frame::GrantRequest {
+                    bot_id: bot_id.to_string(),
+                },
+                after,
+            ))
+        }
         OPC_DRAG => parse_four_f64(parts).map(|from_to| {
             let (from, to) = from_to;
             (Frame::Drag { from, to }, after)
