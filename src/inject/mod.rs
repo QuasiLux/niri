@@ -7,6 +7,7 @@
 //! Override [`InjectHarness::key_press`] in production harnesses; the trait
 //! default returns false and produces `DISPATCH ERR NOT_BOUND`.
 
+pub mod app_catalog;
 pub mod dispatch;
 pub mod grant_confirm;
 pub mod grants;
@@ -15,6 +16,10 @@ pub mod protocol;
 pub mod socket;
 
 pub use crate::input::agent_seat::{AgentSeat, AGENT_SEAT_NAME};
+pub use app_catalog::{
+    app_id_routes, AppCatalogEntry, AppCatalogMarker, AppRoutes, CaptureStrategy, SemanticStrength,
+    Toolkit,
+};
 pub use dispatch::{dispatch_inject_connection, DispatchHarness, DispatchState};
 pub use grant_confirm::{
     is_blocked_app_id, ClickOutcome, ConfirmRow, GrantClickHost, GrantConfirmState,
