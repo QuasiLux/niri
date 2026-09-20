@@ -29,9 +29,10 @@ use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use super::protocol::{
-    parse_frame, validate_token, Frame, FrameError, InjectHarness, Reply, TokenError, ERR_BAD_TOKEN,
-    ERR_BAD_WINDOW, ERR_IO, ERR_LOCKED, ERR_NO_TOKEN_FILE, ERR_NOT_GRANTED, ERR_OCCLUDED,
-    ERR_OUTPUTS_OFF, ERR_STALE_TOKEN, ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN, OPC_AUTH,
+    parse_frame, validate_token, Frame, FrameError, InjectHarness, Reply, TokenError,
+    ERR_BAD_TOKEN, ERR_BAD_WINDOW, ERR_IO, ERR_LOCKED, ERR_NOT_GRANTED, ERR_NO_TOKEN_FILE,
+    ERR_OCCLUDED, ERR_OUTPUTS_OFF, ERR_STALE_TOKEN, ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN,
+    OPC_AUTH,
 };
 
 /// Path suffix under the runtime dir. Kept as a string so the release ELF
@@ -181,13 +182,9 @@ impl InjectServer {
         let id = self.next_id.get();
         self.next_id.set(id.wrapping_add(1));
         let (close_tx, close_rx) = async_channel::bounded(1);
-        self.connections.borrow_mut().insert(
-            id,
-            ActiveConn {
-                bot_id,
-                close_tx,
-            },
-        );
+        self.connections
+            .borrow_mut()
+            .insert(id, ActiveConn { bot_id, close_tx });
         (id, close_rx)
     }
 
@@ -278,7 +275,10 @@ pub fn apply_inject_socket_ownership(path: &Path, gid: libc::gid_t) {
     use std::os::unix::ffi::OsStrExt;
 
     let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-        warn!("inject socket path is not a valid CString: {}", path.display());
+        warn!(
+            "inject socket path is not a valid CString: {}",
+            path.display()
+        );
         return;
     };
     let rc = unsafe { libc::chown(cpath.as_ptr(), libc::uid_t::MAX, gid) };
@@ -495,6 +495,33 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
             }
             (ClientPhase::Dispatch { focus }, Frame::GrantRequest { bot_id: req_id }) => {
                 reply_grant_request(harness, &mut write, &bot_id, req_id).await?;
+                ClientPhase::Dispatch { focus }
+            }
+            (ClientPhase::Dispatch { focus }, Frame::AtElementReq { window_id, action }) => {
+                let app_id = harness.app_id_for(window_id).unwrap_or_default();
+                use super::atspi_ladder::AtSpiRoute;
+                match harness.route(&app_id, &action) {
+                    AtSpiRoute::Element { role, query } => {
+                        let _ = (role, query); // AX-tree walk deferred to Row 14/15.
+                        let payload = crate::inject::atspi_ladder::REASON_BG_UNAVAILABLE;
+                        tracing::debug!(payload, "atspi.reply");
+                        write_reply(
+                            &mut write,
+                            &Reply::AtElementReply {
+                                payload: payload.into(),
+                            },
+                        )
+                        .await?;
+                    }
+                    AtSpiRoute::CanvasRaw { reason } => {
+                        tracing::debug!(payload = %reason, "atspi.reply");
+                        write_reply(&mut write, &Reply::AtElementReply { payload: reason }).await?;
+                    }
+                    AtSpiRoute::RawInject => {
+                        tracing::debug!(payload = "DISPATCH OK", "atspi.reply");
+                        write_reply(&mut write, &Reply::DispatchOk).await?;
+                    }
+                }
                 ClientPhase::Dispatch { focus }
             }
             (ClientPhase::Dispatch { focus }, frame) => {
@@ -832,9 +859,19 @@ mod tests {
     }
 
     impl PointerTarget<ReloadHarness> for Focus {
-        fn enter(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &MotionEvent) {
+        fn enter(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &MotionEvent,
+        ) {
         }
-        fn motion(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &MotionEvent) {
+        fn motion(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &MotionEvent,
+        ) {
         }
         fn relative_motion(
             &self,
@@ -843,7 +880,13 @@ mod tests {
             _event: &RelativeMotionEvent,
         ) {
         }
-        fn button(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &ButtonEvent) {}
+        fn button(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &ButtonEvent,
+        ) {
+        }
         fn axis(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _frame: AxisFrame) {}
         fn frame(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness) {}
         fn leave(
@@ -943,7 +986,8 @@ mod tests {
     }
 
     impl TouchTarget<ReloadHarness> for Focus {
-        fn down(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &DownEvent) {}
+        fn down(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &DownEvent) {
+        }
         fn up(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &UpEvent) {}
         fn motion(
             &self,
@@ -952,9 +996,27 @@ mod tests {
             _event: &TouchMotionEvent,
         ) {
         }
-        fn frame(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _marker: FrameMarker) {}
-        fn cancel(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _marker: FrameMarker) {}
-        fn shape(&self, _seat: &Seat<ReloadHarness>, _data: &mut ReloadHarness, _event: &ShapeEvent) {}
+        fn frame(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _marker: FrameMarker,
+        ) {
+        }
+        fn cancel(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _marker: FrameMarker,
+        ) {
+        }
+        fn shape(
+            &self,
+            _seat: &Seat<ReloadHarness>,
+            _data: &mut ReloadHarness,
+            _event: &ShapeEvent,
+        ) {
+        }
         fn orientation(
             &self,
             _seat: &Seat<ReloadHarness>,
@@ -1142,10 +1204,7 @@ mod tests {
         std::fs::write(&tokens, "bot-b:BBB\n").unwrap();
         let closed = server.reload_and_close_stale(&tokens).unwrap();
         assert_eq!(closed, 1);
-        assert!(
-            rx_b.try_recv().is_err(),
-            "still-valid bot-b must stay open"
-        );
+        assert!(rx_b.try_recv().is_err(), "still-valid bot-b must stay open");
         assert!(!server.token_registry.lock().unwrap().contains("bot-a"));
         assert!(server.token_registry.lock().unwrap().contains("bot-b"));
 

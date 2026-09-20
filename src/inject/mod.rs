@@ -8,6 +8,7 @@
 //! default returns false and produces `DISPATCH ERR NOT_BOUND`.
 
 pub mod app_catalog;
+pub mod atspi_ladder;
 pub mod dispatch;
 pub mod grant_confirm;
 pub mod grants;
@@ -20,6 +21,7 @@ pub use app_catalog::{
     app_id_routes, AppCatalogEntry, AppCatalogMarker, AppRoutes, CaptureStrategy, SemanticStrength,
     Toolkit,
 };
+pub use atspi_ladder::{route as atspi_route, AtSpiAction, AtSpiRoute, REASON_BG_UNAVAILABLE};
 pub use dispatch::{dispatch_inject_connection, DispatchHarness, DispatchState};
 pub use grant_confirm::{
     is_blocked_app_id, ClickOutcome, ConfirmRow, GrantClickHost, GrantConfirmState,

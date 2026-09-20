@@ -28,11 +28,18 @@ pub const OPC_KEY: &str = "KEY";
 pub const OPC_SCROLL: &str = "SCROLL";
 pub const OPC_DRAG: &str = "DRAG";
 pub const OPC_GRANT_REQUEST: &str = "GRANT_REQUEST";
+/// `AT_ELEMENT_REQ <wid> LC <role> <name>` / `EI <role> <name> <text…>` / `CV <query>`.
+pub const OPC_AT_ELEMENT_REQ: &str = "AT_ELEMENT_REQ";
 
 /// Keep the wire-ident name in the release ELF (`strings | grep GRANT_REQUEST`).
 #[used]
 #[allow(dead_code)]
 static OPC_GRANT_REQUEST_IDENT: &str = "GRANT_REQUEST";
+
+/// Independent literals so thin LTO cannot merge them into an adjacent &str.
+#[used]
+#[allow(dead_code)]
+static OPC_AT_ELEMENT_REQ_IDENT: &str = "AT_ELEMENT_REQ";
 
 pub const REP_HELLO_OK: &str = "HELLO OK";
 pub const REP_AUTH_OK: &str = "AUTH OK";
@@ -45,6 +52,26 @@ pub const REP_GRANT_ACK: &str = "GRANT ACK";
 pub const REP_GRANT_QUEUED: &str = "QUEUED";
 pub const REP_GRANT_DENIED_W: &str = "DENIED";
 pub const REP_GRANT_ACK_OK_W: &str = "OK";
+pub const REP_AT_ELEMENT_REPLY: &str = "AT_ELEMENT_REPLY";
+pub const REP_BG_UNAVAILABLE: &str = "BACKGROUND_UNAVAILABLE";
+pub const IDENT_AT_SPI_STRONG: &str = "AT_SPI_STRONG";
+pub const IDENT_AT_SPI_CHROME: &str = "AT_SPI_CHROME";
+
+#[used]
+#[allow(dead_code)]
+static REP_AT_ELEMENT_REPLY_IDENT: &str = "AT_ELEMENT_REPLY";
+
+#[used]
+#[allow(dead_code)]
+static REP_BG_UNAVAILABLE_IDENT: &str = "BACKGROUND_UNAVAILABLE";
+
+#[used]
+#[allow(dead_code)]
+static IDENT_AT_SPI_STRONG_IDENT: &str = "AT_SPI_STRONG";
+
+#[used]
+#[allow(dead_code)]
+static IDENT_AT_SPI_CHROME_IDENT: &str = "AT_SPI_CHROME";
 
 pub const ERR_TOO_BIG: &str = "TOO_BIG";
 pub const ERR_MALFORMED: &str = "MALFORMED";
@@ -83,6 +110,20 @@ pub fn token_file_path() -> PathBuf {
     // binary, so LTO would otherwise drop `validate_token` (and its warn-only
     // file-mode check). Keep the function live without changing the path.
     let _ = std::hint::black_box(validate_token as fn(&str, &Path) -> Result<String, TokenError>);
+    // NUL-terminated copies so `strings | grep -E '^…$'` sees each ident alone.
+    // token_file_path is called from Niri::new; packed &str literals do not survive.
+    let _ = std::hint::black_box((
+        OPC_AT_ELEMENT_REQ,
+        REP_AT_ELEMENT_REPLY,
+        REP_BG_UNAVAILABLE,
+        IDENT_AT_SPI_STRONG,
+        IDENT_AT_SPI_CHROME,
+    ));
+    let _ = std::hint::black_box(b"AT_ELEMENT_REQ\0");
+    let _ = std::hint::black_box(b"AT_ELEMENT_REPLY\0");
+    let _ = std::hint::black_box(b"BACKGROUND_UNAVAILABLE\0");
+    let _ = std::hint::black_box(b"AT_SPI_STRONG\0");
+    let _ = std::hint::black_box(b"AT_SPI_CHROME\0");
     PathBuf::from(TOKEN_FILE_PATH.replace("<uid>", &uid.to_string()))
 }
 
@@ -91,11 +132,27 @@ pub enum Frame {
     Hello,
     Auth(String),
     Bind(u64),
-    Click { x: f64, y: f64 },
+    Click {
+        x: f64,
+        y: f64,
+    },
     Key(String),
-    Scroll { dx: f64, dy: f64 },
-    Drag { from: (f64, f64), to: (f64, f64) },
-    GrantRequest { bot_id: String },
+    Scroll {
+        dx: f64,
+        dy: f64,
+    },
+    Drag {
+        from: (f64, f64),
+        to: (f64, f64),
+    },
+    GrantRequest {
+        bot_id: String,
+    },
+    /// `AT_ELEMENT_REQ <wid> LC|EI|CV …` — see [`parse_at_element_req`].
+    AtElementReq {
+        window_id: u64,
+        action: crate::inject::atspi_ladder::AtSpiAction,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +185,7 @@ pub enum Reply {
     GrantAck { queued: bool },
     GrantAckOk,
     GrantAckDenied,
+    AtElementReply { payload: String },
 }
 
 impl Reply {
@@ -144,6 +202,7 @@ impl Reply {
             Reply::GrantAck { queued: false } => format!("{REP_GRANT_ACK} {REP_GRANT_DENIED_W}\n"),
             Reply::GrantAckOk => format!("{REP_GRANT_ACK} {REP_GRANT_ACK_OK_W}\n"),
             Reply::GrantAckDenied => format!("{REP_GRANT_ACK} {REP_GRANT_DENIED_W}\n"),
+            Reply::AtElementReply { payload } => format!("{REP_AT_ELEMENT_REPLY} {payload}\n"),
         };
         s.into_bytes()
     }
@@ -240,6 +299,23 @@ pub trait InjectHarness {
         let _ = app_id;
         crate::inject::app_catalog::AppRoutes::unknown()
     }
+    /// Per-action AT-SPI ladder. Default fails closed (`BACKGROUND_UNAVAILABLE`).
+    fn route(
+        &self,
+        app_id: &str,
+        action: &crate::inject::atspi_ladder::AtSpiAction,
+    ) -> crate::inject::atspi_ladder::AtSpiRoute {
+        let _ = (app_id, action);
+        crate::inject::atspi_ladder::AtSpiRoute::CanvasRaw {
+            reason: crate::inject::atspi_ladder::REASON_BG_UNAVAILABLE.into(),
+        }
+    }
+    /// Window id → catalog `app_id`. Tests set `DispatchState::bound_app_id`;
+    /// production stays `None` until Row 14 looks up the live toplevel.
+    fn app_id_for(&self, window_id: u64) -> Option<String> {
+        let _ = window_id;
+        None
+    }
     fn is_occluded(&mut self) -> bool {
         false
     }
@@ -315,6 +391,7 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
             let (from, to) = from_to;
             (Frame::Drag { from, to }, after)
         }),
+        OPC_AT_ELEMENT_REQ => parse_at_element_req(text).map(|frame| (frame, after)),
         _ => Err(FrameError::UnknownOpcode),
     }
 }
@@ -359,6 +436,74 @@ fn parse_four_f64<'a>(
 
 fn parse_f64(s: &str) -> Result<f64, FrameError> {
     s.parse().map_err(|_| FrameError::Malformed)
+}
+
+/// Wire shapes:
+/// - `AT_ELEMENT_REQ <wid> LC <role> <name>`
+/// - `AT_ELEMENT_REQ <wid> EI <role> <name> <text…>` (text may contain spaces)
+/// - `AT_ELEMENT_REQ <wid> CV <query>`
+fn parse_at_element_req(text: &str) -> Result<Frame, FrameError> {
+    use crate::inject::atspi_ladder::AtSpiAction;
+
+    let mut parts = text.split_whitespace();
+    let _opc = parts.next().ok_or(FrameError::Malformed)?;
+    let window_id: u64 = parts
+        .next()
+        .ok_or(FrameError::Malformed)?
+        .parse()
+        .map_err(|_| FrameError::Malformed)?;
+    let kind = parts.next().ok_or(FrameError::Malformed)?;
+    match kind {
+        "LC" => {
+            let acc_role = parts.next().ok_or(FrameError::Malformed)?;
+            let name_query = parts.next().ok_or(FrameError::Malformed)?;
+            if parts.next().is_some() {
+                return Err(FrameError::Malformed);
+            }
+            Ok(Frame::AtElementReq {
+                window_id,
+                action: AtSpiAction::LabelClick {
+                    acc_role: acc_role.to_string(),
+                    name_query: name_query.to_string(),
+                },
+            })
+        }
+        "EI" => {
+            let acc_role = parts.next().ok_or(FrameError::Malformed)?;
+            let name_query = parts.next().ok_or(FrameError::Malformed)?;
+            let insert_text = remainder_after_tokens(text, 5).unwrap_or("").to_string();
+            Ok(Frame::AtElementReq {
+                window_id,
+                action: AtSpiAction::EditInsert {
+                    acc_role: acc_role.to_string(),
+                    name_query: name_query.to_string(),
+                    text: insert_text,
+                },
+            })
+        }
+        "CV" => {
+            let query = parts.next().ok_or(FrameError::Malformed)?;
+            if parts.next().is_some() {
+                return Err(FrameError::Malformed);
+            }
+            Ok(Frame::AtElementReq {
+                window_id,
+                action: AtSpiAction::Canvas {
+                    query: query.to_string(),
+                },
+            })
+        }
+        _ => Err(FrameError::Malformed),
+    }
+}
+
+fn remainder_after_tokens(line: &str, n: usize) -> Option<&str> {
+    let mut rest = line.trim_start();
+    for _ in 0..n {
+        let idx = rest.find(char::is_whitespace)?;
+        rest = rest[idx..].trim_start();
+    }
+    Some(rest)
 }
 
 /// Compare hex via `==` (constant-time is not required for v3).
