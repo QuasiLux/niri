@@ -8,9 +8,13 @@ use std::time::Duration;
 
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
-use crate::input::agent_seat::AgentSeat;
+use crate::inject::grant_confirm::{
+    ClickOutcome, GrantResolution, GrantSurfaceSource, SeatKind,
+};
 use crate::inject::protocol::InjectHarness;
+use crate::input::agent_seat::AgentSeat;
 use crate::niri::{Niri, State};
+use crate::utils::with_toplevel_role;
 use crate::window::mapped::MappedId;
 
 /// Production inject harness. Construct around compositor [`State`] once a
@@ -48,7 +52,34 @@ impl<'a> NiriInjectHarness<'a> {
             .niri
             .grant_confirm
             .record(bot_id.to_string(), token_fingerprint);
+        let confirm = self.state.niri.grant_confirm.clone();
+        confirm.build_surface(&self.state.niri);
         true
+    }
+}
+
+impl GrantSurfaceSource for Niri {
+    fn grant_toplevels(&self) -> Vec<(u64, String, String)> {
+        let map_mapped = |mapped: &crate::window::Mapped| {
+            let (app_id, title) = with_toplevel_role(mapped.toplevel(), |role| {
+                (
+                    role.app_id.clone().unwrap_or_default(),
+                    role.title.clone().unwrap_or_default(),
+                )
+            });
+            (mapped.id().get(), app_id, title)
+        };
+        if let Some(output) = self.layout.active_output() {
+            self.layout
+                .windows_for_output(output)
+                .map(map_mapped)
+                .collect()
+        } else {
+            self.layout
+                .windows()
+                .map(|(_, mapped)| map_mapped(mapped))
+                .collect()
+        }
     }
 }
 
@@ -98,6 +129,25 @@ impl InjectHarness for NiriInjectHarness<'_> {
 
     fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
         NiriInjectHarness::request_grant(self, bot_id, token_fingerprint)
+    }
+
+    fn apply_grant_confirm_click(
+        &mut self,
+        bot_id: &str,
+        window_id: u64,
+        app_id: &str,
+        seat: SeatKind,
+        resolution: GrantResolution,
+    ) -> ClickOutcome {
+        let _ = bot_id;
+        let confirm = self.state.niri.grant_confirm.clone();
+        confirm.apply_resolved(
+            &self.state.niri.grant_map,
+            window_id,
+            app_id,
+            seat,
+            resolution,
+        )
     }
 
     fn is_occluded(&mut self) -> bool {

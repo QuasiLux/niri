@@ -16,12 +16,16 @@ pub mod socket;
 
 pub use crate::input::agent_seat::{AgentSeat, AGENT_SEAT_NAME};
 pub use dispatch::{dispatch_inject_connection, DispatchHarness, DispatchState};
-pub use grant_confirm::{GrantConfirmState, PendingGrant};
+pub use grant_confirm::{
+    is_blocked_app_id, ClickOutcome, ConfirmRow, GrantClickHost, GrantConfirmState,
+    GrantConfirmSurface, GrantResolution, GrantSlot, PendingGrant, PointerClick, Rect, SeatKind,
+    GRANT_ROW_H, GRANT_SLOT_W,
+};
 pub use grants::GrantMap;
 pub use harness::NiriInjectHarness;
 pub use protocol::{
-    token_file_path, validate_token, Frame, FrameError, InjectHarness, Reply, MAX_FRAME_LEN,
-    TOKEN_FILE_PATH, ERR_GRANT_DENIED, OPC_GRANT_REQUEST,
+    token_file_path, validate_token, Frame, FrameError, InjectHarness, Reply, ERR_GRANT_DENIED,
+    MAX_FRAME_LEN, OPC_GRANT_REQUEST, TOKEN_FILE_PATH,
 };
 pub use socket::{
     apply_inject_socket_ownership, handle_inject_client, handle_inject_client_with_close,
