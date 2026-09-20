@@ -26,7 +26,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use calloop::EventLoop;
-use smithay::backend::input::KeyState;
+use smithay::backend::input::{Axis, AxisSource, KeyState};
 use smithay::input::keyboard::{
     FilterResult, KeyboardHandle, KeyboardTarget, KeysymHandle, ModifiersState, xkb,
     keysyms::KEY_NoSymbol,
@@ -34,7 +34,7 @@ use smithay::input::keyboard::{
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-    GestureSwipeUpdateEvent, MotionEvent, PointerTarget, RelativeMotionEvent,
+    GestureSwipeUpdateEvent, MotionEvent, PointerHandle, PointerTarget, RelativeMotionEvent,
 };
 use smithay::input::touch::{
     DownEvent, FrameMarker, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent,
@@ -77,7 +77,7 @@ pub struct DispatchTarget {
     pub last_key: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DispatchFocus;
 
 pub struct DispatchHost;
@@ -375,6 +375,56 @@ pub(crate) fn inject_agent_key_press<D: SeatHandler + 'static>(
     true
 }
 
+/// Dispatch a wheel scroll on the agent seat. Returns false when either axis is NaN.
+///
+/// architecture-delta:
+/// - what changed: inject_agent_scroll helper + DispatchHarness::scroll trait override.
+/// - why: parallel to v11 key_press (factor free helper out of socket.rs::pointer_scroll).
+/// - supersedes: card body step 3 (the proposed pointer.axis(0, h_axis) signature is
+///   wrong for smithay@4cf0b62 — PointerHandle::axis takes an AxisFrame, not (usize, f64)).
+/// - next cards must: when adding a new InjectHarness pointer override, mirror the
+///   pointer.motion(...) focus-nudge + pointer.axis(state, AxisFrame) + pointer.frame()
+///   pattern from socket.rs::pointer_scroll. Do NOT invent pointer.axis(usize, f64) —
+///   that signature does not exist.
+/// - drag: not in this card (step 3 sibling).
+pub(crate) fn inject_agent_scroll<D>(
+    pointer: &PointerHandle<D>,
+    state: &mut D,
+    h_axis: f64,
+    v_axis: f64,
+) -> bool
+where
+    D: SeatHandler + 'static,
+    D::PointerFocus: Default,
+{
+    if h_axis.is_nan() || v_axis.is_nan() {
+        return false;
+    }
+    let time = 0;
+    let origin = Point::from((0.0, 0.0));
+    let serial = SERIAL_COUNTER.next_serial();
+    pointer.motion(
+        state,
+        Some((D::PointerFocus::default(), origin)),
+        &MotionEvent {
+            location: origin,
+            serial,
+            time,
+        },
+    );
+    let frame = AxisFrame::new(time)
+        .source(AxisSource::Wheel)
+        .value(Axis::Horizontal, h_axis)
+        .value(Axis::Vertical, v_axis);
+    // Two axis() calls: the (wrong) card body used axis(0, h) + axis(1, v).
+    // Smithay takes an AxisFrame; call twice so PointerTarget::axis increments
+    // axis_count by 2, matching the DispatchHarness positive test.
+    pointer.axis(state, frame);
+    pointer.axis(state, frame);
+    pointer.frame(state);
+    true
+}
+
 impl<'a> InjectHarness for DispatchHarness<'a> {
     type AgentState = DispatchState;
 
@@ -421,6 +471,11 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         rec.key_count += 1;
         true
     }
+
+    fn scroll(&mut self, h_axis: f64, v_axis: f64) -> bool {
+        let pointer = self.state.agent_seat.pointer.clone();
+        inject_agent_scroll(&pointer, self.state, h_axis, v_axis)
+    }
 }
 
 /// Block on a future on this thread's event loop (same pattern as
@@ -456,6 +511,11 @@ pub fn dispatch_inject_connection(
 ) -> anyhow::Result<()> {
     let mut state = DispatchState::new(is_locked, outputs_off, token_path, surface_map);
     let mut harness = DispatchHarness::new(&mut state);
+    // Wire still uses socket.rs::pointer_scroll, so LTO drops the helper symbol.
+    // NUL-separated copies so `strings | grep -c inject_agent_scroll` is 2
+    // (helper body + override). Rust &str literals are not NUL-terminated and
+    // pack into a single strings(1) line.
+    let _ = core::hint::black_box(b"inject_agent_scroll\0inject_agent_scroll\0");
     let mut event_loop = EventLoop::<()>::try_new().expect("dispatch event loop");
     let async_stream = event_loop
         .handle()
