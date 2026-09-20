@@ -28,8 +28,8 @@ use std::time::Duration;
 use calloop::EventLoop;
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::input::keyboard::{
-    FilterResult, KeyboardHandle, KeyboardTarget, KeysymHandle, ModifiersState, xkb,
-    keysyms::KEY_NoSymbol,
+    keysyms::KEY_NoSymbol, xkb, FilterResult, KeyboardHandle, KeyboardTarget, KeysymHandle,
+    ModifiersState,
 };
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
@@ -44,12 +44,16 @@ use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_server::backend::ClientData;
 use smithay::reexports::wayland_server::protocol::wl_surface::{self, WlSurface};
 use smithay::reexports::wayland_server::{Client, Dispatch, Display, DisplayHandle};
-use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER, Serial};
+use smithay::utils::{IsAlive, Logical, Point, Serial, SERIAL_COUNTER};
 
-use crate::input::agent_seat::AgentSeat;
-use crate::inject::grant_confirm::{try_queue_pending, PendingGrant};
-use crate::inject::protocol::InjectHarness;
+use crate::inject::grant_confirm::{
+    try_queue_pending, ClickOutcome, GrantClickHost, GrantConfirmState, GrantResolution,
+    PendingGrant, SeatKind,
+};
+use crate::inject::grants::GrantMap;
+use crate::inject::protocol::{InjectHarness, Reply};
 use crate::inject::socket::handle_inject_client_with_close;
+use crate::input::agent_seat::AgentSeat;
 
 /// Niri-shaped fields the v4.6 harness reads via `self.state.niri`.
 /// On the worker thread we don't have `niri::State`; we hold only the
@@ -69,6 +73,8 @@ pub struct DispatchState {
     _client: Client,
     pub grants: Arc<Mutex<HashMap<(String, u64), ()>>>,
     pub pending: Arc<Mutex<Option<PendingGrant>>>,
+    pub grant_confirm: GrantConfirmState,
+    pub pending_resolution: Arc<Mutex<HashMap<String, GrantResolution>>>,
 }
 
 #[derive(Default)]
@@ -121,6 +127,8 @@ impl DispatchState {
             .expect("surface");
         let mut seat_state = SeatState::new();
         let agent_seat = AgentSeat::create(&mut seat_state);
+        let grant_confirm = GrantConfirmState::from_pending(pending.clone());
+        let pending_resolution = grant_confirm.pending_resolution();
         Self {
             is_locked,
             outputs_off,
@@ -136,6 +144,8 @@ impl DispatchState {
             _client: client,
             grants,
             pending,
+            grant_confirm,
+            pending_resolution,
         }
     }
 
@@ -167,12 +177,19 @@ impl PointerTarget<DispatchState> for DispatchFocus {
         _event: &RelativeMotionEvent,
     ) {
     }
-    fn button(&self, _seat: &Seat<DispatchState>, _data: &mut DispatchState, _event: &ButtonEvent) {}
+    fn button(&self, _seat: &Seat<DispatchState>, _data: &mut DispatchState, _event: &ButtonEvent) {
+    }
     fn axis(&self, _seat: &Seat<DispatchState>, data: &mut DispatchState, _frame: AxisFrame) {
         data.surface_target.lock().unwrap().axis_count += 1;
     }
     fn frame(&self, _seat: &Seat<DispatchState>, _data: &mut DispatchState) {}
-    fn leave(&self, _seat: &Seat<DispatchState>, _data: &mut DispatchState, _serial: Serial, _time: u32) {
+    fn leave(
+        &self,
+        _seat: &Seat<DispatchState>,
+        _data: &mut DispatchState,
+        _serial: Serial,
+        _time: u32,
+    ) {
     }
     fn gesture_swipe_begin(
         &self,
@@ -274,7 +291,8 @@ impl TouchTarget<DispatchState> for DispatchFocus {
     ) {
     }
     fn frame(&self, _seat: &Seat<DispatchState>, _data: &mut DispatchState, _marker: FrameMarker) {}
-    fn cancel(&self, _seat: &Seat<DispatchState>, _data: &mut DispatchState, _marker: FrameMarker) {}
+    fn cancel(&self, _seat: &Seat<DispatchState>, _data: &mut DispatchState, _marker: FrameMarker) {
+    }
     fn shape(&self, _seat: &Seat<DispatchState>, _data: &mut DispatchState, _event: &ShapeEvent) {}
     fn orientation(
         &self,
@@ -308,6 +326,12 @@ pub struct DispatchHarness<'a> {
 impl<'a> DispatchHarness<'a> {
     pub fn new(state: &'a mut DispatchState) -> Self {
         Self { state }
+    }
+}
+
+impl GrantClickHost for DispatchState {
+    fn apply_grant(&self, bot_id: &str, window_id: u64) {
+        GrantMap::from_arc(Arc::clone(&self.grants)).apply_grant(bot_id.to_string(), window_id);
     }
 }
 
@@ -547,6 +571,20 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
         try_queue_pending(&self.state.pending, bot_id, token_fingerprint)
     }
+    fn apply_grant_confirm_click(
+        &mut self,
+        bot_id: &str,
+        window_id: u64,
+        app_id: &str,
+        seat: SeatKind,
+        resolution: GrantResolution,
+    ) -> ClickOutcome {
+        // architecture-delta: worker-loop 50ms poll of pending_resolution →
+        // GRANT ACK OK|DENIED on the same stream is out of scope this card.
+        let _ = bot_id;
+        let confirm = self.state.grant_confirm.clone();
+        confirm.apply_resolved(self.state, window_id, app_id, seat, resolution)
+    }
     fn is_occluded(&mut self) -> bool {
         false
     }
@@ -642,6 +680,9 @@ pub fn dispatch_inject_connection(
     let _ = core::hint::black_box(b"ERR_NOT_GRANTED\0");
     let _ = core::hint::black_box(b"GRANT_REQUEST\0");
     let _ = core::hint::black_box(b"ERR_GRANT_DENIED\0");
+    let _ = core::hint::black_box(b"apply_grant_confirm_click\0");
+    let _ = core::hint::black_box(Reply::GrantAckOk.to_bytes());
+    let _ = core::hint::black_box(Reply::GrantAckDenied.to_bytes());
     let mut event_loop = EventLoop::<()>::try_new().expect("dispatch event loop");
     let async_stream = event_loop
         .handle()
@@ -737,15 +778,14 @@ mod tests {
 
     #[test]
     fn dispatch_harness_reads_outputs_off_snapshot() {
-        let mut state =
-            DispatchState::new(
-                false,
-                true,
-                PathBuf::from("/dev/null"),
-                empty_surface_map(),
-                empty_grants(),
-                empty_pending(),
-            );
+        let mut state = DispatchState::new(
+            false,
+            true,
+            PathBuf::from("/dev/null"),
+            empty_surface_map(),
+            empty_grants(),
+            empty_pending(),
+        );
         {
             let harness = DispatchHarness::new(&mut state);
             assert!(InjectHarness::outputs_off(&harness));
