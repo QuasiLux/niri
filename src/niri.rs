@@ -473,6 +473,7 @@ pub struct Niri {
     pub ipc_server: Option<IpcServer>,
     pub agent_seat: Option<AgentSeat<State>>,
     pub inject_server: Option<InjectServer>,
+    pub grant_map: crate::inject::GrantMap,
     pub ipc_outputs_changed: bool,
 
     /// Aggregate outputs-off flag. Canonical v8 handle shared with
@@ -2959,6 +2960,7 @@ impl Niri {
                                                 }
                                             }
                                             let surface_map = Arc::new(Mutex::new(surface_map));
+                                            let grants = state.niri.grant_map.arc();
                                             thread::spawn(move || {
                                                 let _ = crate::inject::dispatch::dispatch_inject_connection(
                                                     stream,
@@ -2967,6 +2969,7 @@ impl Niri {
                                                     token_path,
                                                     close_rx,
                                                     surface_map,
+                                                    grants,
                                                 );
                                             });
                                         }
@@ -3149,6 +3152,7 @@ impl Niri {
             ipc_server,
             agent_seat,
             inject_server,
+            grant_map: crate::inject::GrantMap::new(),
             ipc_outputs_changed: false,
 
             outputs_off_wired,
