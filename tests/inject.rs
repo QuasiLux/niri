@@ -339,6 +339,10 @@ impl InjectHarness for Harness {
     fn outputs_off(&self) -> bool {
         *self.outputs_off_override.borrow()
     }
+
+    fn grant_present(&self, _bot_id: &str, _window_id: u64) -> bool {
+        true
+    }
 }
 
 fn token_file() -> PathBuf {
@@ -356,6 +360,10 @@ fn token_file() -> PathBuf {
 
 fn hello_auth() -> String {
     format!("HELLO\nAUTH\n{TOKEN_A}\n")
+}
+
+fn hello_auth_b() -> String {
+    format!("HELLO\nAUTH\n{TOKEN_B}\n")
 }
 
 fn block_on_loop<F: Future>(event_loop: &mut EventLoop<'static, ()>, fut: F) -> F::Output {
@@ -582,6 +590,7 @@ fn proxy_lock_snapshot_refuses_dispatch() {
         false,
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -590,6 +599,11 @@ fn proxy_lock_snapshot_refuses_dispatch() {
             .unwrap()
             .insert(KNOWN_WINDOW, surface);
     }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
     let mut harness = DispatchHarness::new(&mut state);
     let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
     let replies = run_protocol_on(&mut harness, req.as_bytes());
@@ -720,6 +734,7 @@ fn key_dispatch_on_proxy_harness_increments_key_count() {
         false,
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -728,6 +743,11 @@ fn key_dispatch_on_proxy_harness_increments_key_count() {
             .unwrap()
             .insert(KNOWN_WINDOW, surface);
     }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
     let mut harness = DispatchHarness::new(&mut state);
     let req = format!("{}BIND {KNOWN_WINDOW}\nKEY XF86XK_AudioMute\n", hello_auth());
     let replies = run_protocol_on(&mut harness, req.as_bytes());
@@ -749,6 +769,7 @@ fn key_dispatch_unknown_xkb_name_returns_not_bound() {
         false,
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -757,6 +778,11 @@ fn key_dispatch_unknown_xkb_name_returns_not_bound() {
             .unwrap()
             .insert(KNOWN_WINDOW, surface);
     }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
     let mut harness = DispatchHarness::new(&mut state);
     let req = format!(
         "{}BIND {KNOWN_WINDOW}\nKEY XF86XK_ThisKeyDoesNotExist12345\n",
@@ -781,6 +807,7 @@ fn scroll_dispatch_on_proxy_harness_increments_axis_count() {
         false,
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -804,6 +831,7 @@ fn scroll_dispatch_nan_axis_returns_false() {
         false,
         false,
         tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
     );
     if let Some(surface) = state.bound_surface.clone() {
@@ -844,6 +872,7 @@ fn scroll_dispatch_on_niri_inject_harness_delivers_to_seat() {
         false,
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -879,6 +908,7 @@ fn drag_dispatch_on_proxy_harness_increments_motion_count() {
         false,
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -904,6 +934,7 @@ fn drag_dispatch_nan_coordinate_returns_false() {
         false,
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -920,5 +951,157 @@ fn drag_dispatch_nan_coordinate_returns_false() {
         state.surface_target.lock().unwrap().motion_count,
         0,
         "no motion fired when helper returns false"
+    );
+}
+
+#[test]
+fn bind_without_grant_returns_not_granted() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(
+        replies.contains("DISPATCH ERR NOT_GRANTED\n"),
+        "{replies:?}"
+    );
+    assert!(!replies.contains("BIND OK\n"), "{replies:?}");
+    assert_eq!(state.surface_target.lock().unwrap().motion_count, 0);
+}
+
+#[test]
+fn bind_with_grant_succeeds() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+}
+
+#[test]
+fn bind_with_grant_for_other_window_denied() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), 5), ());
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(
+        replies.contains("DISPATCH ERR NOT_GRANTED\n"),
+        "{replies:?}"
+    );
+}
+
+#[test]
+fn restart_clears_grants() {
+    let tokens = token_file();
+    let state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    drop(state);
+    let state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    assert!(state.grants.lock().unwrap().is_empty());
+    let _ = fs::remove_file(&tokens);
+}
+
+#[test]
+fn bind_token_swap_after_grant_holds_grant_for_old_bot() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth_b());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("AUTH OK bot-b\n"), "{replies:?}");
+    assert!(
+        replies.contains("DISPATCH ERR NOT_GRANTED\n"),
+        "{replies:?}"
     );
 }

@@ -30,8 +30,8 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use super::protocol::{
     parse_frame, validate_token, Frame, FrameError, InjectHarness, Reply, TokenError, ERR_BAD_TOKEN,
-    ERR_BAD_WINDOW, ERR_IO, ERR_LOCKED, ERR_NO_TOKEN_FILE, ERR_OCCLUDED, ERR_OUTPUTS_OFF,
-    ERR_STALE_TOKEN, ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN, OPC_AUTH,
+    ERR_BAD_WINDOW, ERR_IO, ERR_LOCKED, ERR_NO_TOKEN_FILE, ERR_NOT_GRANTED, ERR_OCCLUDED,
+    ERR_OUTPUTS_OFF, ERR_STALE_TOKEN, ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN, OPC_AUTH,
 };
 
 /// Path suffix under the runtime dir. Kept as a string so the release ELF
@@ -443,6 +443,16 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     )
                     .await?;
                     harness.report_transient_error(ERR_BAD_WINDOW);
+                    ClientPhase::AwaitBind
+                } else if !harness.grant_present(&bot_id, window_id) {
+                    write_reply(
+                        &mut write,
+                        &Reply::DispatchErr {
+                            code: ERR_NOT_GRANTED,
+                        },
+                    )
+                    .await?;
+                    harness.report_transient_error(ERR_NOT_GRANTED);
                     ClientPhase::AwaitBind
                 } else if let Some(focus) = harness.resolve_pointer_focus(window_id) {
                     write_reply(&mut write, &Reply::BindOk).await?;

@@ -8,12 +8,14 @@
 //! default returns false and produces `DISPATCH ERR NOT_BOUND`.
 
 pub mod dispatch;
+pub mod grants;
 pub mod harness;
 pub mod protocol;
 pub mod socket;
 
 pub use crate::input::agent_seat::{AgentSeat, AGENT_SEAT_NAME};
 pub use dispatch::{dispatch_inject_connection, DispatchHarness, DispatchState};
+pub use grants::GrantMap;
 pub use harness::NiriInjectHarness;
 pub use protocol::{
     token_file_path, validate_token, Frame, FrameError, InjectHarness, Reply, MAX_FRAME_LEN,
