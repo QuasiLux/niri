@@ -870,3 +870,55 @@ fn scroll_dispatch_on_niri_inject_harness_delivers_to_seat() {
         "inject_agent_scroll fires pointer.axis twice on (0.0, 120.0)"
     );
 }
+
+#[test]
+fn drag_dispatch_on_proxy_harness_increments_motion_count() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let ok = <DispatchHarness as InjectHarness>::drag(&mut harness, 10.0, 20.0, 30.0, 40.0);
+    let _ = fs::remove_file(&tokens);
+    assert!(ok, "drag must return true on finite coordinates");
+    let rec = state.surface_target.lock().unwrap();
+    assert_eq!(rec.motion_count, 2, "drag fires pointer.motion twice (from then to)");
+    assert_eq!(rec.last_motion, Some(Point::from((30.0, 40.0))));
+}
+
+#[test]
+fn drag_dispatch_nan_coordinate_returns_false() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let ok = <DispatchHarness as InjectHarness>::drag(&mut harness, f64::NAN, 20.0, 30.0, 40.0);
+    let _ = fs::remove_file(&tokens);
+    assert!(!ok, "drag must return false on NaN coordinate");
+    assert_eq!(
+        state.surface_target.lock().unwrap().motion_count,
+        0,
+        "no motion fired when helper returns false"
+    );
+}
