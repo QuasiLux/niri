@@ -36,7 +36,7 @@ use niri::inject::smithay::reexports::wayland_server::{
     Client, Dispatch, Display, DisplayHandle,
 };
 use niri::inject::smithay::utils::{IsAlive, Logical, Point, Serial};
-use niri::inject::{AgentSeat, DispatchHarness, DispatchState, InjectHarness};
+use niri::inject::{AgentSeat, DispatchHarness, DispatchState, InjectHarness, PendingGrant};
 
 const KNOWN_WINDOW: u64 = 42;
 const TOKEN_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -112,6 +112,7 @@ struct Harness {
     permanent_errors: Vec<String>,
     lock_override: RefCell<bool>,
     outputs_off_override: RefCell<bool>,
+    pending: Arc<Mutex<Option<PendingGrant>>>,
     _surface_keep: SurfaceKeep,
 }
 
@@ -133,6 +134,7 @@ impl Harness {
             permanent_errors: Vec::new(),
             lock_override: RefCell::new(false),
             outputs_off_override: RefCell::new(false),
+            pending: Arc::new(Mutex::new(None)),
             _surface_keep: keep,
         }
     }
@@ -342,6 +344,10 @@ impl InjectHarness for Harness {
 
     fn grant_present(&self, _bot_id: &str, _window_id: u64) -> bool {
         true
+    }
+
+    fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
+        niri::inject::grant_confirm::try_queue_pending(&self.pending, bot_id, token_fingerprint)
     }
 }
 
@@ -591,6 +597,7 @@ fn proxy_lock_snapshot_refuses_dispatch() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -735,6 +742,7 @@ fn key_dispatch_on_proxy_harness_increments_key_count() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -770,6 +778,7 @@ fn key_dispatch_unknown_xkb_name_returns_not_bound() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -808,6 +817,7 @@ fn scroll_dispatch_on_proxy_harness_increments_axis_count() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -833,6 +843,7 @@ fn scroll_dispatch_nan_axis_returns_false() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -873,6 +884,7 @@ fn scroll_dispatch_on_niri_inject_harness_delivers_to_seat() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -909,6 +921,7 @@ fn drag_dispatch_on_proxy_harness_increments_motion_count() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -935,6 +948,7 @@ fn drag_dispatch_nan_coordinate_returns_false() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -963,6 +977,7 @@ fn bind_without_grant_returns_not_granted() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -994,6 +1009,7 @@ fn bind_with_grant_succeeds() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -1023,6 +1039,7 @@ fn bind_with_grant_for_other_window_denied() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -1055,6 +1072,7 @@ fn restart_clears_grants() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     state
         .grants
@@ -1068,6 +1086,7 @@ fn restart_clears_grants() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     assert!(state.grants.lock().unwrap().is_empty());
     let _ = fs::remove_file(&tokens);
@@ -1082,6 +1101,7 @@ fn bind_token_swap_after_grant_holds_grant_for_old_bot() {
         tokens.clone(),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
     );
     if let Some(surface) = state.bound_surface.clone() {
         state
@@ -1104,4 +1124,103 @@ fn bind_token_swap_after_grant_holds_grant_for_old_bot() {
         replies.contains("DISPATCH ERR NOT_GRANTED\n"),
         "{replies:?}"
     );
+}
+
+#[test]
+fn grant_request_records_pending_no_grant_map_change() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}GRANT_REQUEST bot-a\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(replies.contains("GRANT ACK QUEUED\n"), "{replies:?}");
+    assert!(
+        !state
+            .grants
+            .lock()
+            .unwrap()
+            .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)),
+        "GRANT_REQUEST must not write GrantMap"
+    );
+    let pending = state.pending.lock().unwrap();
+    let recorded = pending.as_ref().expect("pending grant recorded");
+    assert_eq!(recorded.bot_id, "bot-a");
+}
+
+#[test]
+fn grant_request_with_mismatched_bot_id_is_denied() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}GRANT_REQUEST bot-b\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(replies.contains("GRANT ACK DENIED\n"), "{replies:?}");
+    assert!(state.pending.lock().unwrap().is_none());
+}
+
+#[test]
+fn grant_request_when_already_pending_is_kept() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}GRANT_REQUEST bot-a\nGRANT_REQUEST bot-a\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("GRANT ACK QUEUED\n"), "{replies:?}");
+    let queued = replies.matches("GRANT ACK QUEUED\n").count();
+    let denied = replies.matches("GRANT ACK DENIED\n").count();
+    assert_eq!(queued, 1, "{replies:?}");
+    assert_eq!(denied, 1, "{replies:?}");
+    let queued_at = replies.find("GRANT ACK QUEUED\n").unwrap();
+    let denied_at = replies.find("GRANT ACK DENIED\n").unwrap();
+    assert!(queued_at < denied_at, "{replies:?}");
+    let pending = state.pending.lock().unwrap();
+    assert_eq!(pending.as_ref().expect("kept pending").bot_id, "bot-a");
+}
+
+#[test]
+fn grant_request_token_fingerprint_is_captured() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}GRANT_REQUEST bot-a\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("GRANT ACK QUEUED\n"), "{replies:?}");
+    let pending = state.pending.lock().unwrap();
+    let recorded = pending.as_ref().expect("pending grant recorded");
+    assert_eq!(recorded.token_fingerprint, [0u8; 8]);
 }

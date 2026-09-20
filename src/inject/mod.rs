@@ -8,6 +8,7 @@
 //! default returns false and produces `DISPATCH ERR NOT_BOUND`.
 
 pub mod dispatch;
+pub mod grant_confirm;
 pub mod grants;
 pub mod harness;
 pub mod protocol;
@@ -15,11 +16,12 @@ pub mod socket;
 
 pub use crate::input::agent_seat::{AgentSeat, AGENT_SEAT_NAME};
 pub use dispatch::{dispatch_inject_connection, DispatchHarness, DispatchState};
+pub use grant_confirm::{GrantConfirmState, PendingGrant};
 pub use grants::GrantMap;
 pub use harness::NiriInjectHarness;
 pub use protocol::{
     token_file_path, validate_token, Frame, FrameError, InjectHarness, Reply, MAX_FRAME_LEN,
-    TOKEN_FILE_PATH,
+    TOKEN_FILE_PATH, ERR_GRANT_DENIED, OPC_GRANT_REQUEST,
 };
 pub use socket::{
     apply_inject_socket_ownership, handle_inject_client, handle_inject_client_with_close,
