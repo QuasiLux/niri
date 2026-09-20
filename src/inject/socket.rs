@@ -515,7 +515,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     }
                     AtSpiRoute::CanvasRaw { reason } => {
                         tracing::debug!(payload = %reason, "atspi.reply");
-                        write_reply(&mut write, &Reply::AtElementReply { payload: reason }).await?;
+                        write_reply(&mut write, &Reply::BackgroundUnavailable).await?;
                     }
                     AtSpiRoute::RawInject => {
                         tracing::debug!(payload = "DISPATCH OK", "atspi.reply");
