@@ -186,6 +186,7 @@ pub enum Reply {
     GrantAckOk,
     GrantAckDenied,
     AtElementReply { payload: String },
+    BackgroundUnavailable,
 }
 
 impl Reply {
@@ -203,6 +204,7 @@ impl Reply {
             Reply::GrantAckOk => format!("{REP_GRANT_ACK} {REP_GRANT_ACK_OK_W}\n"),
             Reply::GrantAckDenied => format!("{REP_GRANT_ACK} {REP_GRANT_DENIED_W}\n"),
             Reply::AtElementReply { payload } => format!("{REP_AT_ELEMENT_REPLY} {payload}\n"),
+            Reply::BackgroundUnavailable => format!("{REP_AT_ELEMENT_REPLY} {REP_BG_UNAVAILABLE}\n"),
         };
         s.into_bytes()
     }
