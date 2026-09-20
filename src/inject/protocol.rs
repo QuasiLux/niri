@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use smithay::input::SeatHandler;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
+use crate::inject::app_catalog::AppRoutes;
 use crate::input::agent_seat::AgentSeat;
 
 pub use crate::inject::grant_confirm::{
@@ -233,6 +234,11 @@ pub trait InjectHarness {
     ) -> ClickOutcome {
         let _ = (bot_id, window_id, app_id, seat, resolution);
         ClickOutcome::IgnoredNoRow
+    }
+    /// Return catalog routes for the given `app_id`. Default = unknown.
+    fn app_id_routes(&self, app_id: &str) -> AppRoutes {
+        let _ = app_id;
+        crate::inject::app_catalog::AppRoutes::unknown()
     }
     fn is_occluded(&mut self) -> bool {
         false

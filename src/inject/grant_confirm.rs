@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::inject::app_catalog;
 use crate::inject::grants::GrantMap;
 
 /// Slot width for Grant / Deny buttons in the data-structure surface.
@@ -128,8 +129,14 @@ pub trait GrantSurfaceSource {
 }
 
 /// True when the toplevel must not appear on the confirm surface (HUD / compositor UI).
+///
+/// Pure HUD skip-list: the catalog's `hud_skip` field is consulted as a parallel truth
+/// source, but `hermes-desktop` and `niri-*` are always blocked regardless.
 pub fn is_blocked_app_id(app_id: &str) -> bool {
-    app_id == "hermes-desktop" || app_id.starts_with("niri-")
+    if app_id == "hermes-desktop" || app_id.starts_with("niri-") {
+        return true;
+    }
+    app_catalog::app_id_routes(app_id).hud_skip
 }
 
 fn grant_rect(index: usize) -> Rect {

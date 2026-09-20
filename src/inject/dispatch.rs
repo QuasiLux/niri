@@ -53,6 +53,7 @@ use crate::inject::grant_confirm::{
 use crate::inject::grants::GrantMap;
 use crate::inject::protocol::{InjectHarness, Reply};
 use crate::inject::socket::handle_inject_client_with_close;
+use crate::inject::AppRoutes;
 use crate::input::agent_seat::AgentSeat;
 
 /// Niri-shaped fields the v4.6 harness reads via `self.state.niri`.
@@ -584,6 +585,9 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         let _ = bot_id;
         let confirm = self.state.grant_confirm.clone();
         confirm.apply_resolved(self.state, window_id, app_id, seat, resolution)
+    }
+    fn app_id_routes(&self, app_id: &str) -> AppRoutes {
+        crate::inject::app_catalog::app_id_routes(app_id)
     }
     fn is_occluded(&mut self) -> bool {
         false

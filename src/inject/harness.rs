@@ -12,6 +12,7 @@ use crate::inject::grant_confirm::{
     ClickOutcome, GrantResolution, GrantSurfaceSource, SeatKind,
 };
 use crate::inject::protocol::InjectHarness;
+use crate::inject::AppRoutes;
 use crate::input::agent_seat::AgentSeat;
 use crate::niri::{Niri, State};
 use crate::utils::with_toplevel_role;
@@ -148,6 +149,10 @@ impl InjectHarness for NiriInjectHarness<'_> {
             seat,
             resolution,
         )
+    }
+
+    fn app_id_routes(&self, app_id: &str) -> AppRoutes {
+        crate::inject::app_catalog::app_id_routes(app_id)
     }
 
     fn is_occluded(&mut self) -> bool {
