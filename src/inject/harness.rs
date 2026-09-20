@@ -8,9 +8,7 @@ use std::time::Duration;
 
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
-use crate::inject::grant_confirm::{
-    ClickOutcome, GrantResolution, GrantSurfaceSource, SeatKind,
-};
+use crate::inject::grant_confirm::{ClickOutcome, GrantResolution, GrantSurfaceSource, SeatKind};
 use crate::inject::protocol::InjectHarness;
 use crate::inject::AppRoutes;
 use crate::input::agent_seat::AgentSeat;
@@ -153,6 +151,23 @@ impl InjectHarness for NiriInjectHarness<'_> {
 
     fn app_id_routes(&self, app_id: &str) -> AppRoutes {
         crate::inject::app_catalog::app_id_routes(app_id)
+    }
+
+    fn route(
+        &self,
+        app_id: &str,
+        action: &crate::inject::atspi_ladder::AtSpiAction,
+    ) -> crate::inject::atspi_ladder::AtSpiRoute {
+        crate::inject::atspi_ladder::route(app_id, action)
+    }
+
+    fn app_id_for(&self, window_id: u64) -> Option<String> {
+        let id = MappedId::from_raw(window_id);
+        self.state.niri.find_window_by_id(id).and_then(|window| {
+            window
+                .toplevel()
+                .and_then(|toplevel| with_toplevel_role(toplevel, |role| role.app_id.clone()))
+        })
     }
 
     fn is_occluded(&mut self) -> bool {
