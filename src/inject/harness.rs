@@ -14,7 +14,7 @@ use crate::window::mapped::MappedId;
 /// Production inject harness. Construct around compositor [`State`] once a
 /// connection is accepted (receiver plumbing is a later card).
 ///
-/// `scroll` calls `inject_agent_scroll` with `None` focus; `drag` is not in this card.
+/// `scroll`/`drag` call `inject_agent_scroll`/`inject_agent_drag` with `None` focus.
 pub struct NiriInjectHarness<'a> {
     pub state: &'a mut State,
 }
@@ -97,6 +97,17 @@ impl InjectHarness for NiriInjectHarness<'_> {
             None,
             h_axis,
             v_axis,
+        )
+    }
+
+    fn drag(&mut self, from_x: f64, from_y: f64, to_x: f64, to_y: f64) -> bool {
+        let pointer = self.agent_seat().pointer.clone();
+        crate::inject::dispatch::inject_agent_drag(
+            &pointer,
+            self.agent_state(),
+            None,
+            (from_x, from_y),
+            (to_x, to_y),
         )
     }
 }
