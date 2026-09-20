@@ -475,6 +475,7 @@ pub struct Niri {
     pub inject_server: Option<InjectServer>,
     pub grant_map: crate::inject::GrantMap,
     pub grant_confirm: crate::inject::GrantConfirmState,
+    pub app_catalog: crate::inject::app_catalog::AppCatalogMarker,
     pub ipc_outputs_changed: bool,
 
     /// Aggregate outputs-off flag. Canonical v8 handle shared with
@@ -3157,6 +3158,7 @@ impl Niri {
             inject_server,
             grant_map: crate::inject::GrantMap::new(),
             grant_confirm: crate::inject::GrantConfirmState::new(),
+            app_catalog: crate::inject::app_catalog::AppCatalogMarker,
             ipc_outputs_changed: false,
 
             outputs_off_wired,
