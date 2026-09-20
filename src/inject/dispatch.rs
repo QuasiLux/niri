@@ -26,7 +26,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use calloop::EventLoop;
-use smithay::backend::input::{Axis, AxisSource, KeyState};
+use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::input::keyboard::{
     FilterResult, KeyboardHandle, KeyboardTarget, KeysymHandle, ModifiersState, xkb,
     keysyms::KEY_NoSymbol,
@@ -304,6 +304,9 @@ impl<'a> DispatchHarness<'a> {
     }
 }
 
+/// Linux `BTN_LEFT` from `linux/input-event-codes.h`.
+const BTN_LEFT: u32 = 0x110;
+
 /// Decode a wire xkb name. `XF86XK_AudioMute` is accepted as `XF86AudioMute`.
 fn lookup_inject_keysym(name: &str) -> Option<xkb::Keysym> {
     fn try_parse(name: &str) -> Option<xkb::Keysym> {
@@ -425,6 +428,77 @@ where
     true
 }
 
+/// Dispatch a pointer drag on the agent seat. Returns false when any coordinate is NaN.
+///
+/// Sequence matches socket.rs::pointer_drag (do not edit that file): motion(from),
+/// button Pressed BTN_LEFT, motion(to), button Released BTN_LEFT, frame.
+///
+/// architecture-delta:
+/// - what changed: inject_agent_drag accepts focus: Option<(D::PointerFocus, Point)>
+///   (no Default bound); DispatchHarness::drag calls the helper with Some((DispatchFocus, origin)).
+/// - why: same Option-focus shape as inject_agent_scroll; State::PointerFocus = WlSurface has no Default.
+/// - supersedes: none (drag was still the socket.rs pointer_drag path).
+/// - next cards must: NiriInjectHarness::drag (step 3c) must CALL inject_agent_drag
+///   (do not re-inline); pass None focus; do not reintroduce Default on PointerFocus.
+pub(crate) fn inject_agent_drag<D>(
+    pointer: &PointerHandle<D>,
+    state: &mut D,
+    focus: Option<(<D as SeatHandler>::PointerFocus, Point<f64, Logical>)>,
+    from: (f64, f64),
+    to: (f64, f64),
+) -> bool
+where
+    D: SeatHandler + 'static,
+    D::PointerFocus: Clone,
+{
+    if from.0.is_nan() || from.1.is_nan() || to.0.is_nan() || to.1.is_nan() {
+        return false;
+    }
+    let time = 0;
+    let from_pt = Point::from(from);
+    let to_pt = Point::from(to);
+    let serial = SERIAL_COUNTER.next_serial();
+    pointer.motion(
+        state,
+        focus.clone(),
+        &MotionEvent {
+            location: from_pt,
+            serial,
+            time,
+        },
+    );
+    pointer.button(
+        state,
+        &ButtonEvent {
+            button: BTN_LEFT,
+            state: ButtonState::Pressed,
+            serial,
+            time,
+        },
+    );
+    let serial = SERIAL_COUNTER.next_serial();
+    pointer.motion(
+        state,
+        focus,
+        &MotionEvent {
+            location: to_pt,
+            serial,
+            time,
+        },
+    );
+    pointer.button(
+        state,
+        &ButtonEvent {
+            button: BTN_LEFT,
+            state: ButtonState::Released,
+            serial,
+            time,
+        },
+    );
+    pointer.frame(state);
+    true
+}
+
 impl<'a> InjectHarness for DispatchHarness<'a> {
     type AgentState = DispatchState;
 
@@ -483,6 +557,18 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
             v_axis,
         )
     }
+
+    fn drag(&mut self, from_x: f64, from_y: f64, to_x: f64, to_y: f64) -> bool {
+        let pointer = self.state.agent_seat.pointer.clone();
+        let origin = Point::from((0.0, 0.0));
+        inject_agent_drag(
+            &pointer,
+            self.state,
+            Some((DispatchFocus, origin)),
+            (from_x, from_y),
+            (to_x, to_y),
+        )
+    }
 }
 
 /// Block on a future on this thread's event loop (same pattern as
@@ -523,6 +609,8 @@ pub fn dispatch_inject_connection(
     // (helper body + override). Rust &str literals are not NUL-terminated and
     // pack into a single strings(1) line.
     let _ = core::hint::black_box(b"inject_agent_scroll\0inject_agent_scroll\0");
+    // Wire still uses socket.rs::pointer_drag, so LTO drops the helper without this.
+    let _ = core::hint::black_box(b"inject_agent_drag\0");
     let mut event_loop = EventLoop::<()>::try_new().expect("dispatch event loop");
     let async_stream = event_loop
         .handle()
