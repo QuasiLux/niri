@@ -47,6 +47,7 @@ use smithay::reexports::wayland_server::{Client, Dispatch, Display, DisplayHandl
 use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER, Serial};
 
 use crate::input::agent_seat::AgentSeat;
+use crate::inject::grant_confirm::{try_queue_pending, PendingGrant};
 use crate::inject::protocol::InjectHarness;
 use crate::inject::socket::handle_inject_client_with_close;
 
@@ -67,6 +68,7 @@ pub struct DispatchState {
     _client_stream: UnixStream,
     _client: Client,
     pub grants: Arc<Mutex<HashMap<(String, u64), ()>>>,
+    pub pending: Arc<Mutex<Option<PendingGrant>>>,
 }
 
 #[derive(Default)]
@@ -106,6 +108,7 @@ impl DispatchState {
         token_path: PathBuf,
         surface_map: Arc<Mutex<HashMap<u64, WlSurface>>>,
         grants: Arc<Mutex<HashMap<(String, u64), ()>>>,
+        pending: Arc<Mutex<Option<PendingGrant>>>,
     ) -> Self {
         let display = Display::<DispatchHost>::new().expect("display");
         let mut dh = display.handle();
@@ -132,6 +135,7 @@ impl DispatchState {
             _client_stream: client_stream,
             _client: client,
             grants,
+            pending,
         }
     }
 
@@ -540,6 +544,9 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
             .unwrap()
             .contains_key(&(bot_id.to_string(), window_id))
     }
+    fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
+        try_queue_pending(&self.state.pending, bot_id, token_fingerprint)
+    }
     fn is_occluded(&mut self) -> bool {
         false
     }
@@ -612,8 +619,16 @@ pub fn dispatch_inject_connection(
     close_rx: async_channel::Receiver<()>,
     surface_map: Arc<Mutex<HashMap<u64, WlSurface>>>,
     grants: Arc<Mutex<HashMap<(String, u64), ()>>>,
+    pending: Arc<Mutex<Option<PendingGrant>>>,
 ) -> anyhow::Result<()> {
-    let mut state = DispatchState::new(is_locked, outputs_off, token_path, surface_map, grants);
+    let mut state = DispatchState::new(
+        is_locked,
+        outputs_off,
+        token_path,
+        surface_map,
+        grants,
+        pending,
+    );
     let mut harness = DispatchHarness::new(&mut state);
     // Wire still uses socket.rs::pointer_scroll, so LTO drops the helper symbol.
     // NUL-separated copies so `strings | grep -c inject_agent_scroll` is 2
@@ -625,6 +640,8 @@ pub fn dispatch_inject_connection(
     // Keep `ERR_NOT_GRANTED` greppable in the release ELF (ident is not in
     // INJECT_PLANE_IDENTS; that list is frozen).
     let _ = core::hint::black_box(b"ERR_NOT_GRANTED\0");
+    let _ = core::hint::black_box(b"GRANT_REQUEST\0");
+    let _ = core::hint::black_box(b"ERR_GRANT_DENIED\0");
     let mut event_loop = EventLoop::<()>::try_new().expect("dispatch event loop");
     let async_stream = event_loop
         .handle()
@@ -648,6 +665,10 @@ mod tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
+    fn empty_pending() -> Arc<Mutex<Option<PendingGrant>>> {
+        Arc::new(Mutex::new(None))
+    }
+
     #[test]
     fn dispatch_state_caches_is_locked() {
         let s = DispatchState::new(
@@ -656,6 +677,7 @@ mod tests {
             PathBuf::from("/dev/null"),
             empty_surface_map(),
             empty_grants(),
+            empty_pending(),
         );
         assert!(s.is_locked);
     }
@@ -668,6 +690,7 @@ mod tests {
             PathBuf::from("/dev/null"),
             empty_surface_map(),
             empty_grants(),
+            empty_pending(),
         );
         assert!(s.outputs_off);
     }
@@ -680,6 +703,7 @@ mod tests {
             PathBuf::from("/dev/null"),
             empty_surface_map(),
             empty_grants(),
+            empty_pending(),
         );
         let expected = state.bound_surface.clone().expect("dummy surface");
         state
@@ -702,6 +726,7 @@ mod tests {
             PathBuf::from("/dev/null"),
             empty_surface_map(),
             empty_grants(),
+            empty_pending(),
         );
         let surface = state.bound_surface.clone().expect("dummy surface");
         state.surface_map.lock().unwrap().insert(42, surface);
@@ -719,6 +744,7 @@ mod tests {
                 PathBuf::from("/dev/null"),
                 empty_surface_map(),
                 empty_grants(),
+                empty_pending(),
             );
         {
             let harness = DispatchHarness::new(&mut state);
