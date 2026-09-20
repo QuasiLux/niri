@@ -159,6 +159,12 @@ pub trait InjectHarness {
         let _ = xkb_name;
         false
     }
+    /// SCROLL hook. Return true to reply DISPATCH OK; false → NOT_BOUND.
+    /// Returns false only when h_axis or v_axis is non-finite (NaN / ±inf).
+    fn scroll(&mut self, _h_axis: f64, _v_axis: f64) -> bool {
+        let _ = (_h_axis, _v_axis);
+        false
+    }
     fn is_locked(&self) -> bool {
         false
     }
