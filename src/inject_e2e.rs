@@ -314,6 +314,10 @@ impl InjectHarness for Harness {
         *self.lock_override.borrow()
     }
 
+    fn grant_present(&self, _bot_id: &str, _window_id: u64) -> bool {
+        true
+    }
+
     fn key_press(&mut self, xkb_name: &str) -> bool {
         self.keys.push(xkb_name.to_string());
         true

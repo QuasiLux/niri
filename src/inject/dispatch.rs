@@ -66,6 +66,7 @@ pub struct DispatchState {
     pub _display: Display<DispatchHost>,
     _client_stream: UnixStream,
     _client: Client,
+    pub grants: Arc<Mutex<HashMap<(String, u64), ()>>>,
 }
 
 #[derive(Default)]
@@ -104,6 +105,7 @@ impl DispatchState {
         outputs_off: bool,
         token_path: PathBuf,
         surface_map: Arc<Mutex<HashMap<u64, WlSurface>>>,
+        grants: Arc<Mutex<HashMap<(String, u64), ()>>>,
     ) -> Self {
         let display = Display::<DispatchHost>::new().expect("display");
         let mut dh = display.handle();
@@ -129,6 +131,7 @@ impl DispatchState {
             _display: display,
             _client_stream: client_stream,
             _client: client,
+            grants,
         }
     }
 
@@ -530,6 +533,13 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         // Snapshot captured at accept; not a live read of Niri::outputs_off_wired.
         self.state.outputs_off
     }
+    fn grant_present(&self, bot_id: &str, window_id: u64) -> bool {
+        self.state
+            .grants
+            .lock()
+            .unwrap()
+            .contains_key(&(bot_id.to_string(), window_id))
+    }
     fn is_occluded(&mut self) -> bool {
         false
     }
@@ -601,8 +611,9 @@ pub fn dispatch_inject_connection(
     token_path: PathBuf,
     close_rx: async_channel::Receiver<()>,
     surface_map: Arc<Mutex<HashMap<u64, WlSurface>>>,
+    grants: Arc<Mutex<HashMap<(String, u64), ()>>>,
 ) -> anyhow::Result<()> {
-    let mut state = DispatchState::new(is_locked, outputs_off, token_path, surface_map);
+    let mut state = DispatchState::new(is_locked, outputs_off, token_path, surface_map, grants);
     let mut harness = DispatchHarness::new(&mut state);
     // Wire still uses socket.rs::pointer_scroll, so LTO drops the helper symbol.
     // NUL-separated copies so `strings | grep -c inject_agent_scroll` is 2
@@ -611,6 +622,9 @@ pub fn dispatch_inject_connection(
     let _ = core::hint::black_box(b"inject_agent_scroll\0inject_agent_scroll\0");
     // Wire still uses socket.rs::pointer_drag, so LTO drops the helper without this.
     let _ = core::hint::black_box(b"inject_agent_drag\0");
+    // Keep `ERR_NOT_GRANTED` greppable in the release ELF (ident is not in
+    // INJECT_PLANE_IDENTS; that list is frozen).
+    let _ = core::hint::black_box(b"ERR_NOT_GRANTED\0");
     let mut event_loop = EventLoop::<()>::try_new().expect("dispatch event loop");
     let async_stream = event_loop
         .handle()
@@ -630,15 +644,31 @@ mod tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
+    fn empty_grants() -> Arc<Mutex<HashMap<(String, u64), ()>>> {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
     #[test]
     fn dispatch_state_caches_is_locked() {
-        let s = DispatchState::new(true, false, PathBuf::from("/dev/null"), empty_surface_map());
+        let s = DispatchState::new(
+            true,
+            false,
+            PathBuf::from("/dev/null"),
+            empty_surface_map(),
+            empty_grants(),
+        );
         assert!(s.is_locked);
     }
 
     #[test]
     fn dispatch_state_caches_outputs_off() {
-        let s = DispatchState::new(false, true, PathBuf::from("/dev/null"), empty_surface_map());
+        let s = DispatchState::new(
+            false,
+            true,
+            PathBuf::from("/dev/null"),
+            empty_surface_map(),
+            empty_grants(),
+        );
         assert!(s.outputs_off);
     }
 
@@ -649,6 +679,7 @@ mod tests {
             false,
             PathBuf::from("/dev/null"),
             empty_surface_map(),
+            empty_grants(),
         );
         let expected = state.bound_surface.clone().expect("dummy surface");
         state
@@ -670,6 +701,7 @@ mod tests {
             false,
             PathBuf::from("/dev/null"),
             empty_surface_map(),
+            empty_grants(),
         );
         let surface = state.bound_surface.clone().expect("dummy surface");
         state.surface_map.lock().unwrap().insert(42, surface);
@@ -681,7 +713,13 @@ mod tests {
     #[test]
     fn dispatch_harness_reads_outputs_off_snapshot() {
         let mut state =
-            DispatchState::new(false, true, PathBuf::from("/dev/null"), empty_surface_map());
+            DispatchState::new(
+                false,
+                true,
+                PathBuf::from("/dev/null"),
+                empty_surface_map(),
+                empty_grants(),
+            );
         {
             let harness = DispatchHarness::new(&mut state);
             assert!(InjectHarness::outputs_off(&harness));

@@ -42,6 +42,12 @@ pub const ERR_OCCLUDED: &str = "OCCLUDED";
 pub const ERR_LOCKED: &str = "LOCKED";
 pub const ERR_OUTPUTS_OFF: &str = "OUTPUTS_OFF";
 pub const ERR_STALE_TOKEN: &str = "STALE_TOKEN";
+pub const ERR_NOT_GRANTED: &str = "NOT_GRANTED";
+
+/// Keep the wire-ident name in the release ELF (`strings | grep ERR_NOT_GRANTED`).
+#[used]
+#[allow(dead_code)]
+static ERR_NOT_GRANTED_IDENT: &str = "ERR_NOT_GRANTED";
 
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
 
@@ -174,6 +180,12 @@ pub trait InjectHarness {
         false
     }
     fn outputs_off(&self) -> bool {
+        false
+    }
+    /// True when `(bot_id, window_id)` is in the compositor grant map.
+    /// Default denies BIND (token-only AUTH is not sufficient).
+    fn grant_present(&self, bot_id: &str, window_id: u64) -> bool {
+        let _ = (bot_id, window_id);
         false
     }
     fn is_occluded(&mut self) -> bool {

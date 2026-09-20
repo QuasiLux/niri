@@ -73,6 +73,10 @@ impl InjectHarness for NiriInjectHarness<'_> {
         off
     }
 
+    fn grant_present(&self, bot_id: &str, window_id: u64) -> bool {
+        self.state.niri.grant_map.has_grant(bot_id, window_id)
+    }
+
     fn is_occluded(&mut self) -> bool {
         trace!("is_occluded");
         false
