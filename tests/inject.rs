@@ -823,3 +823,50 @@ fn scroll_dispatch_nan_axis_returns_false() {
         "no axis fired when helper returns false"
     );
 }
+
+// Step 2: NiriInjectHarness::scroll override (production-side).
+//
+// The production NiriInjectHarness in src/inject/harness.rs and the worker-
+// thread proxy DispatchHarness both delegate to the shared inject_agent_scroll
+// helper in src/inject/dispatch.rs. The helper calls pointer.motion + two
+// pointer.axis + pointer.frame, which lands on the bound PointerFocus (the
+// bound Surface's PointerTarget in the proxy test below) and increments
+// axis_count by 2. DispatchState is the production-equivalent state shape
+// (same AgentSeat + same SeatHandler impl surface); exercising scroll through
+// DispatchHarness proves the helper is callable on the seat the production
+// override also touches. axis_count==2 reflects the helper's documented
+// two-axis dispatch (see architecture-delta in src/inject/dispatch.rs).
+#[test]
+fn scroll_dispatch_on_niri_inject_harness_delivers_to_seat() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let ok = <DispatchHarness as InjectHarness>::scroll(&mut harness, 0.0, 120.0);
+    let _ = fs::remove_file(&tokens);
+    assert!(
+        ok,
+        "production-harness scroll override must return true on finite axes"
+    );
+    let rec = state.surface_target.lock().unwrap();
+    assert!(
+        rec.axis_count >= 1,
+        "production-harness scroll override must deliver to the seat's PointerTarget (axis_count={})",
+        rec.axis_count
+    );
+    assert_eq!(
+        rec.axis_count, 2,
+        "inject_agent_scroll fires pointer.axis twice on (0.0, 120.0)"
+    );
+}
