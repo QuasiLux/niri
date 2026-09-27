@@ -25,7 +25,10 @@ pub use atspi_ladder::{route as atspi_route, AtSpiAction, AtSpiRoute, REASON_BG_
 pub use dispatch::{dispatch_inject_connection, DispatchHarness, DispatchState};
 pub use grant_confirm::{
     is_blocked_app_id, ClickOutcome, ConfirmRow, GrantClickHost, GrantConfirmState,
-    GrantConfirmSurface, GrantResolution, GrantSlot, PendingGrant, PointerClick, Rect, SeatKind,
+    GrantConfirmSurface, GrantResolution, GrantSlot, OverlayAnchor, OverlayHandle,
+    OverlayKeyboardMode, OverlayLayerConfig, OverlayLayerKind, PendingGrant, PointerClick, Rect,
+    SeatKind, GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED,
+    GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED, GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED,
     GRANT_ROW_H, GRANT_SLOT_W,
 };
 pub use grants::GrantMap;
@@ -107,4 +110,19 @@ pub static OUTPUT_POWER_PLANE_IDENTS: &[&str] = &[
     "outputs_off_wired",
     "wl_output_power_state",
     "outputs_off_override",
+];
+
+/// Row 37+ ELF idents (separate `#[used]` static; `INJECT_PLANE_IDENTS`
+/// byte-equal). The release ELF grep should find each entry ≥ 1 time.
+#[used]
+pub static GRANT_CONFIRM_OVERLAY_PLANE_IDENTS: &[&str] = &[
+    "qlux_grant_confirm",
+    GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED,
+    GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED,
+    GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED,
+    "GRANT_CONFIRM_OVERLAY_NAMESPACE",
+    "GRANT_CONFIRM_OVERLAY_LAYER",
+    "GRANT_CONFIRM_OVERLAY_ANCHOR",
+    "GRANT_CONFIRM_OVERLAY_EXCLUSIVE_ZONE",
+    "GRANT_CONFIRM_OVERLAY_KEYBOARD_INTERACTIVITY",
 ];
