@@ -29,10 +29,10 @@ use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use super::protocol::{
-    parse_frame, validate_token, Frame, FrameError, InjectHarness, Reply, TokenError,
-    ERR_BAD_TOKEN, ERR_BAD_WINDOW, ERR_IO, ERR_LOCKED, ERR_NOT_GRANTED, ERR_NO_TOKEN_FILE,
-    ERR_OCCLUDED, ERR_OUTPUTS_OFF, ERR_STALE_TOKEN, ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN,
-    OPC_AUTH,
+    parse_frame, validate_token, ClickOutcome, Frame, FrameError, InjectHarness, Reply, SeatKind,
+    TokenError, ERR_BAD_TOKEN, ERR_BAD_WINDOW, ERR_GRANT_DENIED, ERR_GRANT_NOT_PENDING, ERR_IO,
+    ERR_LOCKED, ERR_NOT_GRANTED, ERR_NO_TOKEN_FILE, ERR_OCCLUDED, ERR_OUTPUTS_OFF, ERR_STALE_TOKEN,
+    ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN, OPC_AUTH,
 };
 
 /// Path suffix under the runtime dir. Kept as a string so the release ELF
@@ -478,6 +478,73 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 reply_grant_request(harness, &mut write, &bot_id, req_id).await?;
                 ClientPhase::AwaitBind
             }
+            (
+                ClientPhase::AwaitBind,
+                Frame::GrantResolved {
+                    bot_id: req_bot,
+                    window_id,
+                    resolution,
+                },
+            ) => {
+                let app_id = harness.app_id_for(window_id).unwrap_or_default();
+                let outcome = harness.apply_grant_confirm_click(
+                    &req_bot,
+                    window_id,
+                    &app_id,
+                    SeatKind::User,
+                    resolution,
+                );
+                match outcome {
+                    ClickOutcome::Granted { wid } => {
+                        let window_ok = harness.resolve_window(wid).is_some();
+                        let focus = harness.resolve_pointer_focus(wid);
+                        if window_ok {
+                            if let Some(focus) = focus {
+                                write_reply(&mut write, &Reply::BindOk).await?;
+                                ClientPhase::Dispatch { focus }
+                            } else {
+                                write_reply(
+                                    &mut write,
+                                    &Reply::FrameErr {
+                                        code: ERR_BAD_WINDOW,
+                                    },
+                                )
+                                .await?;
+                                ClientPhase::AwaitBind
+                            }
+                        } else {
+                            write_reply(
+                                &mut write,
+                                &Reply::FrameErr {
+                                    code: ERR_BAD_WINDOW,
+                                },
+                            )
+                            .await?;
+                            ClientPhase::AwaitBind
+                        }
+                    }
+                    ClickOutcome::Denied => {
+                        write_reply(
+                            &mut write,
+                            &Reply::DispatchErr {
+                                code: ERR_GRANT_DENIED,
+                            },
+                        )
+                        .await?;
+                        ClientPhase::AwaitBind
+                    }
+                    _ => {
+                        write_reply(
+                            &mut write,
+                            &Reply::FrameErr {
+                                code: ERR_GRANT_NOT_PENDING,
+                            },
+                        )
+                        .await?;
+                        ClientPhase::AwaitBind
+                    }
+                }
+            }
             (ClientPhase::AwaitBind, _) => {
                 write_reply(
                     &mut write,
@@ -525,6 +592,47 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     AtSpiRoute::RawInject => {
                         tracing::debug!(payload = "DISPATCH OK", "atspi.reply");
                         write_reply(&mut write, &Reply::DispatchOk).await?;
+                    }
+                }
+                ClientPhase::Dispatch { focus }
+            }
+            (
+                ClientPhase::Dispatch { focus },
+                Frame::GrantResolved {
+                    bot_id: req_bot,
+                    window_id,
+                    resolution,
+                },
+            ) => {
+                let app_id = harness.app_id_for(window_id).unwrap_or_default();
+                let outcome = harness.apply_grant_confirm_click(
+                    &req_bot,
+                    window_id,
+                    &app_id,
+                    SeatKind::User,
+                    resolution,
+                );
+                match outcome {
+                    ClickOutcome::Granted { .. } => {
+                        write_reply(&mut write, &Reply::DispatchOk).await?;
+                    }
+                    ClickOutcome::Denied => {
+                        write_reply(
+                            &mut write,
+                            &Reply::DispatchErr {
+                                code: ERR_GRANT_DENIED,
+                            },
+                        )
+                        .await?;
+                    }
+                    _ => {
+                        write_reply(
+                            &mut write,
+                            &Reply::FrameErr {
+                                code: ERR_GRANT_NOT_PENDING,
+                            },
+                        )
+                        .await?;
                     }
                 }
                 ClientPhase::Dispatch { focus }

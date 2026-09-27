@@ -28,6 +28,20 @@ pub const OPC_KEY: &str = "KEY";
 pub const OPC_SCROLL: &str = "SCROLL";
 pub const OPC_DRAG: &str = "DRAG";
 pub const OPC_GRANT_REQUEST: &str = "GRANT_REQUEST";
+pub const OPC_GRANT_RESOLVED: &str = "GRANT_RESOLVED";
+
+/// `GRANT_RESOLVED <bot_id> <window_id> <GRANT|DENY>`
+#[used]
+#[allow(dead_code)]
+static OPC_GRANT_RESOLVED_IDENT: &str = "GRANT_RESOLVED";
+
+/// Ident for `strings | grep`; mirrors the opcode literal but the LTO-stable
+/// hook needed for v37 `#[used]` audit. Distinct static so thin LTO cannot
+/// merge it with the OPC constant.
+#[used]
+#[allow(dead_code)]
+static GRANT_RESOLVED_OPCODE: &[u8] = b"GRANT_RESOLVED_OPCODE\0";
+
 /// `AT_ELEMENT_REQ <wid> LC <role> <name>` / `EI <role> <name> <text…>` / `CV <query>`.
 pub const OPC_AT_ELEMENT_REQ: &str = "AT_ELEMENT_REQ";
 
@@ -92,6 +106,7 @@ pub const ERR_OUTPUTS_OFF: &str = "OUTPUTS_OFF";
 pub const ERR_STALE_TOKEN: &str = "STALE_TOKEN";
 pub const ERR_NOT_GRANTED: &str = "NOT_GRANTED";
 pub const ERR_GRANT_DENIED: &str = "GRANT_DENIED";
+pub const ERR_GRANT_NOT_PENDING: &str = "GRANT_NOT_PENDING";
 
 /// Keep the wire-ident name in the release ELF (`strings | grep ERR_NOT_GRANTED`).
 #[used]
@@ -102,6 +117,10 @@ static ERR_NOT_GRANTED_IDENT: &str = "ERR_NOT_GRANTED";
 #[used]
 #[allow(dead_code)]
 static ERR_GRANT_DENIED_IDENT: &str = "ERR_GRANT_DENIED";
+
+#[used]
+#[allow(dead_code)]
+static ERR_GRANT_NOT_PENDING_IDENT: &str = "ERR_GRANT_NOT_PENDING";
 
 pub const MAX_FRAME_LEN: usize = 64 * 1024;
 
@@ -123,12 +142,15 @@ pub fn token_file_path() -> PathBuf {
         REP_BG_UNAVAILABLE,
         IDENT_AT_SPI_STRONG,
         IDENT_AT_SPI_CHROME,
+        OPC_GRANT_RESOLVED,
     ));
     let _ = std::hint::black_box(b"AT_ELEMENT_REQ\0");
     let _ = std::hint::black_box(b"AT_ELEMENT_REPLY\0");
     let _ = std::hint::black_box(b"BACKGROUND_UNAVAILABLE\0");
     let _ = std::hint::black_box(b"AT_SPI_STRONG\0");
     let _ = std::hint::black_box(b"AT_SPI_CHROME\0");
+    let _ = std::hint::black_box(b"GRANT_RESOLVED_OPCODE\0");
+    let _ = std::hint::black_box(b"GRANT_NOT_PENDING\0");
     PathBuf::from(TOKEN_FILE_PATH.replace("<uid>", &uid.to_string()))
 }
 
@@ -152,6 +174,13 @@ pub enum Frame {
     },
     GrantRequest {
         bot_id: String,
+    },
+    /// `GRANT_RESOLVED <bot_id> <window_id> <GRANT|DENY>` — programmatic grant-confirm
+    /// click path (no seat operator required). v37.
+    GrantResolved {
+        bot_id: String,
+        window_id: u64,
+        resolution: GrantResolution,
     },
     /// `AT_ELEMENT_REQ <wid> LC|EI|CV …` — see [`parse_at_element_req`].
     AtElementReq {
@@ -398,6 +427,31 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
             Ok((
                 Frame::GrantRequest {
                     bot_id: bot_id.to_string(),
+                },
+                after,
+            ))
+        }
+        OPC_GRANT_RESOLVED => {
+            let bot_id = parts.next().ok_or(FrameError::Malformed)?;
+            let window_id = parts
+                .next()
+                .ok_or(FrameError::Malformed)?
+                .parse()
+                .map_err(|_| FrameError::Malformed)?;
+            let decision = parts.next().ok_or(FrameError::Malformed)?;
+            if parts.next().is_some() {
+                return Err(FrameError::Malformed);
+            }
+            let resolution = match decision {
+                "GRANT" => GrantResolution::Granted,
+                "DENY" => GrantResolution::Denied,
+                _ => return Err(FrameError::Malformed),
+            };
+            Ok((
+                Frame::GrantResolved {
+                    bot_id: bot_id.to_string(),
+                    window_id,
+                    resolution,
                 },
                 after,
             ))
@@ -694,6 +748,58 @@ mod tests {
         assert_eq!(
             Reply::DispatchErr { code: ERR_LOCKED }.to_bytes(),
             b"DISPATCH ERR LOCKED\n"
+        );
+    }
+
+    #[test]
+    fn parse_grant_resolved_grant() {
+        let (frame, rest) = parse_frame(b"GRANT_RESOLVED bot-a 42 GRANT\n").unwrap();
+        assert_eq!(
+            frame,
+            Frame::GrantResolved {
+                bot_id: "bot-a".into(),
+                window_id: 42,
+                resolution: GrantResolution::Granted,
+            }
+        );
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn parse_grant_resolved_deny() {
+        let (frame, rest) = parse_frame(b"GRANT_RESOLVED bot-a 42 DENY\n").unwrap();
+        assert_eq!(
+            frame,
+            Frame::GrantResolved {
+                bot_id: "bot-a".into(),
+                window_id: 42,
+                resolution: GrantResolution::Denied,
+            }
+        );
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn parse_grant_resolved_bad_decision_is_malformed() {
+        assert_eq!(
+            parse_frame(b"GRANT_RESOLVED bot-a 42 ALLOW\n"),
+            Err(FrameError::Malformed)
+        );
+        assert_eq!(
+            parse_frame(b"GRANT_RESOLVED bot-a 42 grant\n"),
+            Err(FrameError::Malformed)
+        );
+        assert_eq!(
+            parse_frame(b"GRANT_RESOLVED bot-a 42 GRANT extra\n"),
+            Err(FrameError::Malformed)
+        );
+    }
+
+    #[test]
+    fn parse_grant_resolved_missing_decision_is_malformed() {
+        assert_eq!(
+            parse_frame(b"GRANT_RESOLVED bot-a 42\n"),
+            Err(FrameError::Malformed)
         );
     }
 }
