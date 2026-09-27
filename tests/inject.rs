@@ -1068,6 +1068,139 @@ fn bind_with_grant_for_other_window_denied() {
 }
 
 #[test]
+fn bind_without_grant_no_pending_returns_not_granted() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(
+        replies.contains("DISPATCH ERR NOT_GRANTED\n"),
+        "{replies:?}"
+    );
+    assert!(!replies.contains("BIND OK\n"), "{replies:?}");
+    assert_eq!(state.surface_target.lock().unwrap().motion_count, 0);
+}
+
+#[test]
+fn bind_without_grant_with_pending_returns_bind_pending() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\nBIND {KNOWN_WINDOW}\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND PENDING\n"), "{replies:?}");
+    assert!(
+        !replies.contains("DISPATCH ERR NOT_GRANTED\n"),
+        "{replies:?}"
+    );
+    assert!(!replies.contains("BIND OK\n"), "{replies:?}");
+    assert_eq!(
+        replies.matches("BIND PENDING\n").count(),
+        2,
+        "connection stays open in AwaitBind: {replies:?}"
+    );
+}
+
+#[test]
+fn bind_after_pending_grant_resolved_succeeds() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let outcome = state.grant_confirm.apply_resolved(
+        &state.grants,
+        KNOWN_WINDOW,
+        "firefox",
+        SeatKind::User,
+        GrantResolution::Granted,
+    );
+    assert_eq!(outcome, ClickOutcome::Granted { wid: KNOWN_WINDOW });
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+}
+
+#[test]
+fn bind_with_pending_grant_for_other_bot_returns_not_granted() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-b", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(
+        replies.contains("DISPATCH ERR NOT_GRANTED\n"),
+        "{replies:?}"
+    );
+    assert!(!replies.contains("BIND PENDING\n"), "{replies:?}");
+    assert!(!replies.contains("BIND OK\n"), "{replies:?}");
+}
+
+#[test]
 fn restart_clears_grants() {
     let tokens = token_file();
     let state = DispatchState::new(

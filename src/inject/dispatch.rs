@@ -580,6 +580,14 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
             .unwrap()
             .contains_key(&(bot_id.to_string(), window_id))
     }
+    fn grant_pending(&self, bot_id: &str) -> bool {
+        self.state
+            .pending
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|p| p.bot_id == bot_id)
+    }
     fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
         try_queue_pending(&self.state.pending, bot_id, token_fingerprint)
     }
