@@ -95,6 +95,10 @@ pub static INJECT_PLANE_IDENTS: &[&str] = &[
     "outputs_off",
     "ERR_LOCKED",
     "ERR_OUTPUTS_OFF",
+    // v37 grant-confirmation programmatic path:
+    "GRANT_RESOLVED",
+    "GRANT_RESOLVED_OPCODE",
+    "GRANT_NOT_PENDING",
 ];
 
 /// v8 ELF idents (separate #[used] static; original list unchanged).
