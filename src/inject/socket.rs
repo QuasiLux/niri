@@ -444,7 +444,25 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     .await?;
                     harness.report_transient_error(ERR_BAD_WINDOW);
                     ClientPhase::AwaitBind
-                } else if !harness.grant_present(&bot_id, window_id) {
+                } else if harness.grant_present(&bot_id, window_id) {
+                    if let Some(focus) = harness.resolve_pointer_focus(window_id) {
+                        write_reply(&mut write, &Reply::BindOk).await?;
+                        ClientPhase::Dispatch { focus }
+                    } else {
+                        write_reply(
+                            &mut write,
+                            &Reply::FrameErr {
+                                code: ERR_BAD_WINDOW,
+                            },
+                        )
+                        .await?;
+                        harness.report_transient_error(ERR_BAD_WINDOW);
+                        ClientPhase::AwaitBind
+                    }
+                } else if harness.grant_pending(&bot_id) {
+                    write_reply(&mut write, &Reply::BindPending).await?;
+                    ClientPhase::AwaitBind
+                } else {
                     write_reply(
                         &mut write,
                         &Reply::DispatchErr {
@@ -453,19 +471,6 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     )
                     .await?;
                     harness.report_transient_error(ERR_NOT_GRANTED);
-                    ClientPhase::AwaitBind
-                } else if let Some(focus) = harness.resolve_pointer_focus(window_id) {
-                    write_reply(&mut write, &Reply::BindOk).await?;
-                    ClientPhase::Dispatch { focus }
-                } else {
-                    write_reply(
-                        &mut write,
-                        &Reply::FrameErr {
-                            code: ERR_BAD_WINDOW,
-                        },
-                    )
-                    .await?;
-                    harness.report_transient_error(ERR_BAD_WINDOW);
                     ClientPhase::AwaitBind
                 }
             }
