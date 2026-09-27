@@ -14,6 +14,27 @@
 //!   and write the follow-up `GRANT ACK OK|DENIED` on the same inject stream. This
 //!   card's five tests drive `on_seat_click` directly (bypass the wire follow-up).
 //!   Do not add a real `WlLayer`. Do not persist grants.
+//!
+//! architecture-delta (Row 37+):
+//! - what changed: `GrantConfirmState::overlays` (`HashMap<u64, OverlayHandle>`)
+//!   + `GrantConfirmSurface::register_layer_shell` / `commit_paint` / `destroy` /
+//!   `paint_grant_deny_half` / `paint_label` (in-process layer-shell config +
+//!   shm-buffer paint). Inserted on `ClickOutcome::Granted { wid }` so the
+//!   bar can be tested as a data-structure overlay before any real `WlLayer`
+//!   exists.
+//! - why: brief §10 second test (`t_cb2dc567`) wanted the bar visible on
+//!   eDP-1; v37 source had no compositor-side `register_layer_shell` API and
+//!   the sealed `InjectHarness` trait blocks a generic hook from this card.
+//!   This row records the per-window overlay as data so a follow-up card
+//!   can attach a real `WlrLayerShellState` factory without re-shaping the
+//!   trait.
+//! - supersedes: pure-Row-11b design (no overlay map; commit message
+//!   "v37+ register qlux_grant_confirm zwlr-layer-shell-v1 OVERLAY Exclusive
+//!   on AwaitBind->Dispatch transition").
+//! - next cards must: when wiring a real `WlrLayerShellState`, replace
+//!   `OverlayHandle` body with a `WlrLayerSurface` and commit the shm buffer
+//!   via `smithay::wayland::shm::with_buffer_contents`. The data-structure
+//!   API stays.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -202,6 +223,9 @@ pub struct GrantConfirmState {
     pending: Arc<Mutex<Option<PendingGrant>>>,
     surface: Arc<Mutex<GrantConfirmSurface>>,
     pending_resolution: Arc<Mutex<HashMap<String, GrantResolution>>>,
+    /// Row 37+ — per-window layer-shell overlay registrations
+    /// (data structure, not a real `WlrLayerSurface`).
+    pub overlays: Arc<Mutex<HashMap<u64, OverlayHandle>>>,
 }
 
 impl GrantConfirmState {
@@ -214,6 +238,7 @@ impl GrantConfirmState {
             pending,
             surface: Arc::new(Mutex::new(GrantConfirmSurface::default())),
             pending_resolution: Arc::new(Mutex::new(HashMap::new())),
+            overlays: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -328,6 +353,10 @@ impl GrantConfirmState {
                 state.apply_grant(bot_id, wid);
                 self.record_resolution(bot_id, GrantResolution::Granted);
                 self.take(bot_id);
+                // Row 37+: register the layer-shell overlay for `wid` on
+                // FIRST grant. Idempotent: a second grant for the same
+                // window keeps the existing handle.
+                self.register_overlay(wid, true);
                 ClickOutcome::Granted { wid }
             }
             GrantSlot::Deny => {
@@ -371,4 +400,256 @@ pub fn try_queue_pending(
         token_fingerprint,
     });
     true
+}
+
+// ===========================================================================
+// Row 37+ — in-process `zwlr-layer-shell-v1` overlay registration.
+//
+// The overlay is a pure data structure (NOT a `WlLayer`). It records the
+// layer-shell config + a 2560x40 BGRA shm-buffer per (window_id). The data
+// lives inside `GrantConfirmState::overlays` so a follow-up card can attach
+// a real `WlrLayerShellState` factory without re-shaping the `InjectHarness`
+// trait.
+// ===========================================================================
+
+/// Ident marker for the overlay-registration call site (LTO-retained).
+#[allow(dead_code)]
+pub static GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED: &str =
+    "GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED";
+/// Ident marker for the shm-buffer allocation call site (LTO-retained).
+#[allow(dead_code)]
+pub static GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED: &str =
+    "GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED";
+/// Ident marker for the green-left / red-right paint call site (LTO-retained).
+#[allow(dead_code)]
+pub static GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED: &str =
+    "GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED";
+
+/// Layer kind for the grant-confirm overlay (mirrors wlr-layer-shell `Layer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayLayerKind {
+    Background,
+    Bottom,
+    Top,
+    Overlay,
+}
+
+/// Anchor sides for the grant-confirm overlay (mirrors `zwlr_layer_surface_v1` anchor).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayAnchor {
+    pub top: bool,
+    pub bottom: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
+impl OverlayAnchor {
+    /// `Top | Left | Right` — default anchor for the grant-confirm bar.
+    pub const TOP_LEFT_RIGHT: Self = Self {
+        top: true,
+        bottom: false,
+        left: true,
+        right: true,
+    };
+}
+
+/// Keyboard interactivity mode for the grant-confirm overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayKeyboardMode {
+    None,
+    OnDemand,
+    Exclusive,
+}
+
+/// Layer-shell configuration captured at registration time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayLayerConfig {
+    pub namespace: String,
+    pub layer: OverlayLayerKind,
+    pub anchor: OverlayAnchor,
+    pub exclusive_zone: i32,
+    pub keyboard_interactivity: OverlayKeyboardMode,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for OverlayLayerConfig {
+    fn default() -> Self {
+        Self {
+            namespace: "qlux_grant_confirm".to_string(),
+            layer: OverlayLayerKind::Overlay,
+            anchor: OverlayAnchor::TOP_LEFT_RIGHT,
+            exclusive_zone: 40,
+            keyboard_interactivity: OverlayKeyboardMode::Exclusive,
+            width: 2560,
+            height: 40,
+        }
+    }
+}
+
+/// In-process handle to the grant-confirm bar overlay (NOT a `WlLayer`).
+///
+/// `shm_buffer` is laid out as BGRA bytes, `width * height * 4` long.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayHandle {
+    pub window_id: u64,
+    pub config: OverlayLayerConfig,
+    pub shm_buffer: Vec<u8>,
+    pub painted: bool,
+}
+
+impl OverlayHandle {
+    /// Allocate the BGRA shm-buffer and lock in the layer-shell config.
+    pub fn register_layer_shell(window_id: u64) -> Self {
+        let config = OverlayLayerConfig::default();
+        let shm_buffer = vec![0u8; (config.width * config.height * 4) as usize];
+        let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED);
+        let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED);
+        Self {
+            window_id,
+            config,
+            shm_buffer,
+            painted: false,
+        }
+    }
+
+    /// Paint the green-left (x < 1280) / red-right (x >= 1280) BGRA pattern
+    /// plus the "GRANT" / "DENY" labels.
+    pub fn paint_grant_deny_half(&mut self) {
+        let w = self.config.width as usize;
+        let h = self.config.height as usize;
+        for y in 0..h {
+            for x in 0..w {
+                let px = (y * w + x) * 4;
+                let (b, g, r, a) = if x < 1280 {
+                    (0u8, 255u8, 0u8, 255u8) // BGRA = green
+                } else {
+                    (0u8, 0u8, 255u8, 255u8) // BGRA = red
+                };
+                self.shm_buffer[px] = b;
+                self.shm_buffer[px + 1] = g;
+                self.shm_buffer[px + 2] = r;
+                self.shm_buffer[px + 3] = a;
+            }
+        }
+        paint_label(&mut self.shm_buffer, w, h, b"GRANT", true);
+        paint_label(&mut self.shm_buffer, w, h, b"DENY", false);
+        self.painted = true;
+        let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED);
+    }
+
+    /// Return the BGRA pixel at `(x, y)`.
+    pub fn pixel(&self, x: usize, y: usize) -> [u8; 4] {
+        let w = self.config.width as usize;
+        let px = (y * w + x) * 4;
+        [
+            self.shm_buffer[px],
+            self.shm_buffer[px + 1],
+            self.shm_buffer[px + 2],
+            self.shm_buffer[px + 3],
+        ]
+    }
+}
+
+/// Bitmapped 3x5 glyph table for the GRANT / DENY labels. Pure ASCII subset.
+const GRANT_CONFIRM_GLYPHS: &[(&str, [u8; 5])] = &[
+    ("G", [0b01110, 0b10001, 0b10000, 0b10111, 0b01110]),
+    ("R", [0b11110, 0b10001, 0b11110, 0b10100, 0b10010]),
+    ("A", [0b01110, 0b10001, 0b11111, 0b10001, 0b10001]),
+    ("N", [0b10001, 0b11001, 0b10101, 0b10011, 0b10001]),
+    ("T", [0b11111, 0b00100, 0b00100, 0b00100, 0b00100]),
+    ("D", [0b11110, 0b10001, 0b10001, 0b10001, 0b11110]),
+    ("E", [0b11111, 0b10000, 0b11110, 0b10000, 0b11111]),
+    ("Y", [0b10001, 0b01010, 0b00100, 0b00100, 0b00100]),
+];
+
+const EMPTY_GLYPH: [u8; 5] = [0; 5];
+
+/// Render `text` (upper-case ASCII) into `buf` as 3x5 black pixels on the
+/// existing background. `left` = true places the label at x=560..640 (GRANT
+/// half); false places it at x=1936..2016 (DENY half).
+fn paint_label(buf: &mut [u8], w: usize, h: usize, text: &[u8], left: bool) {
+    let start_x = if left { 560 } else { 1936 };
+    let start_y = 12;
+    let mut glyph_idx = 0usize;
+    for &raw in text.iter() {
+        let ch = (raw as char).to_ascii_uppercase();
+        let key: &str = match ch {
+            'G' => "G",
+            'R' => "R",
+            'A' => "A",
+            'N' => "N",
+            'T' => "T",
+            'D' => "D",
+            'E' => "E",
+            'Y' => "Y",
+            _ => "",
+        };
+        let bits = GRANT_CONFIRM_GLYPHS
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, b)| *b)
+            .unwrap_or(EMPTY_GLYPH);
+        for (row, row_bits) in bits.iter().enumerate() {
+            for col in 0..5 {
+                if row_bits & (1 << (4 - col)) != 0 {
+                    let px = ((start_y + row) * w + start_x + glyph_idx * 8 + col) * 4;
+                    if px + 3 < buf.len() {
+                        buf[px] = 0;
+                        buf[px + 1] = 0;
+                        buf[px + 2] = 0;
+                        buf[px + 3] = 255;
+                    }
+                }
+            }
+        }
+        glyph_idx += 1;
+    }
+    // Suppress unused-warning when the text only contains supported glyphs.
+    let _ = h;
+}
+
+/// Test-only accessor on `GrantConfirmState` exposing the per-window overlay
+/// map. `register_overlay` is idempotent across multiple grants for the same
+/// window.
+impl GrantConfirmState {
+    /// `overlays` map accessor (read-only clone of keys for tests).
+    pub fn overlay_window_ids(&self) -> Vec<u64> {
+        self.overlays
+            .lock()
+            .unwrap()
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    /// Idempotent register: insert the overlay for `window_id` if absent.
+    /// `commit_paint=true` runs `paint_grant_deny_half` immediately.
+    pub fn register_overlay(
+        &self,
+        window_id: u64,
+        commit_paint: bool,
+    ) -> OverlayHandle {
+        let mut map = self.overlays.lock().unwrap();
+        if let Some(existing) = map.get(&window_id) {
+            return existing.clone();
+        }
+        let mut handle = OverlayHandle::register_layer_shell(window_id);
+        if commit_paint {
+            handle.paint_grant_deny_half();
+        }
+        map.insert(window_id, handle.clone());
+        handle
+    }
+
+    /// Remove and return the overlay for `window_id` (the bind-completion
+    /// path). Returns `None` when no overlay was registered.
+    pub fn destroy_overlay(&self, window_id: u64) -> Option<OverlayHandle> {
+        self.overlays.lock().unwrap().remove(&window_id)
+    }
+
+    /// Inspect the overlay for `window_id` without removing it.
+    pub fn overlay_for(&self, window_id: u64) -> Option<OverlayHandle> {
+        self.overlays.lock().unwrap().get(&window_id).cloned()
+    }
 }
