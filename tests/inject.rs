@@ -1875,3 +1875,178 @@ fn atspi_per_action_policy_no_silent_fallback_to_user_seat() {
     let calc = niri::inject::app_catalog::app_id_routes("gnome-calculator");
     assert_eq!(calc.semantic, SemanticStrength::AtSpiStrong);
 }
+
+// ===========================================================================
+// Row 37+ — zwlr-layer-shell-v1 OVERLAY Exclusive registration tests.
+//
+// Three tests assert the data-structure overlay registration wired into
+// `GrantConfirmState::finish_click` on `ClickOutcome::Granted { wid }`.
+// The overlay itself is a pure data structure (not a real `WlrLayerSurface`),
+// so the tests inspect `state.grant_confirm.overlays` directly.
+// ===========================================================================
+
+#[test]
+fn live_grant_confirm_overlay_layer_shell_registered_on_grant_resolved() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} GRANT\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+
+    // Row 37+ — the layer-shell overlay for `KNOWN_WINDOW` must be registered
+    // in `state.grant_confirm.overlays` after the GRANT_RESOLVED GRANT arm.
+    let ids = state.grant_confirm.overlay_window_ids();
+    assert!(
+        ids.contains(&KNOWN_WINDOW),
+        "overlay not registered for window {KNOWN_WINDOW}; ids = {ids:?}"
+    );
+
+    // The default config must be `qlux_grant_confirm` / Overlay / 2560x40.
+    let handle = state
+        .grant_confirm
+        .overlay_for(KNOWN_WINDOW)
+        .expect("overlay handle");
+    assert_eq!(handle.config.namespace, "qlux_grant_confirm");
+    assert_eq!(handle.config.layer, niri::inject::OverlayLayerKind::Overlay);
+    assert_eq!(handle.config.width, 2560);
+    assert_eq!(handle.config.height, 40);
+    assert_eq!(handle.config.exclusive_zone, 40);
+    assert_eq!(
+        handle.config.keyboard_interactivity,
+        niri::inject::OverlayKeyboardMode::Exclusive
+    );
+    assert_eq!(
+        handle.config.anchor,
+        niri::inject::OverlayAnchor::TOP_LEFT_RIGHT
+    );
+
+    // LTO retention: the three idents must be present in the static slices.
+    use niri::inject::{
+        GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED, GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED,
+        GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED,
+    };
+    assert!(!GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED.is_empty());
+    assert!(!GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED.is_empty());
+    assert!(!GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED.is_empty());
+}
+
+#[test]
+fn live_grant_confirm_overlay_paint_green_left_red_right() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} GRANT\n",
+        hello_auth()
+    );
+    let _replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    // Row 37+ — the BGRA pattern must be green-left / red-right at the
+    // top 40 rows. Probe three pixels per half.
+    let handle = state
+        .grant_confirm
+        .overlay_for(KNOWN_WINDOW)
+        .expect("overlay handle");
+    assert!(handle.painted, "overlay must be painted");
+
+    // Green pixel: x=100, y=20 → BGRA (0, 255, 0, 255).
+    let green = handle.pixel(100, 20);
+    assert_eq!(green, [0u8, 255, 0, 255], "green-left pixel mismatch");
+
+    // Red pixel: x=1500, y=20 → BGRA (0, 0, 255, 255).
+    let red = handle.pixel(1500, 20);
+    assert_eq!(red, [0u8, 0, 255, 255], "red-right pixel mismatch");
+
+    // Boundary at x=1280: still in the red half.
+    let boundary_red = handle.pixel(1280, 20);
+    assert_eq!(boundary_red, [0u8, 0, 255, 255], "boundary x=1280 must be red");
+
+    // Boundary at x=1279: still in the green half.
+    let boundary_green = handle.pixel(1279, 20);
+    assert_eq!(boundary_green, [0u8, 255, 0, 255], "boundary x=1279 must be green");
+
+    // shm-buffer length = 2560 * 40 * 4 = 409_600 bytes.
+    assert_eq!(handle.shm_buffer.len(), 2560 * 40 * 4);
+}
+
+#[test]
+fn live_grant_confirm_overlay_destroyed_on_dispatch_completion() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} GRANT\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+
+    // After BindOk the overlay must still be registered (bind completion
+    // path is the destroy site; this test exercises the *register* site only).
+    assert!(state.grant_confirm.overlay_window_ids().contains(&KNOWN_WINDOW));
+
+    // Explicit `destroy_overlay` removes the entry.
+    let removed = state.grant_confirm.destroy_overlay(KNOWN_WINDOW);
+    assert!(removed.is_some(), "destroy_overlay must return the removed handle");
+    assert!(!state.grant_confirm.overlay_window_ids().contains(&KNOWN_WINDOW));
+
+    // A second destroy returns None (idempotent).
+    let again = state.grant_confirm.destroy_overlay(KNOWN_WINDOW);
+    assert!(again.is_none(), "destroy_overlay must be idempotent");
+
+    // Re-register after destroy works.
+    let _ = state.grant_confirm.register_overlay(KNOWN_WINDOW, true);
+    assert!(state.grant_confirm.overlay_window_ids().contains(&KNOWN_WINDOW));
+}

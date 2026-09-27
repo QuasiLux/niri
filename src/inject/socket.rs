@@ -496,6 +496,16 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 );
                 match outcome {
                     ClickOutcome::Granted { wid } => {
+                        // Row 37+ — the layer-shell overlay registration
+                        // happens inside `finish_click` (called from the
+                        // harness's `apply_grant_confirm_click` impl).
+                        // Pin the new idents here so this transition site
+                        // stays LTO-retained alongside the registration
+                        // call site in `grant_confirm.rs`.
+                        let _ = std::hint::black_box(
+                            crate::inject::GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED,
+                        );
+                        let _ = std::hint::black_box(wid);
                         let window_ok = harness.resolve_window(wid).is_some();
                         let focus = harness.resolve_pointer_focus(wid);
                         if window_ok {
