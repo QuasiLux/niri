@@ -126,6 +126,17 @@ impl InjectHarness for NiriInjectHarness<'_> {
         self.state.niri.grant_map.has_grant(bot_id, window_id)
     }
 
+    fn grant_pending(&self, bot_id: &str) -> bool {
+        self.state
+            .niri
+            .grant_confirm
+            .pending()
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|p| p.bot_id == bot_id)
+    }
+
     fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
         NiriInjectHarness::request_grant(self, bot_id, token_fingerprint)
     }
