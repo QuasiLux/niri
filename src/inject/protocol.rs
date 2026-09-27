@@ -44,6 +44,7 @@ static OPC_AT_ELEMENT_REQ_IDENT: &str = "AT_ELEMENT_REQ";
 pub const REP_HELLO_OK: &str = "HELLO OK";
 pub const REP_AUTH_OK: &str = "AUTH OK";
 pub const REP_BIND_OK: &str = "BIND OK";
+pub const REP_BIND_PENDING: &str = "BIND PENDING";
 pub const REP_DISPATCH_OK: &str = "DISPATCH OK";
 pub const REP_DISPATCH_ERR: &str = "DISPATCH ERR";
 pub const REP_FRAME_ERR: &str = "FRAME ERR";
@@ -56,6 +57,10 @@ pub const REP_AT_ELEMENT_REPLY: &str = "AT_ELEMENT_REPLY";
 pub const REP_BG_UNAVAILABLE: &str = "BACKGROUND_UNAVAILABLE";
 pub const IDENT_AT_SPI_STRONG: &str = "AT_SPI_STRONG";
 pub const IDENT_AT_SPI_CHROME: &str = "AT_SPI_CHROME";
+
+#[used]
+#[allow(dead_code)]
+static REP_BIND_PENDING_IDENT: &str = "BIND PENDING";
 
 #[used]
 #[allow(dead_code)]
@@ -178,6 +183,7 @@ pub enum Reply {
     HelloOk,
     AuthOk { bot_id: String },
     BindOk,
+    BindPending,
     DispatchOk,
     DispatchErr { code: &'static str },
     FrameErr { code: &'static str },
@@ -195,6 +201,7 @@ impl Reply {
             Reply::HelloOk => format!("{REP_HELLO_OK}\n"),
             Reply::AuthOk { bot_id } => format!("{REP_AUTH_OK} {bot_id}\n"),
             Reply::BindOk => format!("{REP_BIND_OK}\n"),
+            Reply::BindPending => format!("{REP_BIND_PENDING}\n"),
             Reply::DispatchOk => format!("{REP_DISPATCH_OK}\n"),
             Reply::DispatchErr { code } => format!("{REP_DISPATCH_ERR} {code}\n"),
             Reply::FrameErr { code } => format!("{REP_FRAME_ERR} {code}\n"),
@@ -277,6 +284,12 @@ pub trait InjectHarness {
     /// Default denies BIND (token-only AUTH is not sufficient).
     fn grant_present(&self, bot_id: &str, window_id: u64) -> bool {
         let _ = (bot_id, window_id);
+        false
+    }
+    /// True when a pending grant exists for `bot_id` (queued, not yet in the map).
+    /// Default: stub harnesses never have a pending grant.
+    fn grant_pending(&self, bot_id: &str) -> bool {
+        let _ = bot_id;
         false
     }
     /// Queue a pending grant request. Default denies (no queue on stub harnesses).
