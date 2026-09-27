@@ -1169,6 +1169,136 @@ fn bind_after_pending_grant_resolved_succeeds() {
     assert!(replies.contains("BIND OK\n"), "{replies:?}");
 }
 
+
+#[test]
+fn grant_resolved_transitions_to_bind_ok_when_grant_confirmed() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} GRANT\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(
+        state
+            .grants
+            .lock()
+            .unwrap()
+            .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)),
+        "GRANT_RESOLVED GRANT must write GrantMap"
+    );
+}
+
+#[test]
+fn grant_resolved_transitions_to_denied_when_deny_decision() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} DENY\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(
+        replies.contains("DISPATCH ERR GRANT_DENIED\n"),
+        "{replies:?}"
+    );
+    assert!(state.pending.lock().unwrap().is_none());
+    assert!(!state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+}
+
+#[test]
+fn grant_resolved_frame_err_when_no_pending_grant() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} GRANT\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(
+        replies.contains("FRAME ERR GRANT_NOT_PENDING\n"),
+        "{replies:?}"
+    );
+}
+
+#[test]
+fn grant_resolved_malformed_decision_returns_malformed() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} ALLOW\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("FRAME ERR MALFORMED\n"), "{replies:?}");
+}
+
+
 #[test]
 fn bind_with_pending_grant_for_other_bot_returns_not_granted() {
     let tokens = token_file();
