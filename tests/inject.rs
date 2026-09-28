@@ -2105,3 +2105,67 @@ fn live_grant_v38_overlay_client_handle_set_when_registered() {
     use niri::inject::grant_confirm::GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED;
     assert!(!GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED.is_empty());
 }
+
+#[test]
+fn live_grant_v39_socket_name_set_at_niri_new() {
+    // v39: instantiate the dispatch state (the worker-thread snapshot that
+    // owns GrantConfirmState — `DispatchState::new` mirrors `Niri::new` for
+    // the inject-plane fields). Then call the new `set_socket_name` pin the
+    // same way `Niri::new` does, and assert the field reflects the pin.
+    //
+    // We do NOT try to instantiate `niri::State` (that needs a real Wayland
+    // display). The pin semantics live entirely in `GrantConfirmState`, so
+    // driving that is sufficient.
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state.surface_map.lock().unwrap().insert(KNOWN_WINDOW, surface);
+    }
+    let _ = fs::remove_file(&tokens);
+
+    // Baseline: field is None at construction (matches v38 behavior).
+    assert!(
+        state.grant_confirm.socket_name.lock().unwrap().is_none(),
+        "socket_name must default to None (v38 contract preserved)"
+    );
+
+    // Pin: same code path Niri::new now runs.
+    let sentinel = std::ffi::OsString::from("/tmp/qlux-v39-test-niri-socket");
+    state.grant_confirm.set_socket_name(sentinel.clone());
+
+    // After the pin, the field carries the name we put in.
+    let got = state.grant_confirm.socket_name.lock().unwrap().clone();
+    assert_eq!(
+        got.as_ref(),
+        Some(&sentinel),
+        "v39: set_socket_name must populate GrantConfirmState.socket_name"
+    );
+
+    // Pin the new ident so the static-slice LTO retention test catches
+    // accidental removal of the #[used] block.
+    use niri::inject::grant_confirm::NIRI_SOCKET_NAME_PINNED_INTO_GRANT_CONFIRM_PIN;
+    assert!(!NIRI_SOCKET_NAME_PINNED_INTO_GRANT_CONFIRM_PIN.is_empty());
+    assert!(
+        NIRI_SOCKET_NAME_PINNED_INTO_GRANT_CONFIRM_PIN.contains("niri_socket_name_pinned_into_grant_confirm"),
+        "v39 ident literal must match acceptance #9 exactly"
+    );
+
+    // The set_socket_name_for_test test helper must remain byte-equal
+    // (smoke check: still compiles + works).
+    state.grant_confirm.set_socket_name_for_test(
+        std::ffi::OsString::from("/tmp/qlux-v39-test-other"),
+    );
+    let after_test_helper = state.grant_confirm.socket_name.lock().unwrap().clone();
+    assert_eq!(
+        after_test_helper.as_ref().map(|s| s.to_str()),
+        Some(Some("/tmp/qlux-v39-test-other")),
+        "v38 set_socket_name_for_test helper must still drive the same field"
+    );
+}
