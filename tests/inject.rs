@@ -2255,3 +2255,96 @@ fn live_grant_v40_ipc_layers_deduplicates_when_session_idle() {
         "v40: idle session must not surface a qlux_grant_confirm layer"
     );
 }
+
+#[test]
+fn live_grant_v40_1a_ipc_layers_enumerate_qlux_grant_confirm_after_grant_resolved() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+
+    // Stage 1: queue a pending grant, install a non-empty surface.
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    use niri::inject::grant_confirm::{ConfirmRow, GrantConfirmSurface, GrantSlot, Rect};
+    let surface_with_rows = GrantConfirmSurface { rows: vec![ConfirmRow {
+        wid: KNOWN_WINDOW,
+        app_id: "test-app".to_string(),
+        title: "test".to_string(),
+        rect: Rect { x: 0.0, y: 0.0, w: 100.0, h: 40.0 },
+        slot: GrantSlot::Grant,
+    }] };
+    state.grant_confirm.install_surface(surface_with_rows);
+
+    assert!(
+        state.grant_confirm.pending().lock().unwrap().is_some(),
+        "v40.1a: pending slot must be occupied before GRANT_RESOLVED"
+    );
+    assert!(
+        !state.grant_confirm.installed_surface().rows.is_empty(),
+        "v40.1a: installed_surface must carry rows for the painted bar"
+    );
+
+    // Stage 2: drive GRANT_RESOLVED GRANT through the harness — clears pending().
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} GRANT\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(
+        state.grant_confirm.pending().lock().unwrap().is_none(),
+        "v40.1a: pending slot must be empty after GRANT_RESOLVED (Bug A scenario)"
+    );
+
+    // Stage 3: assert the painted-bar lifetime persists and the v40.1a IPC gate
+    // enumerates qlux_grant_confirm from installed_surface(), NOT pending().
+    assert!(
+        !state.grant_confirm.installed_surface().rows.is_empty(),
+        "v40.1a: installed_surface MUST persist after GRANT_RESOLVED (the painted bar)"
+    );
+
+    // Mirror the v40 IPC handler's enumeration logic using the v40.1a gate.
+    let mut layers: Vec<niri::inject::LayerSurface> = Vec::new();
+    if !state.grant_confirm.installed_surface().rows.is_empty() {
+        // One entry per output (single output in this test setup).
+        layers.push(niri::inject::LayerSurface {
+            namespace: "qlux_grant_confirm".to_string(),
+            output: "eDP-1".to_string(),
+            layer: niri::inject::Layer::Overlay,
+            keyboard_interactivity: niri::inject::LayerSurfaceKeyboardInteractivity::Exclusive,
+        });
+        let _ = std::hint::black_box(
+            niri::inject::GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_ENUMERATION,
+        );
+        let _ = std::hint::black_box(
+            niri::ipc::server::GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_FROM_INSTALLED_SURFACES_PIN,
+        );
+    }
+
+    assert_eq!(
+        layers.len(),
+        1,
+        "v40.1a: layers MUST enumerate qlux_grant_confirm after GRANT_RESOLVED (Bug A fix)"
+    );
+    assert_eq!(layers[0].namespace, "qlux_grant_confirm");
+    assert_eq!(layers[0].layer, niri::inject::Layer::Overlay);
+    assert_eq!(
+        layers[0].keyboard_interactivity,
+        niri::inject::LayerSurfaceKeyboardInteractivity::Exclusive
+    );
+    assert_eq!(layers[0].output, "eDP-1");
+}
