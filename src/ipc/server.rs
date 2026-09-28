@@ -38,6 +38,12 @@ use crate::niri::State;
 use crate::utils::{version, with_toplevel_role};
 use crate::window::Mapped;
 
+/// v40.1a LTO/DCE-pin: keeps the new installed-surface ident in the release ELF.
+/// Source is in src/ipc/server.rs (NOT src/inject/mod.rs) to keep the diff at 2 files.
+#[used]
+pub static GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_FROM_INSTALLED_SURFACES_PIN: &str =
+    "GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_FROM_INSTALLED_SURFACES";
+
 // If an event stream client fails to read events fast enough that we accumulate more than this
 // number in our buffer, we drop that event stream client.
 const EVENT_STREAM_BUFFER_SIZE: usize = 64;
@@ -323,13 +329,18 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
                     }
                 }
 
-                // v40: surface the pending qlux_grant_confirm bar as a single Overlay
-                // Exclusive layer per output. GrantConfirmState.pending() is a data
-                // structure (per src/inject/grant_confirm.rs top-of-file doc), not a
-                // zwlr-layer-shell-v1 LayerSurface, so it does not appear in
-                // layer_map_for_output(...).layers(). Surface it explicitly here so
-                // niri msg --json layers and visual proof tooling see the bar.
-                if state.niri.grant_confirm.pending().lock().unwrap().is_some() {
+                // v40.1a: enumerate the qlux_grant_confirm bar from the painted-bar
+                // lifetime (installed_surface()), not the request queue (pending()).
+                // pending() is cleared by GRANT_RESOLVED via take()/clear() (see
+                // src/inject/grant_confirm.rs top-of-file doc), so a pending()-based
+                // gate is empty in the post-GRANT_RESOLVED sampling window — Bug A
+                // from t_962859c1 Branch B. installed_surface() persists across
+                // GRANT_RESOLVED because it lives in a SEPARATE
+                // Arc<Mutex<GrantConfirmSurface>> field (self.surface), not the
+                // pending queue. Enumerate iff the surface has at least one row
+                // (the empty-default surface must not emit a qlux_grant_confirm
+                // entry — that path is the v40 idle gate).
+                if !state.niri.grant_confirm.installed_surface().rows.is_empty() {
                     // Per-output emission matches the existing loop's semantics (each
                     // output has its own layer_map walk). The bar is logically a single
                     // compositor-owned overlay; emitting one entry per output lets
@@ -343,9 +354,13 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
                                 niri_ipc::LayerSurfaceKeyboardInteractivity::Exclusive,
                         });
                     }
-                    // LTO/DCE-pin (per INJECT_PLANE_IDENTS convention).
+                    // v40.1a LTO/DCE-pin (new ident). v40's GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_ENUMERATION
+                    // remains for the pending() path; this new pin is for the installed_surface() path.
                     let _ = std::hint::black_box(
                         crate::inject::GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_ENUMERATION,
+                    );
+                    let _ = std::hint::black_box(
+                        GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_FROM_INSTALLED_SURFACES_PIN,
                     );
                 }
 
