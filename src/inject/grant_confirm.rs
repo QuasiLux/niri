@@ -441,6 +441,14 @@ pub static GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED: &str =
 static GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED_PIN: &str =
     GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED;
 
+/// v40.1b: render-walk painted-bar wire-in ident (LTO-retained).
+pub static GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK: &str =
+    "GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK";
+#[used]
+#[allow(dead_code)]
+static GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_PIN: &str =
+    GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK;
+
 /// Ident marker for the v39 Niri::new socket-name pin (LTO-retained).
 #[used]
 #[allow(dead_code)]
@@ -702,5 +710,16 @@ impl GrantConfirmState {
     /// Inspect the overlay for `window_id` without removing it.
     pub fn overlay_for(&self, window_id: u64) -> Option<OverlayHandle> {
         self.overlays.lock().unwrap().get(&window_id).cloned()
+    }
+
+    /// v40.1b: expose the painted overlay's BGRA bytes + dimensions to the
+    /// per-output render walk. Returns the first painted OverlayHandle's
+    /// (bytes, width, height) tuple, or None when no overlay has been painted
+    /// yet. Idempotent. LTO-retained via the painted-to-render-walk ident.
+    pub fn painted_overlay_framebuffer(&self) -> Option<(Vec<u8>, u32, u32)> {
+        let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_PIN);
+        let map = self.overlays.lock().unwrap();
+        let handle = map.values().find(|h| h.painted)?;
+        Some((handle.shm_buffer.clone(), handle.config.width, handle.config.height))
     }
 }
