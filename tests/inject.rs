@@ -2050,3 +2050,58 @@ fn live_grant_confirm_overlay_destroyed_on_dispatch_completion() {
     let _ = state.grant_confirm.register_overlay(KNOWN_WINDOW, true);
     assert!(state.grant_confirm.overlay_window_ids().contains(&KNOWN_WINDOW));
 }
+
+#[test]
+fn live_grant_v38_overlay_client_handle_set_when_registered() {
+    // The v38 in-process-client spawn is best-effort: when the
+    // GrantConfirmState has a socket_name set, register_overlay spawns the
+    // overlay-client thread and stores an OverlayClientHandle on the
+    // OverlayHandle. The test sets the socket_name to Some(<sentinel path>)
+    // so the spawn attempt fires; the spawned thread may then fail to
+    // connect (the test has no compositor) and log+exit, but the handle is
+    // already stored BEFORE the connect attempt. The sentinel path here is
+    // a deliberately-bad wayland socket (the test does NOT need a live
+    // compositor — only the spawn-attempt side-effect is asserted).
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state.surface_map.lock().unwrap().insert(KNOWN_WINDOW, surface);
+    }
+    // Set a sentinel socket_name so the spawn fires.
+    state.grant_confirm.set_socket_name_for_test(
+        std::ffi::OsString::from("/tmp/qlux-v38-test-no-such-socket"),
+    );
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} GRANT\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+
+    let handle = state
+        .grant_confirm
+        .overlay_for(KNOWN_WINDOW)
+        .expect("overlay handle");
+    assert!(
+        handle.client_handle.is_some(),
+        "v38 client_handle must be Some when register_overlay was given a socket_name"
+    );
+    // v37+ data-only fields stay byte-equal (smoke check).
+    assert!(handle.painted, "v37+ painted flag still set");
+    assert_eq!(handle.config.namespace, "qlux_grant_confirm");
+
+    // Pin the new ident (and the existing ones) so the static-slice LTO
+    // retention test catches accidental removal.
+    use niri::inject::grant_confirm::GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED;
+    assert!(!GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED.is_empty());
+}

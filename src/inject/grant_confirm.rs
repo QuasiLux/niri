@@ -37,11 +37,18 @@
 //!   API stays.
 
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::inject::app_catalog;
 use crate::inject::grants::GrantMap;
+
+#[path = "overlay_client.rs"]
+mod overlay_client;
+pub use overlay_client::{
+    OverlayClientHandle, GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED,
+};
 
 /// Slot width for Grant / Deny buttons in the data-structure surface.
 pub const GRANT_SLOT_W: f64 = 100.0;
@@ -226,6 +233,9 @@ pub struct GrantConfirmState {
     /// Row 37+ — per-window layer-shell overlay registrations
     /// (data structure, not a real `WlrLayerSurface`).
     pub overlays: Arc<Mutex<HashMap<u64, OverlayHandle>>>,
+    /// Wayland display socket the overlay-client thread should connect to.
+    /// `None` in unit tests (no compositor); production / v38 tests set `Some`.
+    pub socket_name: Arc<Mutex<Option<OsString>>>,
 }
 
 impl GrantConfirmState {
@@ -239,6 +249,7 @@ impl GrantConfirmState {
             surface: Arc::new(Mutex::new(GrantConfirmSurface::default())),
             pending_resolution: Arc::new(Mutex::new(HashMap::new())),
             overlays: Arc::new(Mutex::new(HashMap::new())),
+            socket_name: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -424,6 +435,11 @@ pub static GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED: &str =
 #[allow(dead_code)]
 pub static GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED: &str =
     "GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED";
+/// Ident marker for the v38 in-process overlay-client thread spawn (LTO-retained).
+#[used]
+#[allow(dead_code)]
+static GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED_PIN: &str =
+    GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED;
 
 /// Layer kind for the grant-confirm overlay (mirrors wlr-layer-shell `Layer`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -496,20 +512,25 @@ pub struct OverlayHandle {
     pub config: OverlayLayerConfig,
     pub shm_buffer: Vec<u8>,
     pub painted: bool,
+    /// v38 — `Some` after `spawn_overlay_client` when a socket name was given.
+    pub client_handle: Option<OverlayClientHandle>,
 }
 
 impl OverlayHandle {
     /// Allocate the BGRA shm-buffer and lock in the layer-shell config.
-    pub fn register_layer_shell(window_id: u64) -> Self {
+    pub fn register_layer_shell(window_id: u64, socket_name: Option<&OsStr>) -> Self {
         let config = OverlayLayerConfig::default();
         let shm_buffer = vec![0u8; (config.width * config.height * 4) as usize];
         let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED);
         let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED);
+        let client_handle =
+            socket_name.map(|name| overlay_client::spawn_overlay_client(name, window_id));
         Self {
             window_id,
             config,
             shm_buffer,
             painted: false,
+            client_handle,
         }
     }
 
@@ -625,21 +646,38 @@ impl GrantConfirmState {
 
     /// Idempotent register: insert the overlay for `window_id` if absent.
     /// `commit_paint=true` runs `paint_grant_deny_half` immediately.
+    /// Socket name is read from [`Self::socket_name`] (`None` in unit tests).
     pub fn register_overlay(
         &self,
         window_id: u64,
         commit_paint: bool,
     ) -> OverlayHandle {
+        let socket_name = self.socket_name.lock().unwrap().clone();
+        self.register_overlay_with_socket(window_id, commit_paint, socket_name.as_deref())
+    }
+
+    /// Register with an explicit compositor socket name.
+    pub fn register_overlay_with_socket(
+        &self,
+        window_id: u64,
+        commit_paint: bool,
+        socket_name: Option<&OsStr>,
+    ) -> OverlayHandle {
         let mut map = self.overlays.lock().unwrap();
         if let Some(existing) = map.get(&window_id) {
             return existing.clone();
         }
-        let mut handle = OverlayHandle::register_layer_shell(window_id);
+        let mut handle = OverlayHandle::register_layer_shell(window_id, socket_name);
         if commit_paint {
             handle.paint_grant_deny_half();
         }
         map.insert(window_id, handle.clone());
         handle
+    }
+
+    /// Test helper: populate [`Self::socket_name`] so `register_overlay` spawns.
+    pub fn set_socket_name_for_test(&self, name: OsString) {
+        *self.socket_name.lock().unwrap() = Some(name);
     }
 
     /// Remove and return the overlay for `window_id` (the bind-completion
