@@ -23,7 +23,9 @@ use niri_config::{
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::input::{InputTime, Keycode};
 use smithay::backend::renderer::damage::OutputDamageTracker;
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::memory::{
+    MemoryRenderBuffer, MemoryRenderBufferRenderElement,
+};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::{
     select_dmabuf_feedback, CropRenderElement, Relocate, RelocateRenderElement,
@@ -4751,6 +4753,43 @@ impl Niri {
         self.clear_xray_elements(output);
     }
 
+
+    #[allow(dead_code)]
+    fn render_grant_confirm_overlay_to_walk<R: NiriRenderer>(
+        &self,
+        renderer: &mut R,
+        push: &mut dyn FnMut(OutputRenderElements<R>),
+    ) {
+        let Some((bytes, w, h)) = self.grant_confirm.painted_overlay_framebuffer() else {
+            return;
+        };
+        let _ = std::hint::black_box(
+            crate::inject::grant_confirm::GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK,
+        );
+        let location = Point::new(0., 0.);
+        let buffer = MemoryRenderBuffer::from_slice(
+            &bytes,
+            Fourcc::Argb8888,
+            (w as i32, h as i32),
+            1,
+            Transform::Normal,
+            None,
+        );
+        let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            location,
+            &buffer,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        ) else {
+            return;
+        };
+        let elem = RelocateRenderElement::from_element(elem, Point::new(0, 0), Relocate::Relative);
+        push(elem.into());
+    }
+
     fn render_inner<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
@@ -4968,6 +5007,9 @@ impl Niri {
             }
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
+
+            // v40.1b: paint the grant-confirm bar on top of workspaces.
+            self.render_grant_confirm_overlay_to_walk(ctx.renderer, &mut |elem| push(elem.into()));
 
             for (ws, geo) in mon.workspaces_with_render_geo() {
                 // The render element namespace. This will be set to the workspace index for
