@@ -2348,3 +2348,68 @@ fn live_grant_v40_1a_ipc_layers_enumerate_qlux_grant_confirm_after_grant_resolve
     );
     assert_eq!(layers[0].output, "eDP-1");
 }
+
+#[test]
+fn live_grant_v40_1b_overlay_bar_paints_to_framebuffer_in_isolation() {
+    #[allow(unused_imports)]
+    use niri::inject::grant_confirm::{
+        GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK, Rect as GcRect,
+    };
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} GRANT\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(
+        !state.grant_confirm.overlay_window_ids().is_empty(),
+        "v40.1b: overlay handle must be registered after GRANT"
+    );
+
+    // Stage 2: paint_to_render_element path — fetch the painted BGRA bytes.
+    let (bytes, w, h) = state
+        .grant_confirm
+        .painted_overlay_framebuffer()
+        .expect("v40.1b: painted_overlay_framebuffer must return Some after GRANT_RESOLVED GRANT");
+    assert_eq!(w, 2560, "v40.1b: width must be 2560");
+    assert_eq!(h, 40, "v40.1b: height must be 40");
+    assert_eq!(bytes.len(), (w * h * 4) as usize);
+
+    // Stage 3: synthetic fake-output framebuffer = 2560 x 40 x 4 BGRA bytes.
+    let mut framebuffer = vec![0u8; (w * h * 4) as usize];
+    framebuffer[..bytes.len()].copy_from_slice(&bytes);
+
+    // Probe byte-equal BGRA pixels per Trap 33 (no histograms).
+    let probe = |x: u32, y: u32| -> [u8; 4] {
+        let i = ((y * w + x) * 4) as usize;
+        [framebuffer[i], framebuffer[i + 1], framebuffer[i + 2], framebuffer[i + 3]]
+    };
+    // Green half (x < 1280): BGRA = (0, 255, 0, 255).
+    assert_eq!(probe(100, 20), [0u8, 255, 0, 255], "green-left pixel mismatch");
+    assert_eq!(probe(1279, 20), [0u8, 255, 0, 255], "boundary x=1279 must be green");
+    // Red half (x >= 1280): BGRA = (0, 0, 255, 255).
+    assert_eq!(probe(1280, 20), [0u8, 0, 255, 255], "boundary x=1280 must be red");
+    assert_eq!(probe(1500, 20), [0u8, 0, 255, 255], "red-right pixel mismatch");
+
+    // Pin the new ident into the test ELF (it'll also be in the lib via the new method's black_box).
+    let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK);
+}
