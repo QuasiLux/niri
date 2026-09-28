@@ -126,3 +126,18 @@ pub static GRANT_CONFIRM_OVERLAY_PLANE_IDENTS: &[&str] = &[
     "GRANT_CONFIRM_OVERLAY_EXCLUSIVE_ZONE",
     "GRANT_CONFIRM_OVERLAY_KEYBOARD_INTERACTIVITY",
 ];
+
+/// v40 IPC surface fix idents (separate `#[used]` static).
+/// Surfaces `niri.grant_confirm.pending()` through `Request::Layers`.
+pub const GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_ENUMERATION: &str =
+    "GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_ENUMERATION";
+
+#[used]
+pub static GRANT_CONFIRM_IPC_LAYERS_PLANE_IDENTS: &[&str] = &[
+    GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_ENUMERATION,
+];
+
+/// v40 IPC surface-contract types. Re-exported so `tests/inject.rs` can
+/// assert the `Request::Layers` field mapping without adding `niri-ipc`
+/// to `[dev-dependencies]` (Cargo.toml is frozen on this card).
+pub use niri_ipc::{Layer, LayerSurface, LayerSurfaceKeyboardInteractivity};

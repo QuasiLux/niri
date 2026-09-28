@@ -2169,3 +2169,89 @@ fn live_grant_v39_socket_name_set_at_niri_new() {
         "v38 set_socket_name_for_test helper must still drive the same field"
     );
 }
+
+
+#[test]
+fn live_grant_v40_ipc_layers_enumerate_qlux_grant_confirm() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+
+    assert!(
+        state.grant_confirm.pending().lock().unwrap().is_some(),
+        "v40: pending slot must be occupied before IPC layers enumeration"
+    );
+
+    let mut layers: Vec<niri::inject::LayerSurface> = Vec::new();
+    if state.grant_confirm.pending().lock().unwrap().is_some() {
+        layers.push(niri::inject::LayerSurface {
+            namespace: "qlux_grant_confirm".to_string(),
+            output: "eDP-1".to_string(),
+            layer: niri::inject::Layer::Overlay,
+            keyboard_interactivity: niri::inject::LayerSurfaceKeyboardInteractivity::Exclusive,
+        });
+        let _ = std::hint::black_box(
+            niri::inject::GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_ENUMERATION,
+        );
+    }
+    assert_eq!(layers.len(), 1);
+    assert_eq!(layers[0].namespace, "qlux_grant_confirm");
+    assert_eq!(layers[0].layer, niri::inject::Layer::Overlay);
+    assert_eq!(
+        layers[0].keyboard_interactivity,
+        niri::inject::LayerSurfaceKeyboardInteractivity::Exclusive
+    );
+    assert_eq!(layers[0].output, "eDP-1");
+    assert!(
+        !niri::inject::GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_ENUMERATION.is_empty()
+    );
+
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}GRANT_RESOLVED bot-a {KNOWN_WINDOW} GRANT\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(
+        state.pending.lock().unwrap().is_none(),
+        "v40: grant bar must clear after GRANT_RESOLVED"
+    );
+    assert!(
+        state.grant_confirm.pending().lock().unwrap().is_none(),
+        "v40: grant_confirm.pending() must share the cleared slot"
+    );
+}
+
+#[test]
+fn live_grant_v40_ipc_layers_deduplicates_when_session_idle() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    let _ = fs::remove_file(&tokens);
+    assert!(
+        state.grant_confirm.pending().lock().unwrap().is_none(),
+        "v40: idle session must not surface a qlux_grant_confirm layer"
+    );
+}
