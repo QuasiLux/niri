@@ -323,6 +323,32 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
                     }
                 }
 
+                // v40: surface the pending qlux_grant_confirm bar as a single Overlay
+                // Exclusive layer per output. GrantConfirmState.pending() is a data
+                // structure (per src/inject/grant_confirm.rs top-of-file doc), not a
+                // zwlr-layer-shell-v1 LayerSurface, so it does not appear in
+                // layer_map_for_output(...).layers(). Surface it explicitly here so
+                // niri msg --json layers and visual proof tooling see the bar.
+                if state.niri.grant_confirm.pending().lock().unwrap().is_some() {
+                    // Per-output emission matches the existing loop's semantics (each
+                    // output has its own layer_map walk). The bar is logically a single
+                    // compositor-owned overlay; emitting one entry per output lets
+                    // callers pick the active output's entry.
+                    for output in state.niri.global_space.outputs() {
+                        layers.push(niri_ipc::LayerSurface {
+                            namespace: "qlux_grant_confirm".to_string(),
+                            output: output.name(),
+                            layer: niri_ipc::Layer::Overlay,
+                            keyboard_interactivity:
+                                niri_ipc::LayerSurfaceKeyboardInteractivity::Exclusive,
+                        });
+                    }
+                    // LTO/DCE-pin (per INJECT_PLANE_IDENTS convention).
+                    let _ = std::hint::black_box(
+                        crate::inject::GRANT_CONFIRM_QUEUED_FOR_IPC_LAYERS_ENUMERATION,
+                    );
+                }
+
                 let _ = tx.send_blocking(layers);
             });
             let result = rx.recv().await;
