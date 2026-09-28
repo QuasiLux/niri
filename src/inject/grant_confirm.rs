@@ -441,6 +441,12 @@ pub static GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED: &str =
 static GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED_PIN: &str =
     GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED;
 
+/// Ident marker for the v39 Niri::new socket-name pin (LTO-retained).
+#[used]
+#[allow(dead_code)]
+pub static NIRI_SOCKET_NAME_PINNED_INTO_GRANT_CONFIRM_PIN: &str =
+    "niri_socket_name_pinned_into_grant_confirm";
+
 /// Layer kind for the grant-confirm overlay (mirrors wlr-layer-shell `Layer`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayLayerKind {
@@ -673,6 +679,13 @@ impl GrantConfirmState {
         }
         map.insert(window_id, handle.clone());
         handle
+    }
+
+    /// Production pin: populate [`Self::socket_name`] from `Niri::new` so
+    /// `register_overlay` can spawn the in-process overlay-client thread.
+    pub fn set_socket_name(&self, name: OsString) {
+        let _ = std::hint::black_box(NIRI_SOCKET_NAME_PINNED_INTO_GRANT_CONFIRM_PIN);
+        *self.socket_name.lock().unwrap() = Some(name);
     }
 
     /// Test helper: populate [`Self::socket_name`] so `register_overlay` spawns.
