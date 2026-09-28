@@ -505,6 +505,9 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                         let _ = std::hint::black_box(
                             crate::inject::GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED,
                         );
+                        let _ = std::hint::black_box(
+                            crate::inject::grant_confirm::GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED,
+                        );
                         let _ = std::hint::black_box(wid);
                         let window_ok = harness.resolve_window(wid).is_some();
                         let focus = harness.resolve_pointer_focus(wid);

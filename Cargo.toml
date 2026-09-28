@@ -87,6 +87,7 @@ profiling = "1.0.18"
 sd-notify = "0.5.0"
 serde.workspace = true
 serde_json.workspace = true
+smithay-client-toolkit = "0.20"
 smithay-drm-extras.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
