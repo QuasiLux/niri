@@ -3164,6 +3164,13 @@ impl Niri {
             test_action_count: 0,
         };
 
+        // v39: pin niri.socket_name into grant_confirm so register_overlay
+        // can spawn the in-process overlay-client thread. The wayland socket
+        // was created above (line 2596) and is Some by construction.
+        if let Some(name) = niri.socket_name.as_ref() {
+            niri.grant_confirm.set_socket_name(name.clone());
+        }
+
         niri.reset_pointer_inactivity_timer();
 
         // Registration site for the internal output-power-state listener.
