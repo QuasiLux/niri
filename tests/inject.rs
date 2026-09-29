@@ -2350,6 +2350,65 @@ fn live_grant_v40_1a_ipc_layers_enumerate_qlux_grant_confirm_after_grant_resolve
 }
 
 #[test]
+fn live_grant_v40_2_dispatch_harness_installs_surface_after_request_grant() {
+    use niri::inject::grant_confirm::{
+        GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT,
+        GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT_PIN,
+        GRANT_SLOT_W,
+    };
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state.surface_map.lock().unwrap().insert(KNOWN_WINDOW, surface);
+    }
+    state.set_bound_app_id("test-app");
+
+    assert!(
+        state.grant_confirm.installed_surface().rows.is_empty(),
+        "v40.2 pre-condition: installed_surface must start empty before request_grant"
+    );
+
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}GRANT_REQUEST bot-a\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("GRANT ACK QUEUED\n"), "{replies:?}");
+    let surface = state.grant_confirm.installed_surface();
+    assert!(
+        !surface.rows.is_empty(),
+        "v40.2: installed_surface must carry rows after DispatchHarness::request_grant"
+    );
+    let row = surface
+        .rows
+        .iter()
+        .find(|r| r.wid == KNOWN_WINDOW)
+        .expect("v40.2: installed_surface must contain KNOWN_WINDOW row");
+    assert_eq!(row.app_id, "test-app", "v40.2: app_id from bound_app_id");
+    assert_eq!(row.rect.w, GRANT_SLOT_W, "v40.2: rect width = GRANT_SLOT_W");
+    assert!(
+        (row.rect.x - 0.0).abs() < f64::EPSILON
+            || (row.rect.x - GRANT_SLOT_W).abs() < f64::EPSILON,
+        "v40.2: rect x must be 0 (Grant) or GRANT_SLOT_W (Deny), got {}",
+        row.rect.x
+    );
+
+    assert!(
+        state.grant_confirm.pending().lock().unwrap().is_some(),
+        "v40.2: pending slot must still be Some after request_grant"
+    );
+
+    let _ = std::hint::black_box(GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT);
+    let _ = std::hint::black_box(GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT_PIN);
+}
+
+#[test]
 fn live_grant_v40_1b_overlay_bar_paints_to_framebuffer_in_isolation() {
     #[allow(unused_imports)]
     use niri::inject::grant_confirm::{
