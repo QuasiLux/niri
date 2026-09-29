@@ -589,7 +589,32 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
             .is_some_and(|p| p.bot_id == bot_id)
     }
     fn request_grant(&mut self, bot_id: &str, token_fingerprint: [u8; 8]) -> bool {
-        try_queue_pending(&self.state.pending, bot_id, token_fingerprint)
+        let queued = try_queue_pending(&self.state.pending, bot_id, token_fingerprint);
+        if !queued {
+            return false;
+        }
+        // v40.2: live inject path now populates installed_surface() so the
+        // IPC layers handler (v40.1a, reads installed_surface().rows) and
+        // the per-output render walk (v40.1b, reads painted_overlay_framebuffer)
+        // both have something to display. Surface rows come from surface_map
+        // keys + bound_app_id (the only window-id → app_id mapping available
+        // on the worker thread; niri.grant_toplevels() lives on the compositor).
+        let _ = std::hint::black_box(
+            crate::inject::grant_confirm::GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT,
+        );
+        let app_id = self.state.bound_app_id.clone().unwrap_or_default();
+        let candidates: Vec<(u64, String, String)> = self
+            .state
+            .surface_map
+            .lock()
+            .unwrap()
+            .keys()
+            .map(|wid| (*wid, app_id.clone(), String::new()))
+            .collect();
+        self.state
+            .grant_confirm
+            .install_surface_from_candidates(candidates);
+        true
     }
     fn apply_grant_confirm_click(
         &mut self,

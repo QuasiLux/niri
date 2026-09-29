@@ -269,6 +269,14 @@ impl GrantConfirmState {
         *self.surface.lock().unwrap() = surface;
     }
 
+    /// Build via [`GrantConfirmSurface::from_candidates`] and install.
+    pub fn install_surface_from_candidates(
+        &self,
+        candidates: impl IntoIterator<Item = (u64, String, String)>,
+    ) {
+        self.install_surface(GrantConfirmSurface::from_candidates(candidates));
+    }
+
     pub fn record(&self, bot_id: impl Into<String>, token_fingerprint: [u8; 8]) {
         *self.pending.lock().unwrap() = Some(PendingGrant {
             bot_id: bot_id.into(),
@@ -448,6 +456,17 @@ pub static GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK: &str =
 #[allow(dead_code)]
 static GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_PIN: &str =
     GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK;
+
+/// v40.2: live-inject (DispatchHarness::request_grant) now installs a
+/// GrantConfirmSurface after try_queue_pending, so installed_surface()
+/// carries rows for the IPC layers handler and painted_overlay_framebuffer()
+/// has source data to push. LTO-retained.
+pub static GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT: &str =
+    "GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT";
+#[used]
+#[allow(dead_code)]
+pub static GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT_PIN: &str =
+    GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT;
 
 /// Ident marker for the v39 Niri::new socket-name pin (LTO-retained).
 #[used]
