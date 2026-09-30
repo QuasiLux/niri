@@ -2388,6 +2388,10 @@ pub static OUTPUTS_OFF_WIRED: &str = "outputs_off_wired";
 pub static WL_OUTPUT_POWER_STATE: &str = "wl_output_power_state";
 #[used]
 pub static OUTPUTS_OFF_OVERRIDE: &str = "outputs_off_override";
+/// v40.4 ident: render walk now reads from `installed_surface()` rows.
+#[used]
+pub static GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_FROM_INSTALLED_SURFACE: &str =
+    "GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_FROM_INSTALLED_SURFACE";
 
 /// Internal output-power-state source.
 ///
@@ -4654,6 +4658,35 @@ impl Niri {
         push(elem.into());
     }
 
+    #[allow(dead_code)]
+    fn render_grant_confirm_installed_surface_to_walk<R: NiriRenderer>(
+        &self, renderer: &mut R, push: &mut dyn FnMut(OutputRenderElements<R>),
+    ) {
+        let surface = self.grant_confirm.installed_surface();
+        if surface.rows.is_empty() { return; }
+        let _ = std::hint::black_box(
+            GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_FROM_INSTALLED_SURFACE,
+        );
+        let (w, h) = (2560u32, 40u32);
+        let mut bytes = vec![0u8; (w * h * 4) as usize];
+        for row in &surface.rows {
+            let (x0, x1) = (row.rect.x.max(0.0).min(w as f64) as u32, (row.rect.x + row.rect.w).max(0.0).min(w as f64) as u32);
+            let (y0, y1) = (row.rect.y.max(0.0).min(h as f64) as u32, (row.rect.y + row.rect.h).max(0.0).min(h as f64) as u32);
+            let (br, gr, rr) = if row.rect.x < 1.0 { (0u8, 255, 0) } else { (0, 0, 255) };
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let px = ((y * w + x) * 4) as usize;
+                    bytes[px] = br; bytes[px + 1] = gr; bytes[px + 2] = rr; bytes[px + 3] = 255;
+                }
+            }
+        }
+        let buffer = MemoryRenderBuffer::from_slice(&bytes, Fourcc::Argb8888, (w as i32, h as i32), 1, Transform::Normal, None);
+        let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer, Point::new(0., 0.), &buffer, None, None, None, Kind::Unspecified,
+        ) else { return; };
+        push(RelocateRenderElement::from_element(elem, Point::new(0, 0), Relocate::Relative).into());
+    }
+
     fn render_inner<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
@@ -4874,6 +4907,8 @@ impl Niri {
 
             // v40.1b: paint the grant-confirm bar on top of workspaces.
             self.render_grant_confirm_overlay_to_walk(ctx.renderer, &mut |elem| push(elem.into()));
+            // v40.4: also paint the bar from installed_surface() rows (live request data).
+            self.render_grant_confirm_installed_surface_to_walk(ctx.renderer, &mut |elem| push(elem.into()));
 
             for (ws, geo) in mon.workspaces_with_render_geo() {
                 // The render element namespace. This will be set to the workspace index for
