@@ -253,6 +253,22 @@ impl GrantConfirmState {
         }
     }
 
+    /// v40.3: expose the inner surface Arc so the worker thread can share the
+    /// compositor's `GrantConfirmSurface` storage. Without this, writes from
+    /// the worker land on a fresh Arc that the IPC handler never reads.
+    /// LTO-retained via [`DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE`].
+    pub fn surface_arc(&self) -> Arc<Mutex<GrantConfirmSurface>> {
+        let _ = std::hint::black_box(DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE_PIN);
+        Arc::clone(&self.surface)
+    }
+
+    /// v40.3: swap the surface Arc for a shared one. Worker-thread entry
+    /// uses this to redirect writes to the compositor's storage.
+    pub fn set_surface(&mut self, surface: Arc<Mutex<GrantConfirmSurface>>) {
+        let _ = std::hint::black_box(DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE_PIN);
+        self.surface = surface;
+    }
+
     pub fn pending(&self) -> Arc<Mutex<Option<PendingGrant>>> {
         Arc::clone(&self.pending)
     }
@@ -467,6 +483,15 @@ pub static GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT: 
 #[allow(dead_code)]
 pub static GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT_PIN: &str =
     GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT;
+
+/// Ident marker for the v40.3 worker-↔-compositor surface-Arc sharing path
+/// (LTO-retained). v22-v40.2 idents byte-equal preserved.
+pub static DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE: &str =
+    "DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE";
+#[used]
+#[allow(dead_code)]
+pub static DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE_PIN: &str =
+    DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE;
 
 /// Ident marker for the v39 Niri::new socket-name pin (LTO-retained).
 #[used]

@@ -153,6 +153,16 @@ impl DispatchState {
         }
     }
 
+    /// v40.3: redirect the worker's GrantConfirmState writes to the compositor's
+    /// shared surface Arc so IPC `Request::Layers` sees live inject writes.
+    /// Calls `crate::inject::grant_confirm::GrantConfirmState::set_surface`.
+    pub fn set_grant_confirm_surface(
+        &mut self,
+        surface: std::sync::Arc<std::sync::Mutex<crate::inject::grant_confirm::GrantConfirmSurface>>,
+    ) {
+        self.grant_confirm.set_surface(surface);
+    }
+
     pub fn snapshot_motion_count(&self) -> u32 {
         *self.motion_count.borrow()
     }
@@ -718,6 +728,7 @@ pub fn dispatch_inject_connection(
     surface_map: Arc<Mutex<HashMap<u64, WlSurface>>>,
     grants: Arc<Mutex<HashMap<(String, u64), ()>>>,
     pending: Arc<Mutex<Option<PendingGrant>>>,
+    grant_confirm_surface: Arc<Mutex<crate::inject::grant_confirm::GrantConfirmSurface>>,
 ) -> anyhow::Result<()> {
     let mut state = DispatchState::new(
         is_locked,
@@ -727,6 +738,7 @@ pub fn dispatch_inject_connection(
         grants,
         pending,
     );
+    state.set_grant_confirm_surface(grant_confirm_surface);
     let mut harness = DispatchHarness::new(&mut state);
     // Wire still uses socket.rs::pointer_scroll, so LTO drops the helper symbol.
     // NUL-separated copies so `strings | grep -c inject_agent_scroll` is 2
