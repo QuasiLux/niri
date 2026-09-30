@@ -2409,6 +2409,66 @@ fn live_grant_v40_2_dispatch_harness_installs_surface_after_request_grant() {
 }
 
 #[test]
+fn live_grant_v40_3_dispatch_state_grant_confirm_surface_shared_with_compositor() {
+    use niri::inject::grant_confirm::{
+        GrantConfirmState,
+        DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE,
+        DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE_PIN,
+        GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT,
+        GRANT_SLOT_W,
+    };
+    let tokens = token_file();
+    // Compositor-side GrantConfirmState — what the IPC handler reads.
+    let compositor_grant_confirm = GrantConfirmState::new();
+    // Snapshot of the surface Arc BEFORE we hand it to the worker.
+    let shared_surface = compositor_grant_confirm.surface_arc();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state.surface_map.lock().unwrap().insert(KNOWN_WINDOW, surface);
+    }
+    state.set_bound_app_id("zen");
+    // v40.3: redirect worker's GrantConfirmState writes to the compositor's surface Arc.
+    state.set_grant_confirm_surface(shared_surface);
+
+    assert!(
+        compositor_grant_confirm.installed_surface().rows.is_empty(),
+        "v40.3 pre-condition: compositor-side installed_surface must start empty"
+    );
+
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}GRANT_REQUEST bot-a\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("GRANT ACK QUEUED\n"), "{replies:?}");
+
+    // v40.3 KEY ASSERTION: compositor-side installed_surface must now reflect
+    // the worker's write — proving the surface Arc is shared.
+    let compositor_surface = compositor_grant_confirm.installed_surface();
+    assert!(
+        !compositor_surface.rows.is_empty(),
+        "v40.3: compositor-side installed_surface must see worker writes (surface Arc shared)"
+    );
+    let row = compositor_surface
+        .rows
+        .iter()
+        .find(|r| r.wid == KNOWN_WINDOW)
+        .expect("v40.3: compositor-side must contain KNOWN_WINDOW row");
+    assert_eq!(row.app_id, "zen", "v40.3: app_id from bound_app_id");
+    assert_eq!(row.rect.w, GRANT_SLOT_W, "v40.3: rect width = GRANT_SLOT_W");
+
+    let _ = std::hint::black_box(DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE);
+    let _ = std::hint::black_box(DISPATCH_STATE_SURFACE_MAP_SHARES_COMPOSITOR_SURFACE_PIN);
+    let _ = std::hint::black_box(GRANT_CONFIRM_DISPATCH_HARNESS_INSTALLS_SURFACE_AFTER_REQUEST_GRANT);
+}
+
+#[test]
 fn live_grant_v40_1b_overlay_bar_paints_to_framebuffer_in_isolation() {
     #[allow(unused_imports)]
     use niri::inject::grant_confirm::{
