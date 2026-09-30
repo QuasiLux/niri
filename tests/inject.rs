@@ -2532,3 +2532,30 @@ fn live_grant_v40_1b_overlay_bar_paints_to_framebuffer_in_isolation() {
     // Pin the new ident into the test ELF (it'll also be in the lib via the new method's black_box).
     let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK);
 }
+
+#[test]
+fn live_grant_v40_4_render_walk_iterates_grant_confirm_installed_surface() {
+    use niri::inject::grant_confirm::GrantConfirmState;
+    use niri::niri::GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_FROM_INSTALLED_SURFACE;
+
+    let compositor_state = GrantConfirmState::new();
+    compositor_state.install_surface_from_candidates(vec![(
+        KNOWN_WINDOW,
+        "zen".to_string(),
+        "Zen Browser".to_string(),
+    )]);
+    let surface = compositor_state.installed_surface();
+    assert_eq!(
+        surface.rows.len(),
+        2,
+        "v40.4: one Grant + one Deny per candidate"
+    );
+    for row in &surface.rows {
+        assert!(row.rect.w > 0.0, "v40.4: row rect.w must be non-empty");
+        assert!(row.rect.h > 0.0, "v40.4: row rect.h must be non-empty");
+        assert!(!row.app_id.is_empty(), "v40.4: row app_id must be valid");
+    }
+    let _ = std::hint::black_box(
+        GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_FROM_INSTALLED_SURFACE,
+    );
+}
