@@ -2828,6 +2828,10 @@ impl Niri {
                                             let surface_map = Arc::new(Mutex::new(surface_map));
                                             let grants = state.niri.grant_map.arc();
                                             let pending = state.niri.grant_confirm.pending();
+                                            // v40.3: share the compositor's GrantConfirmSurface Arc with the worker
+                                            // thread so DispatchHarness::request_grant writes land on the surface that
+                                            // the IPC Request::Layers handler reads.
+                                            let grant_confirm_surface = state.niri.grant_confirm.surface_arc();
                                             thread::spawn(move || {
                                                 let _ = crate::inject::dispatch::dispatch_inject_connection(
                                                     stream,
@@ -2838,6 +2842,7 @@ impl Niri {
                                                     surface_map,
                                                     grants,
                                                     pending,
+                                                    grant_confirm_surface,
                                                 );
                                             });
                                         }
