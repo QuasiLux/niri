@@ -47,6 +47,14 @@ pub const OVERLAY_CLIENT_CONFIGURE_REDRAW_ON_SIZE_CHANGE: &str =
 pub static _OVERLAY_CLIENT_CONFIGURE_REDRAW_ON_SIZE_CHANGE_BYTES: &[u8] =
     b"v40.5a_overlay_client_configure_redraw_on_size_change\0";
 
+/// Ident marker for the v40.5a.1 draw() shm-pool resize-on-size-change fix (LTO-retained).
+pub const OVERLAY_CLIENT_DRAW_SHM_POOL_RESIZE_ON_SIZE_CHANGE: &str =
+    "OVERLAY_CLIENT_DRAW_SHM_POOL_RESIZE_ON_SIZE_CHANGE";
+
+#[used]
+pub static _OVERLAY_CLIENT_DRAW_SHM_POOL_RESIZE_ON_SIZE_CHANGE_BYTES: &[u8] =
+    b"v40.5a.1_overlay_client_draw_shm_pool_resize_on_size_change\0";
+
 /// Sentinel that `spawn_overlay_client` started the SCT thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverlayClientHandle {
@@ -156,6 +164,8 @@ fn run_overlay_client(socket_name: std::ffi::OsString, window_id: u64) {
         pool,
         width: 2560,
         height: 40,
+        last_drawn_w: 0,
+        last_drawn_h: 0,
         layer,
         keyboard: None,
         pointer: None,
@@ -181,6 +191,8 @@ struct SimpleLayer {
     pool: SlotPool,
     width: u32,
     height: u32,
+    last_drawn_w: u32,
+    last_drawn_h: u32,
     layer: LayerSurface,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     pointer: Option<wl_pointer::WlPointer>,
@@ -189,6 +201,16 @@ struct SimpleLayer {
 impl SimpleLayer {
     fn draw(&mut self, qh: &QueueHandle<Self>) {
         let (width, height) = (self.width, self.height);
+        if should_resize_shm_pool_on_draw(self.last_drawn_w, self.last_drawn_h, width, height) {
+            let new_pool_bytes = (width as usize).saturating_mul(height as usize).saturating_mul(4);
+            if let Err(e) = self.pool.resize(new_pool_bytes) {
+                eprintln!("niri-overlay-client: pool.resize({new_pool_bytes}): {e}");
+                return;
+            }
+            // v40.5a.1 — pin the resize idents into the ELF so the regression guard can grep for them.
+            let _ = std::hint::black_box(OVERLAY_CLIENT_DRAW_SHM_POOL_RESIZE_ON_SIZE_CHANGE);
+            let _ = std::hint::black_box(_OVERLAY_CLIENT_DRAW_SHM_POOL_RESIZE_ON_SIZE_CHANGE_BYTES);
+        }
         let (buffer, canvas) = match self.pool.create_buffer(
             width as i32, height as i32, width as i32 * 4, wl_shm::Format::Argb8888,
         ) {
@@ -206,6 +228,8 @@ impl SimpleLayer {
             return;
         }
         self.layer.commit();
+        self.last_drawn_w = width;
+        self.last_drawn_h = height;
     }
 }
 
@@ -214,6 +238,12 @@ pub fn should_redraw_on_configure(
     old_w: u32, old_h: u32, new_w: u32, new_h: u32, first_configure: bool,
 ) -> bool {
     first_configure || (old_w, old_h) != (new_w, new_h)
+}
+
+pub fn should_resize_shm_pool_on_draw(
+    last_drawn_w: u32, last_drawn_h: u32, current_w: u32, current_h: u32,
+) -> bool {
+    (last_drawn_w, last_drawn_h) != (current_w, current_h)
 }
 
 pub fn paint_grant_deny_canvas(canvas: &mut [u8], width: u32, height: u32) {
