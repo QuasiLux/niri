@@ -2392,6 +2392,11 @@ pub static OUTPUTS_OFF_OVERRIDE: &str = "outputs_off_override";
 #[used]
 pub static GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_FROM_INSTALLED_SURFACE: &str =
     "GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_FROM_INSTALLED_SURFACE";
+/// v40.5b: render-walk paints FULL-WIDTH 2560x40 via paint_grant_deny_canvas,
+/// not the per-row slot rectangles. Closes §710 visual gate sub-criteria a/b/c.
+#[used]
+pub static GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION: &str =
+    "GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION";
 
 /// Internal output-power-state source.
 ///
@@ -4667,19 +4672,15 @@ impl Niri {
         let _ = std::hint::black_box(
             GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_FROM_INSTALLED_SURFACE,
         );
+        // v40.5b: paint FULL-WIDTH 2560x40 (left green x<1280, right red x>=1280)
+        // via the same paint fn the layer surface uses, instead of the per-row
+        // slot rectangles which only fill ~x=0..200.
+        let _ = std::hint::black_box(
+            GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION,
+        );
         let (w, h) = (2560u32, 40u32);
         let mut bytes = vec![0u8; (w * h * 4) as usize];
-        for row in &surface.rows {
-            let (x0, x1) = (row.rect.x.max(0.0).min(w as f64) as u32, (row.rect.x + row.rect.w).max(0.0).min(w as f64) as u32);
-            let (y0, y1) = (row.rect.y.max(0.0).min(h as f64) as u32, (row.rect.y + row.rect.h).max(0.0).min(h as f64) as u32);
-            let (br, gr, rr) = if row.rect.x < 1.0 { (0u8, 255, 0) } else { (0, 0, 255) };
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let px = ((y * w + x) * 4) as usize;
-                    bytes[px] = br; bytes[px + 1] = gr; bytes[px + 2] = rr; bytes[px + 3] = 255;
-                }
-            }
-        }
+        crate::inject::overlay_client::paint_grant_deny_canvas(&mut bytes, w, h);
         let buffer = MemoryRenderBuffer::from_slice(&bytes, Fourcc::Argb8888, (w as i32, h as i32), 1, Transform::Normal, None);
         let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
             renderer, Point::new(0., 0.), &buffer, None, None, None, Kind::Unspecified,
