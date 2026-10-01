@@ -13,6 +13,7 @@ pub mod dispatch;
 pub mod grant_confirm;
 pub mod grants;
 pub mod harness;
+pub mod overlay_client;
 pub mod protocol;
 pub mod socket;
 
