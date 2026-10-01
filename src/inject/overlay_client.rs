@@ -39,6 +39,14 @@ use smithay_client_toolkit::{
 pub static GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED: &str =
     "GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED";
 
+/// Ident marker for the v40.5a configure redraw-on-size-change fix (LTO-retained).
+pub const OVERLAY_CLIENT_CONFIGURE_REDRAW_ON_SIZE_CHANGE: &str =
+    "OVERLAY_CLIENT_CONFIGURE_REDRAW_ON_SIZE_CHANGE";
+
+#[used]
+pub static _OVERLAY_CLIENT_CONFIGURE_REDRAW_ON_SIZE_CHANGE_BYTES: &[u8] =
+    b"v40.5a_overlay_client_configure_redraw_on_size_change\0";
+
 /// Sentinel that `spawn_overlay_client` started the SCT thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverlayClientHandle {
@@ -201,7 +209,14 @@ impl SimpleLayer {
     }
 }
 
-fn paint_grant_deny_canvas(canvas: &mut [u8], width: u32, height: u32) {
+
+pub fn should_redraw_on_configure(
+    old_w: u32, old_h: u32, new_w: u32, new_h: u32, first_configure: bool,
+) -> bool {
+    first_configure || (old_w, old_h) != (new_w, new_h)
+}
+
+pub fn paint_grant_deny_canvas(canvas: &mut [u8], width: u32, height: u32) {
     let w = width as usize;
     let h = height as usize;
     for y in 0..h {
@@ -303,9 +318,15 @@ impl LayerShellHandler for SimpleLayer {
         &mut self, _: &Connection, qh: &QueueHandle<Self>, _: &LayerSurface,
         configure: LayerSurfaceConfigure, _: u32,
     ) {
-        if configure.new_size.0 != 0 { self.width = configure.new_size.0; }
-        if configure.new_size.1 != 0 { self.height = configure.new_size.1; }
-        if self.first_configure {
+        let new_w = if configure.new_size.0 != 0 { configure.new_size.0 } else { self.width };
+        let new_h = if configure.new_size.1 != 0 { configure.new_size.1 } else { self.height };
+        if should_redraw_on_configure(self.width, self.height, new_w, new_h, self.first_configure) {
+            // v40.5a — pin the redraw-on-size-change idents into the ELF so the
+            // regression guard can grep for them.
+            let _ = std::hint::black_box(OVERLAY_CLIENT_CONFIGURE_REDRAW_ON_SIZE_CHANGE);
+            let _ = std::hint::black_box(_OVERLAY_CLIENT_CONFIGURE_REDRAW_ON_SIZE_CHANGE_BYTES);
+            self.width = new_w;
+            self.height = new_h;
             self.first_configure = false;
             self.draw(qh);
         }
@@ -372,3 +393,6 @@ impl ProvidesRegistryState for SimpleLayer {
     fn registry(&mut self) -> &mut RegistryState { &mut self.registry_state }
     registry_handlers![OutputState, SeatState];
 }
+
+#[cfg(test)]
+pub(crate) use paint_grant_deny_canvas as paint_grant_deny_canvas_for_tests;

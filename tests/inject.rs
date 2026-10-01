@@ -2559,3 +2559,44 @@ fn live_grant_v40_4_render_walk_iterates_grant_confirm_installed_surface() {
         GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_FROM_INSTALLED_SURFACE,
     );
 }
+
+#[test]
+fn v40_5a_should_redraw_on_first_configure() {
+    assert!(niri::inject::overlay_client::should_redraw_on_configure(100, 40, 100, 40, true));
+}
+
+#[test]
+fn v40_5a_should_redraw_on_size_change() {
+    assert!(niri::inject::overlay_client::should_redraw_on_configure(100, 40, 2560, 40, false));
+}
+
+#[test]
+fn v40_5a_should_not_redraw_when_size_unchanged_and_not_first() {
+    assert!(!niri::inject::overlay_client::should_redraw_on_configure(2560, 40, 2560, 40, false));
+}
+
+#[test]
+fn v40_5a_should_redraw_when_size_unchanged_but_first() {
+    assert!(niri::inject::overlay_client::should_redraw_on_configure(2560, 40, 2560, 40, true));
+}
+
+#[test]
+fn v40_5a_paint_grant_deny_canvas_covers_full_width_2560() {
+    // The visible symptom of the seam bug: paint function never called at the
+    // post-configure size, so pixels past x=~200 stay unwritten (transparent).
+    // After the fix, paint_grant_deny_canvas at width=2560 must write every
+    // pixel (not just the first ~200). Assert pixels at x=2400 (right-half, RED
+    // channel) and x=600 (left-half, GREEN channel) are written.
+    let w: u32 = 2560;
+    let h: u32 = 40;
+    let mut canvas = vec![0u8; (w * h * 4) as usize];
+    niri::inject::overlay_client::paint_grant_deny_canvas(&mut canvas, w, h);
+    // Right half pixel (x=2400, y=20) — paint sets (b=0, g=0, r=255, a=255)
+    let px_right = ((20 * w + 2400) * 4) as usize;
+    assert_eq!(canvas[px_right + 2], 255, "right-half pixel r-channel must be painted");
+    assert_eq!(canvas[px_right + 3], 255, "right-half pixel alpha must be opaque");
+    // Left half pixel (x=600, y=20) — paint sets (b=0, g=255, r=0, a=255)
+    let px_left = ((20 * w + 600) * 4) as usize;
+    assert_eq!(canvas[px_left + 1], 255, "left-half pixel g-channel must be painted");
+    assert_eq!(canvas[px_left + 3], 255, "left-half pixel alpha must be opaque");
+}
