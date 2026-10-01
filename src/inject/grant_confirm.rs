@@ -473,6 +473,14 @@ pub static GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK: &str =
 static GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK_PIN: &str =
     GRANT_CONFIRM_OVERLAY_PAINTED_TO_PER_OUTPUT_RENDER_WALK;
 
+/// v40.5b ident — pins the render-walk full-width paint path. LTO-retained.
+pub static GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION_REFERENCED: &str =
+    "GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION";
+#[used]
+#[allow(dead_code)]
+static GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION_PIN: &str =
+    GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION_REFERENCED;
+
 /// v40.2: live-inject (DispatchHarness::request_grant) now installs a
 /// GrantConfirmSurface after try_queue_pending, so installed_surface()
 /// carries rows for the IPC layers handler and painted_overlay_framebuffer()
