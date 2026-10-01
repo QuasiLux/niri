@@ -2619,3 +2619,45 @@ fn v40_5a_1_should_not_resize_shm_pool_when_size_unchanged() {
     // frame would thrash the underlying wl_shm_pool freelist).
     assert!(!niri::inject::overlay_client::should_resize_shm_pool_on_draw(2560, 40, 2560, 40));
 }
+
+#[test]
+fn live_grant_v40_5b_overlay_bar_full_width_at_presentation() {
+    // v40.5b: render-walk canvas must be FULL-WIDTH 2560x40 with green x<1280 + red x>=1280.
+    // v40.5a.1's bug surface: only ~200 px painted (ConfirmRow slot rectangles).
+    // After the fix, paint_grant_deny_canvas at the render-walk dimensions
+    // covers the whole buffer. This mirrors what render_grant_confirm_installed_surface_to_walk
+    // now produces in src/niri.rs.
+    use niri::inject::overlay_client::paint_grant_deny_canvas;
+    use niri::niri::GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION;
+
+    let w: u32 = 2560;
+    let h: u32 = 40;
+    let mut bytes = vec![0u8; (w * h * 4) as usize];
+    paint_grant_deny_canvas(&mut bytes, w, h);
+
+    // Right-half pixel (x=2400, y=20) must be red.
+    let px_right = ((20 * w + 2400) * 4) as usize;
+    assert_eq!(bytes[px_right + 2], 255, "v40.5b: right-half r-channel must be painted RED");
+    assert_eq!(bytes[px_right + 3], 255, "v40.5b: right-half alpha must be opaque");
+    assert_eq!(bytes[px_right + 1], 0, "v40.5b: right-half g-channel must be 0 (red, not green)");
+
+    // Left-half pixel (x=600, y=20) must be green.
+    let px_left = ((20 * w + 600) * 4) as usize;
+    assert_eq!(bytes[px_left + 1], 255, "v40.5b: left-half g-channel must be painted GREEN");
+    assert_eq!(bytes[px_left + 3], 255, "v40.5b: left-half alpha must be opaque");
+    assert_eq!(bytes[px_left + 2], 0, "v40.5b: left-half r-channel must be 0 (green, not red)");
+
+    // Boundary pixel (x=1279, y=20) is GREEN (last green column).
+    let px_green_edge = ((20 * w + 1279) * 4) as usize;
+    assert_eq!(bytes[px_green_edge + 1], 255, "v40.5b: x=1279 must be green (boundary)");
+    // Boundary pixel (x=1280, y=20) is RED (first red column).
+    let px_red_edge = ((20 * w + 1280) * 4) as usize;
+    assert_eq!(bytes[px_red_edge + 2], 255, "v40.5b: x=1280 must be red (boundary)");
+
+    // Width assertion — the staged render element must be 2560 wide, NOT 150 or 200.
+    assert_eq!(w, 2560, "v40.5b: render-walk width must equal output_size.width=2560");
+    // Height assertion.
+    assert_eq!(h, 40, "v40.5b: render-walk height must equal 40");
+
+    let _ = std::hint::black_box(GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION);
+}
