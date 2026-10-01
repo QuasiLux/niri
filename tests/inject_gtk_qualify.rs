@@ -372,6 +372,10 @@ impl InjectHarness for GtkHarness {
         rec.keys.push(xkb_name.to_string());
         true
     }
+
+    fn grant_present(&self, _bot_id: &str, _window_id: u64) -> bool {
+        true
+    }
 }
 
 fn token_file() -> PathBuf {
