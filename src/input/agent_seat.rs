@@ -44,7 +44,7 @@ impl<D: SeatHandler + 'static> AgentSeat<D> {
 
 #[cfg(test)]
 mod tests {
-    use smithay::backend::input::KeyState;
+    use smithay::backend::input::{InputTime, KeyState};
     use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
     use smithay::input::pointer::{
         AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
@@ -91,7 +91,7 @@ mod tests {
             _seat: &Seat<MinimalState>,
             _data: &mut MinimalState,
             _serial: Serial,
-            _time: u32,
+            _time: InputTime,
         ) {
         }
         fn gesture_swipe_begin(
@@ -169,7 +169,7 @@ mod tests {
             _key: KeysymHandle<'_>,
             _state: KeyState,
             _serial: Serial,
-            _time: u32,
+            _time: InputTime,
         ) {
         }
         fn modifiers(
