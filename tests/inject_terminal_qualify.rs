@@ -44,7 +44,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use niri::inject::calloop::EventLoop;
 use niri::inject::handle_inject_client;
-use niri::inject::smithay::backend::input::KeyState;
+use niri::inject::smithay::backend::input::{InputTime, KeyState};
 use niri::inject::smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
 use niri::inject::smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
@@ -208,7 +208,7 @@ impl PointerTarget<TermHarness> for Focus {
         data.target.lock().unwrap().axis_count += 1;
     }
     fn frame(&self, _seat: &Seat<TermHarness>, _data: &mut TermHarness) {}
-    fn leave(&self, _seat: &Seat<TermHarness>, _data: &mut TermHarness, _serial: Serial, _time: u32) {}
+    fn leave(&self, _seat: &Seat<TermHarness>, _data: &mut TermHarness, _serial: Serial, _time: InputTime) {}
     fn gesture_swipe_begin(
         &self,
         _seat: &Seat<TermHarness>,
@@ -284,7 +284,7 @@ impl KeyboardTarget<TermHarness> for Focus {
         _key: KeysymHandle<'_>,
         _state: KeyState,
         _serial: Serial,
-        _time: u32,
+        _time: InputTime,
     ) {
         data.target.lock().unwrap().key_count += 1;
     }
