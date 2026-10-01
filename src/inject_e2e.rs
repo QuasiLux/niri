@@ -12,7 +12,7 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use calloop::EventLoop;
-use smithay::backend::input::KeyState;
+use smithay::backend::input::{InputTime, KeyState};
 use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
@@ -166,7 +166,7 @@ impl PointerTarget<Harness> for Focus {
         data.surface_target.lock().unwrap().axis_count += 1;
     }
     fn frame(&self, _seat: &Seat<Harness>, _data: &mut Harness) {}
-    fn leave(&self, _seat: &Seat<Harness>, _data: &mut Harness, _serial: Serial, _time: u32) {}
+    fn leave(&self, _seat: &Seat<Harness>, _data: &mut Harness, _serial: Serial, _time: InputTime) {}
     fn gesture_swipe_begin(
         &self,
         _seat: &Seat<Harness>,
@@ -242,7 +242,7 @@ impl KeyboardTarget<Harness> for Focus {
         _key: KeysymHandle<'_>,
         _state: KeyState,
         _serial: Serial,
-        _time: u32,
+        _time: InputTime,
     ) {
     }
     fn modifiers(

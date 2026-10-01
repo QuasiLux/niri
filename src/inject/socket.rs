@@ -22,7 +22,7 @@ use async_channel::{Receiver, Sender};
 use calloop::io::Async;
 use futures_util::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use futures_util::{select_biased, AsyncBufReadExt, FutureExt as _};
-use smithay::backend::input::{Axis, AxisSource, ButtonState};
+use smithay::backend::input::{Axis, AxisSource, ButtonState, InputTime};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
@@ -818,7 +818,7 @@ fn pointer_click<H: InjectHarness>(
 ) {
     let pointer = harness.agent_seat().pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
-    let time = harness.now_ms();
+    let time = InputTime::from_millis(harness.now_ms());
     let origin = Point::from((0.0, 0.0));
     let state = harness.agent_state();
     pointer.motion(
@@ -861,7 +861,7 @@ fn pointer_scroll<H: InjectHarness>(
 ) {
     let pointer = harness.agent_seat().pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
-    let time = harness.now_ms();
+    let time = InputTime::from_millis(harness.now_ms());
     let origin = Point::from((0.0, 0.0));
     let state = harness.agent_state();
     pointer.motion(
@@ -891,7 +891,7 @@ fn pointer_drag<H: InjectHarness>(
 ) {
     let pointer = harness.agent_seat().pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
-    let time = harness.now_ms();
+    let time = InputTime::from_millis(harness.now_ms());
     let origin = Point::from((0.0, 0.0));
     let from_pt = Point::from(from);
     let to_pt = Point::from(to);
@@ -946,7 +946,7 @@ mod tests {
     use std::task::{Context, Poll};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    use smithay::backend::input::KeyState;
+    use smithay::backend::input::{InputTime, KeyState};
     use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
     use smithay::input::pointer::{
         AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
@@ -1020,7 +1020,7 @@ mod tests {
             _seat: &Seat<ReloadHarness>,
             _data: &mut ReloadHarness,
             _serial: Serial,
-            _time: u32,
+            _time: InputTime,
         ) {
         }
         fn gesture_swipe_begin(
@@ -1098,7 +1098,7 @@ mod tests {
             _key: KeysymHandle<'_>,
             _state: KeyState,
             _serial: Serial,
-            _time: u32,
+            _time: InputTime,
         ) {
         }
         fn modifiers(

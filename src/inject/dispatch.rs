@@ -26,7 +26,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use calloop::EventLoop;
-use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
+use smithay::backend::input::{Axis, AxisSource, ButtonState, InputTime, KeyState};
 use smithay::input::keyboard::{
     keysyms::KEY_NoSymbol, xkb, FilterResult, KeyboardHandle, KeyboardTarget, KeysymHandle,
     ModifiersState,
@@ -210,7 +210,7 @@ impl PointerTarget<DispatchState> for DispatchFocus {
         _seat: &Seat<DispatchState>,
         _data: &mut DispatchState,
         _serial: Serial,
-        _time: u32,
+        _time: InputTime,
     ) {
     }
     fn gesture_swipe_begin(
@@ -288,7 +288,7 @@ impl KeyboardTarget<DispatchState> for DispatchFocus {
         _key: KeysymHandle<'_>,
         _state: KeyState,
         _serial: Serial,
-        _time: u32,
+        _time: InputTime,
     ) {
         data.surface_target.lock().unwrap().key_count += 1;
     }
@@ -402,7 +402,7 @@ pub(crate) fn inject_agent_key_press<D: SeatHandler + 'static>(
     keyboard: &KeyboardHandle<D>,
     state: &mut D,
     xkb_name: &str,
-    time: u32,
+    time: InputTime,
 ) -> bool {
     let Some(keysym) = lookup_inject_keysym(xkb_name) else {
         return false;
@@ -456,7 +456,7 @@ where
     if h_axis.is_nan() || v_axis.is_nan() {
         return false;
     }
-    let time = 0;
+    let time = InputTime::from_millis(0);
     let origin = Point::from((0.0, 0.0));
     let serial = SERIAL_COUNTER.next_serial();
     pointer.motion(
@@ -507,7 +507,7 @@ where
     if from.0.is_nan() || from.1.is_nan() || to.0.is_nan() || to.1.is_nan() {
         return false;
     }
-    let time = 0;
+    let time = InputTime::from_millis(0);
     let from_pt = Point::from(from);
     let to_pt = Point::from(to);
     let serial = SERIAL_COUNTER.next_serial();
@@ -662,7 +662,7 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     fn key_press(&mut self, xkb_name: &str) -> bool {
         let keyboard = self.state.agent_seat.keyboard.clone();
         let time = self.now_ms();
-        if !inject_agent_key_press(&keyboard, self.state, xkb_name, time) {
+        if !inject_agent_key_press(&keyboard, self.state, xkb_name, InputTime::from_millis(time)) {
             return false;
         }
         let mut rec = self.state.surface_target.lock().unwrap();

@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use smithay::backend::input::InputTime;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::inject::grant_confirm::{ClickOutcome, GrantResolution, GrantSurfaceSource, SeatKind};
@@ -193,7 +194,7 @@ impl InjectHarness for NiriInjectHarness<'_> {
             &keyboard,
             self.agent_state(),
             xkb_name,
-            time,
+            InputTime::from_millis(time),
         )
     }
 
