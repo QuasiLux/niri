@@ -2600,3 +2600,22 @@ fn v40_5a_paint_grant_deny_canvas_covers_full_width_2560() {
     assert_eq!(canvas[px_left + 1], 255, "left-half pixel g-channel must be painted");
     assert_eq!(canvas[px_left + 3], 255, "left-half pixel alpha must be opaque");
 }
+
+#[test]
+fn v40_5a_1_should_resize_shm_pool_on_first_draw() {
+    // last (0,0) != (100, 40) -> resize required.
+    assert!(niri::inject::overlay_client::should_resize_shm_pool_on_draw(0, 0, 100, 40));
+}
+
+#[test]
+fn v40_5a_1_should_resize_shm_pool_on_size_change() {
+    // v40.5a's bug surface: pool sized for 100x40, current size is 2560x40 -> MUST resize.
+    assert!(niri::inject::overlay_client::should_resize_shm_pool_on_draw(100, 40, 2560, 40));
+}
+
+#[test]
+fn v40_5a_1_should_not_resize_shm_pool_when_size_unchanged() {
+    // After resize to 2560x40, a same-size draw should NOT resize (resizing every
+    // frame would thrash the underlying wl_shm_pool freelist).
+    assert!(!niri::inject::overlay_client::should_resize_shm_pool_on_draw(2560, 40, 2560, 40));
+}
