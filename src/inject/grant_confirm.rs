@@ -90,6 +90,10 @@ pub enum ClickOutcome {
     Granted { wid: u64 },
     Denied,
     IgnoredAgentSeat,
+    /// v40.5c — pointer event was attributed to a non-interactive seat
+    /// (e.g. agent-only seat when the user seat is locked, or when the
+    /// runtime check `seat_active_for_click` returns false).
+    IgnoredInactiveSeat,
     IgnoredNoRow,
     IgnoredNoPending,
 }
@@ -165,6 +169,19 @@ pub fn is_blocked_app_id(app_id: &str) -> bool {
         return true;
     }
     app_catalog::app_id_routes(app_id).hud_skip
+}
+
+/// v40.5c — runtime seat-active gate. The `SeatKind::User` argument
+/// is the wire-side hint; the runtime check consults the live user
+/// seat state on the compositor (e.g. `self.niri.seat` interactive,
+/// not locked, not screencast-only). When `None`, the gate passes
+/// (used by unit tests where no `Niri` instance exists).
+pub fn seat_active_for_click(seat_kind: SeatKind, runtime_active: Option<bool>) -> bool {
+    let _ = std::hint::black_box(GRANT_CONFIRM_V40_5C_SEAT_SIDE_CLICK_ROUTING);
+    if seat_kind != SeatKind::User {
+        return false;
+    }
+    runtime_active.unwrap_or(true)
 }
 
 fn grant_rect(index: usize) -> Rect {
@@ -326,6 +343,18 @@ impl GrantConfirmState {
         state: &impl GrantClickHost,
         event: PointerClick,
     ) -> ClickOutcome {
+        self.on_seat_click_with_seat_active(state, event, None)
+    }
+
+    /// v40.5c — same as [`Self::on_seat_click`] with a runtime seat-active gate.
+    /// `runtime_active = None` preserves the pre-v40.5c path (unit tests).
+    pub fn on_seat_click_with_seat_active(
+        &self,
+        state: &impl GrantClickHost,
+        event: PointerClick,
+        runtime_active: Option<bool>,
+    ) -> ClickOutcome {
+        let _ = std::hint::black_box(GRANT_CONFIRM_V40_5C_SEAT_SIDE_CLICK_ROUTING);
         let bot_id = match self.pending.lock().unwrap().as_ref() {
             Some(p) => p.bot_id.clone(),
             None => return ClickOutcome::IgnoredNoPending,
@@ -342,7 +371,8 @@ impl GrantConfirmState {
             return ClickOutcome::IgnoredNoRow;
         };
 
-        self.finish_click(state, &bot_id, row.wid, event.seat, row.slot)
+        let seat_active = seat_active_for_click(event.seat, runtime_active);
+        self.finish_click(state, &bot_id, row.wid, event.seat, row.slot, seat_active)
     }
 
     /// Resolved-slot path used by [`crate::inject::protocol::InjectHarness::apply_grant_confirm_click`].
@@ -354,6 +384,21 @@ impl GrantConfirmState {
         seat: SeatKind,
         resolution: GrantResolution,
     ) -> ClickOutcome {
+        self.apply_resolved_with_seat_active(state, window_id, app_id, seat, resolution, None)
+    }
+
+    /// v40.5c — same as [`Self::apply_resolved`] with a runtime seat-active gate.
+    /// `runtime_active = None` preserves the pre-v40.5c path (unit tests).
+    pub fn apply_resolved_with_seat_active(
+        &self,
+        state: &impl GrantClickHost,
+        window_id: u64,
+        app_id: &str,
+        seat: SeatKind,
+        resolution: GrantResolution,
+        runtime_active: Option<bool>,
+    ) -> ClickOutcome {
+        let _ = std::hint::black_box(GRANT_CONFIRM_V40_5C_SEAT_SIDE_CLICK_ROUTING);
         let bot_id = match self.pending.lock().unwrap().as_ref() {
             Some(p) => p.bot_id.clone(),
             None => return ClickOutcome::IgnoredNoPending,
@@ -367,7 +412,8 @@ impl GrantConfirmState {
             GrantResolution::Granted => GrantSlot::Grant,
             GrantResolution::Denied => GrantSlot::Deny,
         };
-        self.finish_click(state, &bot_id, window_id, seat, slot)
+        let seat_active = seat_active_for_click(seat, runtime_active);
+        self.finish_click(state, &bot_id, window_id, seat, slot, seat_active)
     }
 
     fn finish_click(
@@ -377,11 +423,17 @@ impl GrantConfirmState {
         wid: u64,
         seat: SeatKind,
         slot: GrantSlot,
+        seat_active: bool,
     ) -> ClickOutcome {
         if seat == SeatKind::Agent {
             self.record_resolution(bot_id, GrantResolution::Denied);
             self.take(bot_id);
             return ClickOutcome::IgnoredAgentSeat;
+        }
+        if !seat_active {
+            self.record_resolution(bot_id, GrantResolution::Denied);
+            self.take(bot_id);
+            return ClickOutcome::IgnoredInactiveSeat;
         }
         match slot {
             GrantSlot::Grant => {
@@ -480,6 +532,18 @@ pub static GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION_REFERENCE
 #[allow(dead_code)]
 static GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION_PIN: &str =
     GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION_REFERENCED;
+
+/// v40.5c ident — pins the seat-side click-routing path:
+/// the click handler now requires the user seat as the originating
+/// seat in addition to the SeatKind::User hint (which the wire side
+/// already provides). The render-walk in src/niri.rs consults this
+/// gate to decide whether to paint the bar to a given target.
+pub static GRANT_CONFIRM_V40_5C_SEAT_SIDE_CLICK_ROUTING: &str =
+    "GRANT_CONFIRM_V40_5C_SEAT_SIDE_CLICK_ROUTING";
+#[used]
+#[allow(dead_code)]
+static GRANT_CONFIRM_V40_5C_SEAT_SIDE_CLICK_ROUTING_PIN: &str =
+    GRANT_CONFIRM_V40_5C_SEAT_SIDE_CLICK_ROUTING;
 
 /// v40.2: live-inject (DispatchHarness::request_grant) now installs a
 /// GrantConfirmSurface after try_queue_pending, so installed_surface()
@@ -773,5 +837,23 @@ impl GrantConfirmState {
         let map = self.overlays.lock().unwrap();
         let handle = map.values().find(|h| h.painted)?;
         Some((handle.shm_buffer.clone(), handle.config.width, handle.config.height))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grant_confirm_seat_active_for_click_user_none_passes() {
+        assert!(seat_active_for_click(SeatKind::User, None));
+        assert!(seat_active_for_click(SeatKind::User, Some(true)));
+    }
+
+    #[test]
+    fn grant_confirm_seat_active_for_click_rejects_inactive_and_agent() {
+        assert!(!seat_active_for_click(SeatKind::User, Some(false)));
+        assert!(!seat_active_for_click(SeatKind::Agent, Some(true)));
+        assert!(!seat_active_for_click(SeatKind::Agent, None));
     }
 }
