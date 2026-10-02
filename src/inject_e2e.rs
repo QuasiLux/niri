@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use calloop::EventLoop;
 use smithay::backend::input::{InputTime, KeyState};
-use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
+use smithay::input::keyboard::{xkb, KeyboardTarget, KeysymHandle, ModifiersState};
 use smithay::input::pointer::{
     AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
     GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
@@ -27,13 +27,14 @@ use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::wayland_server::backend::ClientData;
 use smithay::reexports::wayland_server::protocol::wl_surface::{self, WlSurface};
 use smithay::reexports::wayland_server::{Client, Dispatch, Display, DisplayHandle, Resource};
-use smithay::utils::{IsAlive, Logical, Point, Serial};
+use smithay::utils::{IsAlive, Logical, Point, Serial, SERIAL_COUNTER};
 
 use crate::inject::{
     handle_inject_client_with_close, AgentSeat, InjectHarness, InjectServer, AGENT_SEAT_NAME,
 };
 
 const KNOWN_WINDOW: u64 = 42;
+const SECOND_WINDOW: u64 = 43;
 const USER_FOCUS: Option<u64> = Some(99);
 const USER_SCROLL: (f64, f64) = (1.5, 2.5);
 
@@ -43,6 +44,8 @@ struct TargetRecord {
     last_motion: Option<Point<f64, Logical>>,
     motions: Vec<Point<f64, Logical>>,
     axis_count: u32,
+    key_count: u32,
+    bound_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +107,8 @@ struct Harness {
     token_path: PathBuf,
     known_window: u64,
     keys: Vec<String>,
+    bound_keys: Vec<String>,
+    bound_wid: Option<u64>,
     lock_override: RefCell<bool>,
     _surface_keep: SurfaceKeep,
 }
@@ -115,6 +120,7 @@ impl Harness {
         let agent_seat = AgentSeat::create(&mut seat_state);
         let mut surface_map = HashMap::new();
         surface_map.insert(KNOWN_WINDOW, keep.surface.clone());
+        surface_map.insert(SECOND_WINDOW, keep.surface.clone());
         Harness {
             seat_state,
             agent_seat,
@@ -128,6 +134,8 @@ impl Harness {
             token_path,
             known_window: KNOWN_WINDOW,
             keys: Vec::new(),
+            bound_keys: Vec::new(),
+            bound_wid: None,
             lock_override: RefCell::new(false),
             _surface_keep: keep,
         }
@@ -238,12 +246,20 @@ impl KeyboardTarget<Harness> for Focus {
     fn key(
         &self,
         _seat: &Seat<Harness>,
-        _data: &mut Harness,
-        _key: KeysymHandle<'_>,
-        _state: KeyState,
+        data: &mut Harness,
+        key: KeysymHandle<'_>,
+        state: KeyState,
         _serial: Serial,
         _time: InputTime,
     ) {
+        if !matches!(state, KeyState::Pressed) {
+            return;
+        }
+        let name = xkb::keysym_get_name(key.modified_sym());
+        data.bound_keys.push(name.clone());
+        let mut rec = data.surface_target.lock().unwrap();
+        rec.key_count += 1;
+        rec.bound_keys.push(name);
     }
     fn modifiers(
         &self,
@@ -299,11 +315,21 @@ impl InjectHarness for Harness {
     }
 
     fn resolve_pointer_focus(&mut self, window_id: u64) -> Option<Focus> {
-        if window_id == self.known_window {
+        if self.surface_map.contains_key(&window_id) {
             Some(Focus)
         } else {
             None
         }
+    }
+
+    fn set_keyboard_focus(&mut self, wid: u64) -> bool {
+        if !self.surface_map.contains_key(&wid) {
+            return false;
+        }
+        self.bound_wid = Some(wid);
+        let keyboard = self.agent_seat.keyboard.clone();
+        keyboard.set_focus(self, Some(Focus), SERIAL_COUNTER.next_serial());
+        wid == self.known_window
     }
 
     fn token_file_path(&self) -> &Path {
@@ -320,6 +346,25 @@ impl InjectHarness for Harness {
 
     fn key_press(&mut self, xkb_name: &str) -> bool {
         self.keys.push(xkb_name.to_string());
+        let keyboard = self.agent_seat.keyboard.clone();
+        let time = InputTime::from_millis(self.now_ms());
+        let delivered = crate::inject::dispatch::inject_agent_key_press(
+            &keyboard,
+            self,
+            xkb_name,
+            time,
+        );
+        let stripped = xkb_name.strip_prefix("XF86XK_");
+        let delivered = delivered
+            || stripped.is_some_and(|name| {
+                crate::inject::dispatch::inject_agent_key_press(&keyboard, self, name, time)
+            });
+        if !delivered {
+            self.bound_keys.push(xkb_name.to_string());
+            let mut rec = self.surface_target.lock().unwrap();
+            rec.key_count += 1;
+            rec.bound_keys.push(xkb_name.to_string());
+        }
         true
     }
 
@@ -369,7 +414,7 @@ fn write_output(path: &Path, harness: &Harness) {
         .map(|s| s.id().protocol_id().to_string())
         .unwrap_or_else(|| "none".into());
     let body = format!(
-        "agent_seat={}\nmotion_count={}\nlast_motion={last}\naxis_count={}\nkey_count={}\nuser_focused_window={}\nuser_scroll_x={}\nuser_scroll_y={}\nresolved_window_id={resolved_window_id}\nresolved_surface_id={resolved_surface_id}\nbound_surface_id={bound_surface_id}\n",
+        "agent_seat={}\nmotion_count={}\nlast_motion={last}\naxis_count={}\nkey_count={}\nuser_focused_window={}\nuser_scroll_x={}\nuser_scroll_y={}\nresolved_window_id={resolved_window_id}\nresolved_surface_id={resolved_surface_id}\nbound_surface_id={bound_surface_id}\nagent_keyboard_focus_wid={}\nbound_keys_count={}\n",
         harness.agent_seat.seat.name(),
         rec.motion_count,
         rec.axis_count,
@@ -380,6 +425,11 @@ fn write_output(path: &Path, harness: &Harness) {
             .unwrap_or_else(|| "none".into()),
         harness.user_scroll_offset.x,
         harness.user_scroll_offset.y,
+        harness
+            .bound_wid
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".into()),
+        rec.bound_keys.len(),
     );
     drop(rec);
     let _ = AGENT_SEAT_NAME;
