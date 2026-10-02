@@ -292,6 +292,11 @@ pub trait InjectHarness {
         let _ = xkb_name;
         false
     }
+    /// Focus the agent seat's keyboard on `window_id`'s surface.
+    /// Default no-op for stub harnesses. Production/e2e override.
+    fn set_keyboard_focus(&mut self, _wid: u64) -> bool {
+        false
+    }
     /// SCROLL hook. Return true to reply DISPATCH OK; false → NOT_BOUND.
     /// Returns false only when h_axis or v_axis is non-finite (NaN / ±inf).
     fn scroll(&mut self, _h_axis: f64, _v_axis: f64) -> bool {
