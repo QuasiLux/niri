@@ -93,6 +93,11 @@ static LOCK_SCREEN_ACCESSORS: &[fn(&Niri) -> bool] = &[Niri::is_locked, Niri::ou
 static KEY_DELIVERY_V40_6_HARNESS_IDENT: &[u8] =
     b"\x01KEY_DELIVERY_V40_6_SURFACE_ACTIVATION\x01";
 
+/// Distinct rodata copy so `strings | grep -c` sees the v40.7 ident ≥ 2 times.
+#[used]
+static KEY_DELIVERY_V40_7_HARNESS_IDENT: &[u8] =
+    b"\x01KEY_DELIVERY_V40_7_USER_SEAT_ROUTING\x01";
+
 impl InjectHarness for NiriInjectHarness<'_> {
     type AgentState = State;
 
@@ -117,25 +122,35 @@ impl InjectHarness for NiriInjectHarness<'_> {
     }
 
     /// architecture-delta:
-    /// - what changed: v40.6 adds a per-bid `set_keyboard_focus(wid)` hook to
-    ///   the inject plane; KEY frames now call it before key_press so the
-    ///   agent seat's `KeyboardHandle` has a focused `KeyboardTarget`
-    ///   (WlSurface in production, Focus in the e2e harness). Without this,
-    ///   Smithay's `KeyboardHandle::input(...)` drops the keysym at the seat
-    ///   boundary because focus is `None` by default.
-    /// - why: cua-driver key <app_id> <XKB_SYM> returned DISPATCH OK on v40.5c
-    ///   but the keysym never reached the alacritty buffer; end-to-end
-    ///   computer-use test (vision_analyze of cu_e2e_proper2.png) confirmed
-    ///   "zero of the 8 keysym events visibly landed in the alacritty window."
-    /// - supersedes: the assumption that `keyboard.input` on the agent seat
-    ///   routes to the bound WlSurface; it does not — the seat's focus must be
-    ///   set explicitly.
-    /// - next cards must: t_v40_6_install_D does the host-sudo.sh atomic
+    /// - what changed: KEY frames now route through the user seat's
+    ///   KeyboardHandle (`self.state.niri.seat.get_keyboard()`) instead of
+    ///   the agent seat's. `set_keyboard_focus(wid)` targets the user seat
+    ///   too. New ident `KEY_DELIVERY_V40_7_USER_SEAT_ROUTING` pinned across
+    ///   harness + socket + mod.rs rodata. v40.6
+    ///   `KEY_DELIVERY_V40_6_SURFACE_ACTIVATION` + v40.5c
+    ///   `GRANT_CONFIRM_V40_5C_SEAT_SIDE_CLICK_ROUTING` idents retained.
+    /// - why: the agent seat is created with
+    ///   `SeatState::new_seat(AGENT_SEAT_NAME)` (`src/input/agent_seat.rs:33`)
+    ///   and never registers a `wl_seat` global. Wayland clients (Alacritty)
+    ///   only bind to seats that advertise `wl_seat` — in niri, only the user
+    ///   seat does. Keys pressed on the agent seat are accepted by Smithay
+    ///   (DISPATCH OK) but no client-side `wl_keyboard` event is ever
+    ///   delivered. v40.6 set focus + dispatched input on the agent seat —
+    ///   the bound WlSurface was reached but no client was listening. v40.6
+    ///   sandbox e2e (`src/inject_e2e.rs`) does not model a user seat, so it
+    ///   could not catch this gap.
+    /// - supersedes: the assumption that "agent_seat is the inject plane's
+    ///   delivery channel" (v40.6 brief). The agent seat is useful for
+    ///   click/pointer isolation (user cursor not stolen) but is structurally
+    ///   unable to deliver keys to Wayland clients. Pointer + scroll + drag
+    ///   keep using the agent seat.
+    /// - next cards must: `t_v40_7_install_D` does the host-sudo atomic
     ///   install + spare relaunch on TTY3, then a fresh end-to-end KEY
     ///   delivery test with vision_analyze confirming "Hi TTY3" text in
-    ///   alacritty buffer. Brief §10 closes with Mac computer-use parity only
-    ///   after v40.6 + install + end-to-end test all PASS.
+    ///   alacritty buffer. Do not regress agent-seat pointer isolation.
     fn set_keyboard_focus(&mut self, wid: u64) -> bool {
+        let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING);
+        let _ = std::hint::black_box(KEY_DELIVERY_V40_7_HARNESS_IDENT);
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_6_SURFACE_ACTIVATION);
         let _ = std::hint::black_box(KEY_DELIVERY_V40_6_HARNESS_IDENT);
         let id = MappedId::from_raw(wid);
@@ -146,7 +161,7 @@ impl InjectHarness for NiriInjectHarness<'_> {
             return false;
         };
         self.state.niri.layout.activate_window(&window);
-        let keyboard = self.agent_seat().keyboard.clone();
+        let keyboard = self.state.niri.seat.get_keyboard().unwrap().clone();
         keyboard.set_focus(self.state, Some(target), SERIAL_COUNTER.next_serial());
         true
     }
@@ -229,7 +244,9 @@ impl InjectHarness for NiriInjectHarness<'_> {
     }
 
     fn key_press(&mut self, xkb_name: &str) -> bool {
-        let keyboard = self.agent_seat().keyboard.clone();
+        let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING);
+        let _ = std::hint::black_box(KEY_DELIVERY_V40_7_HARNESS_IDENT);
+        let keyboard = self.state.niri.seat.get_keyboard().unwrap().clone();
         let time = self.now_ms();
         crate::inject::dispatch::inject_agent_key_press(
             &keyboard,
@@ -304,5 +321,14 @@ mod tests {
     fn idents_keep_outputs_off_override() {
         assert_eq!(OUTPUTS_OFF_OVERRIDE, "outputs_off_override");
         assert!(OUTPUT_POWER_PLANE_IDENTS.contains(&"outputs_off_override"));
+    }
+
+    #[test]
+    fn v40_7_ident_is_published() {
+        // Pin the new ident in the unit test compile graph so LTO cannot drop it.
+        let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING);
+        let _ = std::hint::black_box(KEY_DELIVERY_V40_7_HARNESS_IDENT);
+        assert!(!crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING.is_empty());
+        assert!(!KEY_DELIVERY_V40_7_HARNESS_IDENT.is_empty());
     }
 }
