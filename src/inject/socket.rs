@@ -305,6 +305,11 @@ const BTN_LEFT: u32 = 0x110;
 static KEY_DELIVERY_V40_6_SOCKET_IDENT: &[u8] =
     b"\x02KEY_DELIVERY_V40_6_SURFACE_ACTIVATION\x02";
 
+/// Distinct rodata copy so `strings | grep -c` sees the v40.7 ident ≥ 2 times.
+#[used]
+static KEY_DELIVERY_V40_7_SOCKET_IDENT: &[u8] =
+    b"\x02KEY_DELIVERY_V40_7_USER_SEAT_ROUTING\x02";
+
 enum ClientPhase<F> {
     Greeting,
     AwaitAuth { retries: u8 },
@@ -833,10 +838,15 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
             write_reply(write, &Reply::DispatchOk).await?;
         }
         Frame::Key(name) => {
-            // architecture-delta: KEY now activates agent-seat keyboard focus
-            // on the bound window before key_press. Smithay drops keysyms when
-            // KeyboardHandle focus is None (v40.5c). Sticky: re-set every KEY
-            // frame so a user-seat focus change cannot steal the agent seat.
+            // architecture-delta: KEY now activates user-seat keyboard focus
+            // on the bound window before key_press (v40.7). The agent seat
+            // has no wl_seat global, so clients never bind to it. Sticky:
+            // re-set every KEY frame so a user-seat focus change cannot
+            // steal the inject target.
+            let _ = std::hint::black_box(
+                crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING,
+            );
+            let _ = std::hint::black_box(KEY_DELIVERY_V40_7_SOCKET_IDENT);
             let _ = std::hint::black_box(
                 crate::inject::KEY_DELIVERY_V40_6_SURFACE_ACTIVATION,
             );
