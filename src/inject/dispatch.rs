@@ -398,6 +398,12 @@ fn lookup_inject_keysym(name: &str) -> Option<xkb::Keysym> {
 /// - next cards must: when adding InjectHarness methods, do not default a
 ///   bool to false if the wire maps false to NOT_BOUND — provide a hook.
 /// - scroll/drag: already shipped via pointer_*; only KEY was the stub.
+/// Release follows Press by `RELEASE_DELAY_MICROS` so alacritty (and other
+/// Wayland clients with same-instant synthetic-event filtering) accepts the
+/// Pressed → Released pair as human typing instead of dropping both. See
+/// `KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT` in `src/inject/mod.rs`.
+const RELEASE_DELAY_MICROS: u64 = 10_000;
+
 pub(crate) fn inject_agent_key_press<D: SeatHandler + 'static>(
     keyboard: &KeyboardHandle<D>,
     state: &mut D,
@@ -410,6 +416,8 @@ pub(crate) fn inject_agent_key_press<D: SeatHandler + 'static>(
     let Some(keycode) = keyboard.keycode_for_keysym(keysym) else {
         return false;
     };
+    let release_time = InputTime::from_micros(time.micros().saturating_add(RELEASE_DELAY_MICROS));
+    let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT);
     let serial = SERIAL_COUNTER.next_serial();
     keyboard.input(
         state,
@@ -425,7 +433,7 @@ pub(crate) fn inject_agent_key_press<D: SeatHandler + 'static>(
         keycode,
         KeyState::Released,
         serial,
-        time,
+        release_time,
         |_d, _mods, _handle| FilterResult::<()>::Forward,
     );
     true
