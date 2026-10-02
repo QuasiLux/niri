@@ -151,3 +151,13 @@ pub const KEY_DELIVERY_V40_6_SURFACE_ACTIVATION: &str =
 pub static KEY_DELIVERY_V40_6_PLANE_IDENTS: &[&str] = &[
     KEY_DELIVERY_V40_6_SURFACE_ACTIVATION,
 ];
+
+/// v40.7 KEY delivery: route through the user seat's KeyboardHandle
+/// (the agent seat has no `wl_seat` global, so no Wayland client binds to it).
+pub const KEY_DELIVERY_V40_7_USER_SEAT_ROUTING: &str =
+    "KEY_DELIVERY_V40_7_USER_SEAT_ROUTING";
+
+#[used]
+pub static KEY_DELIVERY_V40_7_PLANE_IDENTS: &[&str] = &[
+    KEY_DELIVERY_V40_7_USER_SEAT_ROUTING,
+];
