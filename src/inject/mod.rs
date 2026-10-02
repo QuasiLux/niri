@@ -23,7 +23,9 @@ pub use app_catalog::{
     Toolkit,
 };
 pub use atspi_ladder::{route as atspi_route, AtSpiAction, AtSpiRoute, REASON_BG_UNAVAILABLE};
-pub use dispatch::{dispatch_inject_connection, DispatchHarness, DispatchState};
+pub use dispatch::{
+    dispatch_inject_connection, DispatchHarness, DispatchState, KeyDispatchReq,
+};
 pub use grant_confirm::{
     is_blocked_app_id, ClickOutcome, ConfirmRow, GrantClickHost, GrantConfirmState,
     GrantConfirmSurface, GrantResolution, GrantSlot, OverlayAnchor, OverlayHandle,
@@ -174,4 +176,15 @@ pub const KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT: &str =
 #[used]
 pub static KEY_DELIVERY_V40_7A_PLANE_IDENTS: &[&str] = &[
     KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT,
+];
+
+/// v40.9 KEY delivery: worker thread posts KEY frames onto the main
+/// compositor loop via a `calloop::channel`, so dispatch runs against
+/// `niri::State` and the user seat's `KeyboardHandle`.
+pub const KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF: &str =
+    "KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF";
+
+#[used]
+pub static KEY_DELIVERY_V40_9_PLANE_IDENTS: &[&str] = &[
+    KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF,
 ];

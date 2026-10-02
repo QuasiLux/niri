@@ -151,7 +151,7 @@ use crate::input::{
     TabletData,
 };
 use crate::inject::{
-    apply_inject_socket_ownership, lookup_inject_group_gid, AgentSeat, InjectServer,
+    apply_inject_socket_ownership, lookup_inject_group_gid, AgentSeat, InjectHarness, InjectServer,
     QLUX_INJECT_ENABLE, QLUX_INJECT_GROUP, QLUX_INJECT_SOCKET_SUFFIX,
 };
 use crate::ipc::server::IpcServer;
@@ -469,6 +469,9 @@ pub struct Niri {
     pub ipc_server: Option<IpcServer>,
     pub agent_seat: Option<AgentSeat<State>>,
     pub inject_server: Option<InjectServer>,
+    /// v40.9 KEY handoff sender. The matching `calloop::channel::Channel`
+    /// is inserted into `event_loop` in `Niri::new` (not stored here).
+    pub key_dispatch_tx: Option<calloop::channel::Sender<crate::inject::dispatch::KeyDispatchReq>>,
     pub grant_map: crate::inject::GrantMap,
     pub grant_confirm: crate::inject::GrantConfirmState,
     pub app_catalog: crate::inject::app_catalog::AppCatalogMarker,
@@ -828,6 +831,23 @@ impl State {
         state.focus_default_monitor();
 
         Ok(state)
+    }
+
+    /// v40.9: apply a KEY frame on the main compositor loop against the
+    /// user seat. Called from the `calloop::channel` source registered in
+    /// `Niri::new`.
+    pub fn dispatch_key_request(&mut self, req: crate::inject::dispatch::KeyDispatchReq) {
+        let crate::inject::dispatch::KeyDispatchReq {
+            wid,
+            xkb_name,
+            reply,
+        } = req;
+        let mut harness = crate::inject::NiriInjectHarness::new(self);
+        if let Some(wid) = wid {
+            let _ = harness.set_keyboard_focus(wid);
+        }
+        let ok = harness.key_press(&xkb_name);
+        let _ = reply.send(ok);
     }
 
     pub fn refresh_and_flush_clients(&mut self) {
@@ -2908,6 +2928,7 @@ impl Niri {
         // starts"; we place spawn AFTER IpcServer::start to avoid reflowing early-init.
         let mut agent_seat = None;
         let mut inject_server = None;
+        let mut key_dispatch_tx = None;
         if crate::inject::inject_spawn_enabled() {
             let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
                 .map(PathBuf::from)
@@ -2925,6 +2946,18 @@ impl Niri {
                     let created_seat = AgentSeat::<State>::create(&mut seat_state);
                     match InjectServer::start(&event_loop, inject_socket_path.clone()) {
                         Ok((server, rx)) => {
+                            let (key_tx, key_rx) = calloop::channel::channel::<
+                                crate::inject::dispatch::KeyDispatchReq,
+                            >();
+                            event_loop
+                                .insert_source(key_rx, |event, _, state| match event {
+                                    calloop::channel::Event::Msg(req) => {
+                                        state.dispatch_key_request(req)
+                                    }
+                                    calloop::channel::Event::Closed => (),
+                                })
+                                .unwrap();
+                            key_dispatch_tx = Some(key_tx.clone());
                             let token_file = crate::inject::token_file_path();
                             let _ = server.reload_tokens(&token_file);
                             apply_inject_socket_ownership(&inject_socket_path, gid);
@@ -2973,6 +3006,7 @@ impl Niri {
                                             // thread so DispatchHarness::request_grant writes land on the surface that
                                             // the IPC Request::Layers handler reads.
                                             let grant_confirm_surface = state.niri.grant_confirm.surface_arc();
+                                            let key_tx = key_tx.clone();
                                             thread::spawn(move || {
                                                 let _ = crate::inject::dispatch::dispatch_inject_connection(
                                                     stream,
@@ -2984,6 +3018,7 @@ impl Niri {
                                                     grants,
                                                     pending,
                                                     grant_confirm_surface,
+                                                    Some(key_tx),
                                                 );
                                             });
                                         }
@@ -3163,6 +3198,7 @@ impl Niri {
             ipc_server,
             agent_seat,
             inject_server,
+            key_dispatch_tx,
             grant_map: crate::inject::GrantMap::new(),
             grant_confirm: crate::inject::GrantConfirmState::new(),
             app_catalog: crate::inject::app_catalog::AppCatalogMarker,
