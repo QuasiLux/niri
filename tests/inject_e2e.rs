@@ -326,3 +326,117 @@ fn resolve_window_e2e() {
     let _ = fs::remove_file(&output);
     let _ = fs::remove_dir_all(&runtime);
 }
+
+
+fn start_session() -> (std::process::Child, UnixStream, PathBuf, PathBuf, PathBuf, PathBuf) {
+    let runtime = unique_dir();
+    let qlux = runtime.join("qlux");
+    let socket = qlux.join("inject.sock");
+    let tokens = runtime.join("inject-tokens");
+    let output = runtime.join("harness.out");
+    fs::write(&tokens, format!("bot-a:{TOKEN_A}\n")).unwrap();
+    let exe = std::env::current_exe().expect("current_exe");
+    let child = Command::new(&exe)
+        .env("QLUX_INJECT_E2E_HARNESS", "1")
+        .env("QLUX_INJECT_E2E_TOKENS", &tokens)
+        .env("QLUX_INJECT_E2E_OUTPUT", &output)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("QLUX_INJECT_SOCKET_SUFFIX", "qlux/inject.sock")
+        .env("QLUX_INJECT_ENABLE", "1")
+        .args(["--exact", "child_run_harness", "--nocapture"])
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn e2e harness child");
+    let mut stream = connect_with_retry(&socket);
+    send(&mut stream, b"HELLO\n");
+    assert_eq!(read_line(&mut stream), "HELLO OK\n");
+    send(&mut stream, format!("AUTH\n{TOKEN_A}\n").as_bytes());
+    assert_eq!(read_line(&mut stream), "AUTH OK bot-a\n");
+    (child, stream, runtime, socket, tokens, output)
+}
+
+fn finish_session(
+    mut child: std::process::Child,
+    stream: UnixStream,
+    runtime: PathBuf,
+    socket: PathBuf,
+    tokens: PathBuf,
+    output: PathBuf,
+) -> String {
+    stream.shutdown(Shutdown::Write).ok();
+    drop(stream);
+    let status = child.wait().expect("wait e2e child");
+    assert!(status.success(), "harness child failed: {status}");
+    let body = fs::read_to_string(&output).expect("read harness output");
+    let _ = fs::remove_file(&socket);
+    let _ = fs::remove_file(&tokens);
+    let _ = fs::remove_file(&output);
+    let _ = fs::remove_dir_all(&runtime);
+    body
+}
+
+#[test]
+fn e2e_key_delivery_sets_keyboard_focus_on_bound_surface() {
+    if std::env::var_os("QLUX_INJECT_E2E_HARNESS").is_some() {
+        return;
+    }
+    let (child, mut stream, runtime, socket, tokens, output) = start_session();
+    send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
+    assert_eq!(read_line(&mut stream), "BIND OK\n");
+    send(&mut stream, b"KEY XF86XK_a\n");
+    assert_eq!(read_line(&mut stream), "DISPATCH OK\n");
+    let body = finish_session(child, stream, runtime, socket, tokens, output);
+    assert!(
+        body.contains("agent_keyboard_focus_wid=42"),
+        "KEY must focus the bound window, got:\n{body}"
+    );
+    assert!(
+        body.contains("bound_keys_count=1"),
+        "KEY must deliver one keysym to the bound surface, got:\n{body}"
+    );
+}
+
+#[test]
+fn e2e_key_delivery_after_rebind_uses_new_focus() {
+    if std::env::var_os("QLUX_INJECT_E2E_HARNESS").is_some() {
+        return;
+    }
+    let (child, mut stream, runtime, socket, tokens, output) = start_session();
+    send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
+    assert_eq!(read_line(&mut stream), "BIND OK\n");
+    send(&mut stream, b"KEY XF86XK_a\n");
+    assert_eq!(read_line(&mut stream), "DISPATCH OK\n");
+    send(&mut stream, b"BIND 43\n");
+    assert_eq!(read_line(&mut stream), "BIND OK\n");
+    send(&mut stream, b"KEY XF86XK_b\n");
+    assert_eq!(read_line(&mut stream), "DISPATCH OK\n");
+    let body = finish_session(child, stream, runtime, socket, tokens, output);
+    assert!(
+        body.contains("agent_keyboard_focus_wid=43"),
+        "rebind KEY must focus window 43, got:\n{body}"
+    );
+    assert!(
+        body.contains("bound_keys_count=2"),
+        "two KEY frames must both deliver, got:\n{body}"
+    );
+}
+
+#[test]
+fn e2e_key_to_unknown_window_returns_not_bound() {
+    if std::env::var_os("QLUX_INJECT_E2E_HARNESS").is_some() {
+        return;
+    }
+    let (child, mut stream, runtime, socket, tokens, output) = start_session();
+    send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
+    assert_eq!(read_line(&mut stream), "BIND OK\n");
+    send(&mut stream, b"KEY XF86XK_a\n");
+    assert_eq!(read_line(&mut stream), "DISPATCH OK\n");
+    send(&mut stream, b"BIND 999999\n");
+    assert_eq!(read_line(&mut stream), "FRAME ERR BAD_WINDOW_ID\n");
+    let body = finish_session(child, stream, runtime, socket, tokens, output);
+    assert!(
+        body.contains("agent_keyboard_focus_wid=42"),
+        "failed rebind must preserve prior keyboard focus, got:\n{body}"
+    );
+}

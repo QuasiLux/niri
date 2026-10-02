@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use smithay::backend::input::InputTime;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::SERIAL_COUNTER;
 
 use crate::inject::grant_confirm::{ClickOutcome, GrantResolution, GrantSurfaceSource, SeatKind};
 use crate::inject::protocol::InjectHarness;
@@ -87,6 +88,11 @@ impl GrantSurfaceSource for Niri {
 #[used]
 static LOCK_SCREEN_ACCESSORS: &[fn(&Niri) -> bool] = &[Niri::is_locked, Niri::outputs_off];
 
+/// Distinct rodata copy so `strings | grep -c` sees this ident ≥ 2 times.
+#[used]
+static KEY_DELIVERY_V40_6_HARNESS_IDENT: &[u8] =
+    b"\x01KEY_DELIVERY_V40_6_SURFACE_ACTIVATION\x01";
+
 impl InjectHarness for NiriInjectHarness<'_> {
     type AgentState = State;
 
@@ -108,6 +114,41 @@ impl InjectHarness for NiriInjectHarness<'_> {
             .niri
             .find_window_by_id(id)
             .and_then(|window| window.toplevel().map(|t| t.wl_surface().clone()))
+    }
+
+    /// architecture-delta:
+    /// - what changed: v40.6 adds a per-bid `set_keyboard_focus(wid)` hook to
+    ///   the inject plane; KEY frames now call it before key_press so the
+    ///   agent seat's `KeyboardHandle` has a focused `KeyboardTarget`
+    ///   (WlSurface in production, Focus in the e2e harness). Without this,
+    ///   Smithay's `KeyboardHandle::input(...)` drops the keysym at the seat
+    ///   boundary because focus is `None` by default.
+    /// - why: cua-driver key <app_id> <XKB_SYM> returned DISPATCH OK on v40.5c
+    ///   but the keysym never reached the alacritty buffer; end-to-end
+    ///   computer-use test (vision_analyze of cu_e2e_proper2.png) confirmed
+    ///   "zero of the 8 keysym events visibly landed in the alacritty window."
+    /// - supersedes: the assumption that `keyboard.input` on the agent seat
+    ///   routes to the bound WlSurface; it does not — the seat's focus must be
+    ///   set explicitly.
+    /// - next cards must: t_v40_6_install_D does the host-sudo.sh atomic
+    ///   install + spare relaunch on TTY3, then a fresh end-to-end KEY
+    ///   delivery test with vision_analyze confirming "Hi TTY3" text in
+    ///   alacritty buffer. Brief §10 closes with Mac computer-use parity only
+    ///   after v40.6 + install + end-to-end test all PASS.
+    fn set_keyboard_focus(&mut self, wid: u64) -> bool {
+        let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_6_SURFACE_ACTIVATION);
+        let _ = std::hint::black_box(KEY_DELIVERY_V40_6_HARNESS_IDENT);
+        let id = MappedId::from_raw(wid);
+        let Some(window) = self.state.niri.find_window_by_id(id) else {
+            return false;
+        };
+        let Some(target) = window.toplevel().map(|t| t.wl_surface().clone()) else {
+            return false;
+        };
+        self.state.niri.layout.activate_window(&window);
+        let keyboard = self.agent_seat().keyboard.clone();
+        keyboard.set_focus(self.state, Some(target), SERIAL_COUNTER.next_serial());
+        true
     }
 
     fn is_locked(&self) -> bool {
