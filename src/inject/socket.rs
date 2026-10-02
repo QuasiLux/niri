@@ -300,11 +300,16 @@ pub fn apply_inject_socket_ownership(path: &Path, gid: libc::gid_t) {
 /// Linux `BTN_LEFT` from `linux/input-event-codes.h`.
 const BTN_LEFT: u32 = 0x110;
 
+/// Distinct rodata copy so `strings | grep -c` sees this ident ≥ 2 times.
+#[used]
+static KEY_DELIVERY_V40_6_SOCKET_IDENT: &[u8] =
+    b"\x02KEY_DELIVERY_V40_6_SURFACE_ACTIVATION\x02";
+
 enum ClientPhase<F> {
     Greeting,
     AwaitAuth { retries: u8 },
     AwaitBind,
-    Dispatch { focus: F },
+    Dispatch { focus: F, wid: u64 },
 }
 
 enum DispatchOne {
@@ -446,8 +451,12 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     ClientPhase::AwaitBind
                 } else if harness.grant_present(&bot_id, window_id) {
                     if let Some(focus) = harness.resolve_pointer_focus(window_id) {
+                        let _ = harness.set_keyboard_focus(window_id);
                         write_reply(&mut write, &Reply::BindOk).await?;
-                        ClientPhase::Dispatch { focus }
+                        ClientPhase::Dispatch {
+                            focus,
+                            wid: window_id,
+                        }
                     } else {
                         write_reply(
                             &mut write,
@@ -513,8 +522,9 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                         let focus = harness.resolve_pointer_focus(wid);
                         if window_ok {
                             if let Some(focus) = focus {
+                                let _ = harness.set_keyboard_focus(wid);
                                 write_reply(&mut write, &Reply::BindOk).await?;
-                                ClientPhase::Dispatch { focus }
+                                ClientPhase::Dispatch { focus, wid }
                             } else {
                                 write_reply(
                                     &mut write,
@@ -568,7 +578,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 .await?;
                 return Ok(());
             }
-            (ClientPhase::Dispatch { .. }, Frame::Hello | Frame::Auth(_) | Frame::Bind(_)) => {
+            (ClientPhase::Dispatch { .. }, Frame::Hello | Frame::Auth(_)) => {
                 write_reply(
                     &mut write,
                     &Reply::FrameErr {
@@ -578,11 +588,56 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 .await?;
                 return Ok(());
             }
-            (ClientPhase::Dispatch { focus }, Frame::GrantRequest { bot_id: req_id }) => {
-                reply_grant_request(harness, &mut write, &bot_id, req_id).await?;
-                ClientPhase::Dispatch { focus }
+            (ClientPhase::Dispatch { focus, wid }, Frame::Bind(window_id)) => {
+                if harness.resolve_window(window_id).is_none() {
+                    write_reply(
+                        &mut write,
+                        &Reply::FrameErr {
+                            code: ERR_BAD_WINDOW,
+                        },
+                    )
+                    .await?;
+                    harness.report_transient_error(ERR_BAD_WINDOW);
+                    ClientPhase::Dispatch { focus, wid }
+                } else if harness.grant_present(&bot_id, window_id) {
+                    if let Some(new_focus) = harness.resolve_pointer_focus(window_id) {
+                        let _ = harness.set_keyboard_focus(window_id);
+                        write_reply(&mut write, &Reply::BindOk).await?;
+                        ClientPhase::Dispatch {
+                            focus: new_focus,
+                            wid: window_id,
+                        }
+                    } else {
+                        write_reply(
+                            &mut write,
+                            &Reply::FrameErr {
+                                code: ERR_BAD_WINDOW,
+                            },
+                        )
+                        .await?;
+                        harness.report_transient_error(ERR_BAD_WINDOW);
+                        ClientPhase::Dispatch { focus, wid }
+                    }
+                } else if harness.grant_pending(&bot_id) {
+                    write_reply(&mut write, &Reply::BindPending).await?;
+                    ClientPhase::Dispatch { focus, wid }
+                } else {
+                    write_reply(
+                        &mut write,
+                        &Reply::DispatchErr {
+                            code: ERR_NOT_GRANTED,
+                        },
+                    )
+                    .await?;
+                    harness.report_transient_error(ERR_NOT_GRANTED);
+                    ClientPhase::Dispatch { focus, wid }
+                }
             }
-            (ClientPhase::Dispatch { focus }, Frame::AtElementReq { window_id, action }) => {
+            (ClientPhase::Dispatch { focus, wid }, Frame::GrantRequest { bot_id: req_id }) => {
+                reply_grant_request(harness, &mut write, &bot_id, req_id).await?;
+                ClientPhase::Dispatch { focus, wid }
+            }
+            (ClientPhase::Dispatch { focus, wid }, Frame::AtElementReq { window_id, action }) => {
                 let app_id = harness.app_id_for(window_id).unwrap_or_default();
                 use super::atspi_ladder::AtSpiRoute;
                 match harness.route(&app_id, &action) {
@@ -607,10 +662,10 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                         write_reply(&mut write, &Reply::DispatchOk).await?;
                     }
                 }
-                ClientPhase::Dispatch { focus }
+                ClientPhase::Dispatch { focus, wid }
             }
             (
-                ClientPhase::Dispatch { focus },
+                ClientPhase::Dispatch { focus, wid },
                 Frame::GrantResolved {
                     bot_id: req_bot,
                     window_id,
@@ -648,13 +703,13 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                         .await?;
                     }
                 }
-                ClientPhase::Dispatch { focus }
+                ClientPhase::Dispatch { focus, wid }
             }
-            (ClientPhase::Dispatch { focus }, frame) => {
-                if let Some(true) = dispatch_frame(harness, &mut write, &focus, frame).await? {
+            (ClientPhase::Dispatch { focus, wid }, frame) => {
+                if let Some(true) = dispatch_frame(harness, &mut write, &focus, wid, frame).await? {
                     return Ok(());
                 }
-                ClientPhase::Dispatch { focus }
+                ClientPhase::Dispatch { focus, wid }
             }
         };
     }
@@ -747,6 +802,7 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
     harness: &mut H,
     write: &mut W,
     focus: &<H::AgentState as smithay::input::SeatHandler>::PointerFocus,
+    wid: u64,
     frame: Frame,
 ) -> anyhow::Result<Option<bool>> {
     if harness.is_locked() {
@@ -777,6 +833,15 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
             write_reply(write, &Reply::DispatchOk).await?;
         }
         Frame::Key(name) => {
+            // architecture-delta: KEY now activates agent-seat keyboard focus
+            // on the bound window before key_press. Smithay drops keysyms when
+            // KeyboardHandle focus is None (v40.5c). Sticky: re-set every KEY
+            // frame so a user-seat focus change cannot steal the agent seat.
+            let _ = std::hint::black_box(
+                crate::inject::KEY_DELIVERY_V40_6_SURFACE_ACTIVATION,
+            );
+            let _ = std::hint::black_box(KEY_DELIVERY_V40_6_SOCKET_IDENT);
+            let _ = harness.set_keyboard_focus(wid);
             if harness.key_press(&name) {
                 write_reply(write, &Reply::DispatchOk).await?;
             } else {

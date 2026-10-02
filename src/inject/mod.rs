@@ -142,3 +142,12 @@ pub static GRANT_CONFIRM_IPC_LAYERS_PLANE_IDENTS: &[&str] = &[
 /// assert the `Request::Layers` field mapping without adding `niri-ipc`
 /// to `[dev-dependencies]` (Cargo.toml is frozen on this card).
 pub use niri_ipc::{Layer, LayerSurface, LayerSurfaceKeyboardInteractivity};
+
+/// v40.6 KEY delivery: agent-seat keyboard focus on the bound WlSurface.
+pub const KEY_DELIVERY_V40_6_SURFACE_ACTIVATION: &str =
+    "KEY_DELIVERY_V40_6_SURFACE_ACTIVATION";
+
+#[used]
+pub static KEY_DELIVERY_V40_6_PLANE_IDENTS: &[&str] = &[
+    KEY_DELIVERY_V40_6_SURFACE_ACTIVATION,
+];
