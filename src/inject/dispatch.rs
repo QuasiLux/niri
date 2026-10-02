@@ -56,6 +56,64 @@ use crate::inject::socket::handle_inject_client_with_close;
 use crate::inject::AppRoutes;
 use crate::input::agent_seat::AgentSeat;
 
+/// Per-KEY request posted from a worker thread onto the main compositor loop.
+///
+/// Reply channel choice: `std::sync::mpsc` (one-shot), not `async_channel`.
+/// `DispatchHarness::key_press` and the socket KEY arm must block for ACK
+/// before writing `DISPATCH OK`. The ACK is produced on the main calloop,
+/// which the worker cannot pump; `mpsc::recv` is a cross-thread rendezvous
+/// and cannot deadlock with `calloop::channel` (different pipes). Nesting
+/// `async_channel` recv on the worker's private loop would stall waiting
+/// for a main-loop event that never runs on that thread.
+pub struct KeyDispatchReq {
+    pub wid: Option<u64>,
+    pub xkb_name: String,
+    pub reply: std::sync::mpsc::Sender<bool>,
+}
+
+thread_local! {
+    static WORKER_KEY_DISPATCH_TX: RefCell<Option<calloop::channel::Sender<KeyDispatchReq>>> =
+        RefCell::new(None);
+}
+
+fn bind_worker_key_dispatch_tx(tx: Option<calloop::channel::Sender<KeyDispatchReq>>) {
+    WORKER_KEY_DISPATCH_TX.with(|slot| *slot.borrow_mut() = tx);
+}
+
+/// Post a KEY frame to the main loop and block for ACK.
+///
+/// Returns `None` when this thread has no handoff sender (in-process tests).
+pub fn try_handoff_key_to_main(wid: Option<u64>, xkb_name: &str) -> Option<bool> {
+    WORKER_KEY_DISPATCH_TX.with(|slot| {
+        let tx = slot.borrow();
+        tx.as_ref().map(|tx| post_key_dispatch(tx, wid, xkb_name))
+    })
+}
+
+/// Send `KeyDispatchReq` on `tx` and wait for the main-loop bool ACK.
+pub fn post_key_dispatch(
+    tx: &calloop::channel::Sender<KeyDispatchReq>,
+    wid: Option<u64>,
+    xkb_name: &str,
+) -> bool {
+    let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
+    let _ = std::hint::black_box(KEY_DELIVERY_V40_9_DISPATCH_IDENT);
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let req = KeyDispatchReq {
+        wid,
+        xkb_name: xkb_name.to_string(),
+        reply: reply_tx,
+    };
+    if tx.send(req).is_err() {
+        return false;
+    }
+    reply_rx.recv().unwrap_or(false)
+}
+
+#[used]
+static KEY_DELIVERY_V40_9_DISPATCH_IDENT: &[u8] =
+    b"\x01KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF\x01";
+
 /// Niri-shaped fields the v4.6 harness reads via `self.state.niri`.
 /// On the worker thread we don't have `niri::State`; we hold only the
 /// snapshot the dispatch loop needs.
@@ -78,6 +136,15 @@ pub struct DispatchState {
     pub pending_resolution: Arc<Mutex<HashMap<String, GrantResolution>>>,
     /// Row 13 test hook; production leaves `None` until Row 14.
     pub bound_app_id: Option<String>,
+    /// v40.9: clone of the main-loop KEY handoff sender. `None` in tests so
+    /// `DispatchHarness::key_press` keeps the agent-seat path.
+    ///
+    /// `DispatchState::new` stays 6-arg (tests/inject.rs is frozen). The
+    /// sender is assigned by `dispatch_inject_connection` after construction.
+    pub key_dispatch_tx: Option<calloop::channel::Sender<KeyDispatchReq>>,
+    /// Last `set_keyboard_focus(wid)` seen on this worker; carried on the
+    /// handoff request when `DispatchHarness::key_press` is used directly.
+    pub pending_key_wid: Option<u64>,
 }
 
 #[derive(Default)]
@@ -150,6 +217,8 @@ impl DispatchState {
             grant_confirm,
             pending_resolution,
             bound_app_id: None,
+            key_dispatch_tx: None,
+            pending_key_wid: None,
         }
     }
 
@@ -667,7 +736,22 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         false
     }
 
+    fn set_keyboard_focus(&mut self, wid: u64) -> bool {
+        self.state.pending_key_wid = Some(wid);
+        // Real user-seat focus is applied on the main loop when handing off.
+        // Historic default returned false; tests with tx=None keep that.
+        self.state.key_dispatch_tx.is_some()
+    }
+
     fn key_press(&mut self, xkb_name: &str) -> bool {
+        let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
+        let _ = std::hint::black_box(KEY_DELIVERY_V40_9_DISPATCH_IDENT);
+        if let Some(tx) = self.state.key_dispatch_tx.as_ref() {
+            // Production worker: post to the main compositor loop and await ACK.
+            return post_key_dispatch(tx, self.state.pending_key_wid, xkb_name);
+        }
+        // tests/inject.rs + src/inject_e2e.rs: no main-loop receiver, so keep
+        // the agent-seat path (e2e asserts key_count=1, not alacritty).
         let keyboard = self.state.agent_seat.keyboard.clone();
         let time = self.now_ms();
         if !inject_agent_key_press(&keyboard, self.state, xkb_name, InputTime::from_millis(time)) {
@@ -737,6 +821,7 @@ pub fn dispatch_inject_connection(
     grants: Arc<Mutex<HashMap<(String, u64), ()>>>,
     pending: Arc<Mutex<Option<PendingGrant>>>,
     grant_confirm_surface: Arc<Mutex<crate::inject::grant_confirm::GrantConfirmSurface>>,
+    key_dispatch_tx: Option<calloop::channel::Sender<KeyDispatchReq>>,
 ) -> anyhow::Result<()> {
     let mut state = DispatchState::new(
         is_locked,
@@ -746,6 +831,12 @@ pub fn dispatch_inject_connection(
         grants,
         pending,
     );
+    // `new` stays 6-arg so tests/inject.rs compiles unchanged; production
+    // wires the sender here. Thread-local copy lets socket.rs Frame::Key
+    // post without a new InjectHarness trait method (protocol.rs is frozen).
+    state.key_dispatch_tx = key_dispatch_tx.clone();
+    bind_worker_key_dispatch_tx(key_dispatch_tx);
+    let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
     state.set_grant_confirm_surface(grant_confirm_surface);
     let mut harness = DispatchHarness::new(&mut state);
     // Wire still uses socket.rs::pointer_scroll, so LTO drops the helper symbol.
