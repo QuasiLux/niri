@@ -250,6 +250,27 @@ impl InjectHarness for NiriInjectHarness<'_> {
         false
     }
 
+    /// architecture-delta:
+    /// - what changed: KEY frames now reach this method from the main
+    ///   compositor loop via a worker→main `calloop::channel` handoff
+    ///   (`KeyDispatchReq`). The per-connection worker no longer calls
+    ///   Smithay `keyboard.input()` itself for KEY. Press/Release timing
+    ///   is still `inject_agent_key_press` (v40.7a `RELEASE_DELAY_MICROS
+    ///   = 10_000`).
+    /// - why: Smithay `KeyboardTarget::key` on the agent seat has no
+    ///   `wl_seat` global, so alacritty never receives `wl_keyboard::Key`
+    ///   events. The main loop owns the user seat and the only `wl_seat`
+    ///   global in niri. Worker-thread dispatch can reply DISPATCH OK
+    ///   without any client seeing the key.
+    /// - supersedes: the v40.6 / v40.7 / v40.7a assumption that "Smithay
+    ///   `keyboard.input()` is sufficient" (it is, but the worker thread
+    ///   has no user seat). v40.7 already pointed this method at
+    ///   `self.state.niri.seat.get_keyboard()`, but production KEY frames
+    ///   still ran `DispatchHarness::key_press` on the worker, so this
+    ///   function never ran for cua-driver KEY.
+    /// - next cards must: host install + spare relaunch + e2e KEY vision
+    ///   proof (alacritty buffer). Do not regress v40.5c agent-seat
+    ///   pointer isolation (CLICK/SCROLL/DRAG stay on the worker).
     fn key_press(&mut self, xkb_name: &str) -> bool {
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING);
         let _ = std::hint::black_box(KEY_DELIVERY_V40_7_HARNESS_IDENT);

@@ -310,6 +310,11 @@ static KEY_DELIVERY_V40_6_SOCKET_IDENT: &[u8] =
 static KEY_DELIVERY_V40_7_SOCKET_IDENT: &[u8] =
     b"\x02KEY_DELIVERY_V40_7_USER_SEAT_ROUTING\x02";
 
+/// Distinct rodata copy so thin-LTO cannot collapse the v40.9 ident to one copy.
+#[used]
+static KEY_DELIVERY_V40_9_SOCKET_IDENT: &[u8] =
+    b"\x02KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF\x02";
+
 enum ClientPhase<F> {
     Greeting,
     AwaitAuth { retries: u8 },
@@ -838,11 +843,14 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
             write_reply(write, &Reply::DispatchOk).await?;
         }
         Frame::Key(name) => {
-            // architecture-delta: KEY now activates user-seat keyboard focus
-            // on the bound window before key_press (v40.7). The agent seat
-            // has no wl_seat global, so clients never bind to it. Sticky:
-            // re-set every KEY frame so a user-seat focus change cannot
-            // steal the inject target.
+            // architecture-delta (v40.9): do not apply KEY on this worker
+            // thread. Post KeyDispatchReq over the calloop channel and wait
+            // for the main-loop ACK. Tests have no sender (thread-local None)
+            // and fall back to the historic trait hooks.
+            let _ = std::hint::black_box(
+                crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF,
+            );
+            let _ = std::hint::black_box(KEY_DELIVERY_V40_9_SOCKET_IDENT);
             let _ = std::hint::black_box(
                 crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING,
             );
@@ -851,8 +859,12 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
                 crate::inject::KEY_DELIVERY_V40_6_SURFACE_ACTIVATION,
             );
             let _ = std::hint::black_box(KEY_DELIVERY_V40_6_SOCKET_IDENT);
-            let _ = harness.set_keyboard_focus(wid);
-            if harness.key_press(&name) {
+            let ok = crate::inject::dispatch::try_handoff_key_to_main(Some(wid), &name)
+                .unwrap_or_else(|| {
+                    let _ = harness.set_keyboard_focus(wid);
+                    harness.key_press(&name)
+                });
+            if ok {
                 write_reply(write, &Reply::DispatchOk).await?;
             } else {
                 write_reply(
