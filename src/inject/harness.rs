@@ -98,6 +98,13 @@ static KEY_DELIVERY_V40_6_HARNESS_IDENT: &[u8] =
 static KEY_DELIVERY_V40_7_HARNESS_IDENT: &[u8] =
     b"\x01KEY_DELIVERY_V40_7_USER_SEAT_ROUTING\x01";
 
+/// Distinct rodata copy so `strings | grep -c` sees the v40.7a ident ≥ 2 times.
+/// Pinned by `NiriInjectHarness` (production-side harness) + `mod.rs`
+/// `KEY_DELIVERY_V40_7A_PLANE_IDENTS` so thin-LTO cannot collapse to one copy.
+#[used]
+static KEY_DELIVERY_V40_7A_HARNESS_IDENT: &[u8] =
+    b"\x01KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT\x01";
+
 impl InjectHarness for NiriInjectHarness<'_> {
     type AgentState = State;
 

@@ -161,3 +161,17 @@ pub const KEY_DELIVERY_V40_7_USER_SEAT_ROUTING: &str =
 pub static KEY_DELIVERY_V40_7_PLANE_IDENTS: &[&str] = &[
     KEY_DELIVERY_V40_7_USER_SEAT_ROUTING,
 ];
+
+/// v40.7a KEY delivery: `inject_agent_key_press` now offsets the Released
+/// `InputTime` by 10 ms (was: same `InputTime` as Pressed). Alacritty (and any
+/// Wayland client filtering same-instant synthetic Pressed+Released pairs as
+/// non-human typing) now consumes the events. Distinct serial for Press vs
+/// Release was already in place; the missing variable was `time`. v40.5c +
+/// v40.6 + v40.7 idents retained.
+pub const KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT: &str =
+    "KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT";
+
+#[used]
+pub static KEY_DELIVERY_V40_7A_PLANE_IDENTS: &[&str] = &[
+    KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT,
+];
