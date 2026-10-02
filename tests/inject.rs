@@ -36,7 +36,7 @@ use niri::inject::smithay::reexports::wayland_server::{Client, Dispatch, Display
 use niri::inject::smithay::utils::{IsAlive, Logical, Point, Serial};
 use niri::inject::{
     AgentSeat, ClickOutcome, DispatchHarness, DispatchState, GrantResolution, InjectHarness,
-    PendingGrant, SeatKind,
+    PendingGrant, PointerClick, SeatKind,
 };
 
 const KNOWN_WINDOW: u64 = 42;
@@ -1541,6 +1541,151 @@ fn grant_click_by_agent_seat_is_ignored() {
         GrantResolution::Granted,
     );
     assert_eq!(outcome, ClickOutcome::IgnoredAgentSeat);
+    assert!(!state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+    assert!(state.pending.lock().unwrap().is_none());
+    let _ = fs::remove_file(&tokens);
+}
+
+/// v40.5c — seat-side click routing: real user-seat pointer event
+/// at the visible bar coordinates reaches the handler and yields
+/// `Granted`. Exercises the new `apply_resolved_with_seat_active`
+/// path with `runtime_active = Some(true)`.
+#[test]
+fn grant_click_user_seat_active_yields_granted() {
+    let tokens = token_file();
+    let state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let outcome = state.grant_confirm.apply_resolved_with_seat_active(
+        &state.grants,
+        KNOWN_WINDOW,
+        "firefox",
+        SeatKind::User,
+        GrantResolution::Granted,
+        Some(true),
+    );
+    assert_eq!(outcome, ClickOutcome::Granted { wid: KNOWN_WINDOW });
+    assert!(state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+    let _ = fs::remove_file(&tokens);
+}
+
+/// v40.5c — seat-side click routing: user-seat pointer event with
+/// runtime check `Some(false)` (e.g. user seat locked at the
+/// compositor) yields `IgnoredInactiveSeat`. This is the gap that
+/// let pre-v40.5c builds "grant" while the user seat was offline.
+#[test]
+fn grant_click_user_seat_inactive_yields_ignored_inactive_seat() {
+    let tokens = token_file();
+    let state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    let outcome = state.grant_confirm.apply_resolved_with_seat_active(
+        &state.grants,
+        KNOWN_WINDOW,
+        "firefox",
+        SeatKind::User,
+        GrantResolution::Granted,
+        Some(false),
+    );
+    assert_eq!(outcome, ClickOutcome::IgnoredInactiveSeat);
+    assert!(!state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+    assert!(state.pending.lock().unwrap().is_none());
+    let _ = fs::remove_file(&tokens);
+}
+
+/// v40.5c — a real `PointerClick` on the Grant slot of the installed
+/// surface, attributed to the interactive user seat, reaches
+/// `on_seat_click_with_seat_active` and yields `Granted`.
+#[test]
+fn grant_click_user_seat_pointer_active_yields_granted() {
+    let tokens = token_file();
+    let state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    state.grant_confirm.install_surface_from_candidates([(
+        KNOWN_WINDOW,
+        "firefox".to_string(),
+        "Firefox".to_string(),
+    )]);
+    let event = PointerClick {
+        x: 10.0,
+        y: 10.0,
+        seat: SeatKind::User,
+    };
+    let outcome = state.grant_confirm.on_seat_click_with_seat_active(
+        &state.grants,
+        event,
+        Some(true),
+    );
+    assert_eq!(outcome, ClickOutcome::Granted { wid: KNOWN_WINDOW });
+    assert!(state
+        .grants
+        .lock()
+        .unwrap()
+        .contains_key(&("bot-a".to_string(), KNOWN_WINDOW)));
+    let _ = fs::remove_file(&tokens);
+}
+
+/// v40.5c — a real `PointerClick` on the Grant slot is ignored when
+/// the runtime seat-active gate is `Some(false)`.
+#[test]
+fn grant_click_user_seat_pointer_inactive_yields_ignored_inactive_seat() {
+    let tokens = token_file();
+    let state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    niri::inject::grant_confirm::try_queue_pending(&state.pending, "bot-a", [0u8; 8]);
+    state.grant_confirm.install_surface_from_candidates([(
+        KNOWN_WINDOW,
+        "firefox".to_string(),
+        "Firefox".to_string(),
+    )]);
+    let event = PointerClick {
+        x: 10.0,
+        y: 10.0,
+        seat: SeatKind::User,
+    };
+    let outcome = state.grant_confirm.on_seat_click_with_seat_active(
+        &state.grants,
+        event,
+        Some(false),
+    );
+    assert_eq!(outcome, ClickOutcome::IgnoredInactiveSeat);
     assert!(!state
         .grants
         .lock()

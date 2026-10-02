@@ -5047,10 +5047,22 @@ impl Niri {
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
-            // v40.1b: paint the grant-confirm bar on top of workspaces.
-            self.render_grant_confirm_overlay_to_walk(ctx.renderer, &mut |elem| push(elem.into()));
-            // v40.4: also paint the bar from installed_surface() rows (live request data).
-            self.render_grant_confirm_installed_surface_to_walk(ctx.renderer, &mut |elem| push(elem.into()));
+            // v40.5c seat-side click routing: only paint the grant-confirm
+            // bar on real user-seat output. Screencast / screen-capture
+            // targets see the bar's content but NOT the bar surface itself
+            // (the bar is a confirmation UI; screencast consumers are
+            // downstream of the visual output). Also skip when the user seat
+            // is locked, outputs_off, or otherwise non-interactive.
+            let seat_active = ctx.target == RenderTarget::Output
+                && !self.is_locked()
+                && !self.outputs_off();
+            let _ = std::hint::black_box(
+                crate::inject::grant_confirm::GRANT_CONFIRM_V40_5C_SEAT_SIDE_CLICK_ROUTING,
+            );
+            if seat_active {
+                self.render_grant_confirm_overlay_to_walk(ctx.renderer, &mut |elem| push(elem.into()));
+                self.render_grant_confirm_installed_surface_to_walk(ctx.renderer, &mut |elem| push(elem.into()));
+            }
 
             for (ws, geo) in mon.workspaces_with_render_geo() {
                 // The render element namespace. This will be set to the workspace index for
