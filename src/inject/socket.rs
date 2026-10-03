@@ -652,16 +652,43 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 use super::atspi_ladder::AtSpiRoute;
                 match harness.route(&app_id, &action) {
                     AtSpiRoute::Element { role, query } => {
-                        let _ = (role, query); // AX-tree walk deferred to Row 14/15.
-                        let payload = crate::inject::atspi_ladder::REASON_BG_UNAVAILABLE;
-                        tracing::debug!(payload, "atspi.reply");
-                        write_reply(
-                            &mut write,
-                            &Reply::AtElementReply {
-                                payload: payload.into(),
-                            },
-                        )
-                        .await?;
+                        if let Some(bounds) =
+                            crate::inject::atspi_ladder::scan_session_dbus_for_element(
+                                window_id, &role, &query,
+                            )
+                        {
+                            let cx = bounds.rect.x + bounds.rect.w / 2.0;
+                            let cy = bounds.rect.y + bounds.rect.h / 2.0;
+                            crate::inject::atspi_ladder::record_bridge_click(cx, cy);
+                            let _ = std::hint::black_box(
+                                crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
+                            );
+                            pointer_click(harness, &focus, Point::from((cx, cy)));
+                            let payload = format!(
+                                "{} {} {} {} {}",
+                                bounds.path,
+                                bounds.rect.x,
+                                bounds.rect.y,
+                                bounds.rect.w,
+                                bounds.rect.h
+                            );
+                            tracing::debug!(payload = %payload, "atspi.reply");
+                            write_reply(
+                                &mut write,
+                                &Reply::AtElementReply { payload },
+                            )
+                            .await?;
+                        } else {
+                            let payload = crate::inject::atspi_ladder::REASON_BG_UNAVAILABLE;
+                            tracing::debug!(payload, "atspi.reply");
+                            write_reply(
+                                &mut write,
+                                &Reply::AtElementReply {
+                                    payload: payload.into(),
+                                },
+                            )
+                            .await?;
+                        }
                     }
                     AtSpiRoute::CanvasRaw { reason } => {
                         tracing::debug!(payload = %reason, "atspi.reply");

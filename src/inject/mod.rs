@@ -105,6 +105,7 @@ pub static INJECT_PLANE_IDENTS: &[&str] = &[
     "GRANT_RESOLVED",
     "GRANT_RESOLVED_OPCODE",
     "GRANT_NOT_PENDING",
+    "AT_SPI_BRIDGE_LIVE",
 ];
 
 /// v8 ELF idents (separate #[used] static; original list unchanged).
@@ -220,4 +221,9 @@ pub const KEY_DELIVERY_V40_13_SHIFT_THROUGH: &str =
 #[used]
 pub static KEY_DELIVERY_V40_13_PLANE_IDENTS: &[&str] = &[
     KEY_DELIVERY_V40_13_SHIFT_THROUGH,
+];
+
+#[used]
+pub static AT_SPI_BRIDGE_LIVE_PLANE_IDENTS: &[&str] = &[
+    crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
 ];

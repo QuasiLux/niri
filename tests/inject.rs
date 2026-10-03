@@ -2021,6 +2021,194 @@ fn atspi_per_action_policy_no_silent_fallback_to_user_seat() {
     assert_eq!(calc.semantic, SemanticStrength::AtSpiStrong);
 }
 
+#[test]
+fn atspi_strong_gnome_calculator_button_7() {
+    use niri::inject::atspi_ladder::{
+        set_scan_override, take_bridge_click, BridgeClick, ElementBounds,
+    };
+    use niri::inject::grant_confirm::Rect;
+
+    set_scan_override(None);
+    let _ = take_bridge_click();
+
+    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+        if role == "button" && name_query == "7" {
+            Some(ElementBounds {
+                path: format!("atspi://{window_id}#button:7"),
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 40.0,
+                    h: 16.0,
+                },
+            })
+        } else {
+            None
+        }
+    }
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    set_scan_override(Some(scan));
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button 7\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    set_scan_override(None);
+    let click = take_bridge_click();
+    let last_motion = state.surface_target.lock().unwrap().last_motion;
+    assert!(
+        replies.contains("AT_ELEMENT_REPLY atspi://42#button:7 10 20 40 16\n"),
+        "{replies:?}"
+    );
+    assert_eq!(click, Some(BridgeClick { x: 30.0, y: 28.0 }));
+    assert_eq!(last_motion, Some(Point::from((30.0, 28.0))));
+}
+
+#[test]
+fn atspi_chrome_zen_search_textbox() {
+    use niri::inject::atspi_ladder::{
+        set_scan_override, take_bridge_click, BridgeClick, ElementBounds,
+    };
+    use niri::inject::grant_confirm::Rect;
+
+    set_scan_override(None);
+    let _ = take_bridge_click();
+
+    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+        if role == "text" && name_query == "Search..." {
+            Some(ElementBounds {
+                path: format!("atspi://{window_id}#text:Search..."),
+                rect: Rect {
+                    x: 8.0,
+                    y: 4.0,
+                    w: 100.0,
+                    h: 20.0,
+                },
+            })
+        } else {
+            None
+        }
+    }
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("zen");
+    set_scan_override(Some(scan));
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC text Search...\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    set_scan_override(None);
+    let click = take_bridge_click();
+    let last_motion = state.surface_target.lock().unwrap().last_motion;
+    assert!(
+        replies.contains("AT_ELEMENT_REPLY atspi://42#text:Search... 8 4 100 20\n"),
+        "{replies:?}"
+    );
+    assert_eq!(click, Some(BridgeClick { x: 58.0, y: 14.0 }));
+    assert_eq!(last_motion, Some(Point::from((58.0, 14.0))));
+}
+
+#[test]
+fn atspi_missing_element_returns_background_unavailable() {
+    use niri::inject::atspi_ladder::{
+        set_scan_override, take_bridge_click, ElementBounds,
+    };
+
+    set_scan_override(None);
+    let _ = take_bridge_click();
+
+    fn scan(_window_id: u64, _role: &str, _name_query: &str) -> Option<ElementBounds> {
+        None
+    }
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    set_scan_override(Some(scan));
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button 7\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    set_scan_override(None);
+    let click = take_bridge_click();
+    let motion_count = state.snapshot_motion_count();
+    assert!(
+        replies.contains("AT_ELEMENT_REPLY BACKGROUND_UNAVAILABLE\n"),
+        "{replies:?}"
+    );
+    assert_eq!(click, None);
+    assert_eq!(motion_count, 0);
+}
+
 // ===========================================================================
 // Row 37+ — zwlr-layer-shell-v1 OVERLAY Exclusive registration tests.
 //
