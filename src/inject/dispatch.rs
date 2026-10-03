@@ -157,6 +157,7 @@ pub struct DispatchTarget {
     pub axis_count: u32,
     pub last_motion: Option<Point<f64, Logical>>,
     pub last_key: Option<String>,
+    pub last_shift: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -457,6 +458,28 @@ fn lookup_inject_keysym(name: &str) -> Option<xkb::Keysym> {
     }
 }
 
+/// US keysym levels for inject tests: letter case from `shift`, digits
+/// unshifted, `exclam` shifted as `!`. Unknown names yield `None`.
+pub fn rendered_inject_glyph(name: &str, shift: bool) -> Option<char> {
+    let keysym = lookup_inject_keysym(name)?;
+    let raw = keysym.raw();
+    if (raw >= 0x41 && raw <= 0x5a) || (raw >= 0x61 && raw <= 0x7a) {
+        let lower = if raw >= 0x41 && raw <= 0x5a {
+            raw + 0x20
+        } else {
+            raw
+        };
+        let rendered = if shift { lower - 0x20 } else { lower };
+        Some((rendered as u8) as char)
+    } else if raw >= 0x30 && raw <= 0x39 && !shift {
+        Some((raw as u8) as char)
+    } else if raw == 0x21 && shift {
+        Some('!')
+    } else {
+        None
+    }
+}
+
 /// Press+release on the agent seat. Returns false when the keysym is missing
 /// from the keymap (distinct from a missing `InjectHarness::key_press` hook).
 ///
@@ -501,6 +524,7 @@ pub(crate) fn inject_agent_key_press_shift<D: SeatHandler + 'static>(
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_10_SHIFT_MODIFIER);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY);
+    let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_13_SHIFT_THROUGH);
     let mut t = time.micros();
     let shift_kc = if shift {
         let Some(sk) = lookup_inject_keysym("Shift_L").and_then(|s| keyboard.keycode_for_keysym(s))
@@ -795,6 +819,7 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     fn key_press_with_shift(&mut self, xkb_name: &str, shift: bool) -> bool {
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
         let _ = std::hint::black_box(KEY_DELIVERY_V40_9_DISPATCH_IDENT);
+        self.state.surface_target.lock().unwrap().last_shift = Some(shift);
         if let Some(tx) = self.state.key_dispatch_tx.as_ref() {
             // Production worker: post to the main compositor loop and await ACK.
             return post_key_dispatch(tx, self.state.pending_key_wid, xkb_name, shift);

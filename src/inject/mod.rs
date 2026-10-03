@@ -211,3 +211,13 @@ pub const KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY: &str =
 pub static KEY_DELIVERY_V40_11_PLANE_IDENTS: &[&str] = &[
     KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY,
 ];
+
+/// v40.13 KEY delivery: wire token `shifted` on KEY; the parsed bool
+/// reaches `inject_agent_key_press_shift` (not the no-arg false wrapper).
+pub const KEY_DELIVERY_V40_13_SHIFT_THROUGH: &str =
+    "KEY_DELIVERY_V40_13_SHIFT_THROUGH";
+
+#[used]
+pub static KEY_DELIVERY_V40_13_PLANE_IDENTS: &[&str] = &[
+    KEY_DELIVERY_V40_13_SHIFT_THROUGH,
+];
