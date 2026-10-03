@@ -100,3 +100,50 @@ pub fn route(app_id: &str, action: &AtSpiAction) -> AtSpiRoute {
     tracing::trace!(app_id, ?action, ?route, "atspi.route");
     route
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElementBounds {
+    pub path: String,
+    pub rect: crate::inject::grant_confirm::Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BridgeClick {
+    pub x: f64,
+    pub y: f64,
+}
+
+thread_local! {
+    static SCAN_OVERRIDE: std::cell::RefCell<Option<fn(u64, &str, &str) -> Option<ElementBounds>>> =
+        const { std::cell::RefCell::new(None) };
+    static LAST_BRIDGE_CLICK: std::cell::RefCell<Option<BridgeClick>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub fn set_scan_override(f: Option<fn(u64, &str, &str) -> Option<ElementBounds>>) {
+    SCAN_OVERRIDE.with(|slot| *slot.borrow_mut() = f);
+}
+
+pub fn scan_session_dbus_for_element(
+    window_id: u64,
+    role: &str,
+    name_query: &str,
+) -> Option<ElementBounds> {
+    SCAN_OVERRIDE.with(|slot| match *slot.borrow() {
+        Some(f) => f(window_id, role, name_query),
+        None => None,
+    })
+}
+
+pub fn record_bridge_click(x: f64, y: f64) {
+    LAST_BRIDGE_CLICK.with(|slot| {
+        *slot.borrow_mut() = Some(BridgeClick { x, y });
+    });
+}
+
+pub fn take_bridge_click() -> Option<BridgeClick> {
+    LAST_BRIDGE_CLICK.with(|slot| slot.borrow_mut().take())
+}
+
+pub const AT_SPI_BRIDGE_LIVE: &str = "AT_SPI_BRIDGE_LIVE";
+
