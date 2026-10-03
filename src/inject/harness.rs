@@ -278,13 +278,13 @@ impl InjectHarness for NiriInjectHarness<'_> {
     fn key_press_with_shift(&mut self, xkb_name: &str, shift: bool) -> bool {
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING);
         let _ = std::hint::black_box(KEY_DELIVERY_V40_7_HARNESS_IDENT);
+        let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY);
         let keyboard = self.state.niri.seat.get_keyboard().unwrap().clone();
-        let time = self.now_ms();
         crate::inject::dispatch::inject_agent_key_press_shift(
             &keyboard,
             self.agent_state(),
             xkb_name,
-            InputTime::from_millis(time),
+            InputTime::now(),
             shift,
         )
     }
