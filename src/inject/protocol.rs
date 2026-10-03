@@ -45,6 +45,9 @@ static GRANT_RESOLVED_OPCODE: &[u8] = b"GRANT_RESOLVED_OPCODE\0";
 /// `AT_ELEMENT_REQ <wid> LC <role> <name>` / `EI <role> <name> <text…>` / `CV <query>`.
 pub const OPC_AT_ELEMENT_REQ: &str = "AT_ELEMENT_REQ";
 
+/// `AT_TREE_REQ <wid> [path…]`
+pub const OPC_AT_TREE_REQ: &str = "AT_TREE_REQ";
+
 /// Keep the wire-ident name in the release ELF (`strings | grep GRANT_REQUEST`).
 #[used]
 #[allow(dead_code)]
@@ -54,6 +57,10 @@ static OPC_GRANT_REQUEST_IDENT: &str = "GRANT_REQUEST";
 #[used]
 #[allow(dead_code)]
 static OPC_AT_ELEMENT_REQ_IDENT: &str = "AT_ELEMENT_REQ";
+
+#[used]
+#[allow(dead_code)]
+static OPC_AT_TREE_REQ_IDENT: &str = "AT_TREE_REQ";
 
 pub const REP_HELLO_OK: &str = "HELLO OK";
 pub const REP_AUTH_OK: &str = "AUTH OK";
@@ -68,6 +75,7 @@ pub const REP_GRANT_QUEUED: &str = "QUEUED";
 pub const REP_GRANT_DENIED_W: &str = "DENIED";
 pub const REP_GRANT_ACK_OK_W: &str = "OK";
 pub const REP_AT_ELEMENT_REPLY: &str = "AT_ELEMENT_REPLY";
+pub const REP_AT_TREE_REPLY: &str = "AT_TREE_REPLY";
 pub const REP_BG_UNAVAILABLE: &str = "BACKGROUND_UNAVAILABLE";
 pub const IDENT_AT_SPI_STRONG: &str = "AT_SPI_STRONG";
 pub const IDENT_AT_SPI_CHROME: &str = "AT_SPI_CHROME";
@@ -79,6 +87,10 @@ static REP_BIND_PENDING_IDENT: &str = "BIND PENDING";
 #[used]
 #[allow(dead_code)]
 static REP_AT_ELEMENT_REPLY_IDENT: &str = "AT_ELEMENT_REPLY";
+
+#[used]
+#[allow(dead_code)]
+static REP_AT_TREE_REPLY_IDENT: &str = "AT_TREE_REPLY";
 
 #[used]
 #[allow(dead_code)]
@@ -143,9 +155,13 @@ pub fn token_file_path() -> PathBuf {
         IDENT_AT_SPI_STRONG,
         IDENT_AT_SPI_CHROME,
         OPC_GRANT_RESOLVED,
+        OPC_AT_TREE_REQ,
+        REP_AT_TREE_REPLY,
     ));
     let _ = std::hint::black_box(b"AT_ELEMENT_REQ\0");
     let _ = std::hint::black_box(b"AT_ELEMENT_REPLY\0");
+    let _ = std::hint::black_box(b"AT_TREE_REQ\0");
+    let _ = std::hint::black_box(b"AT_TREE_REPLY\0");
     let _ = std::hint::black_box(b"BACKGROUND_UNAVAILABLE\0");
     let _ = std::hint::black_box(b"AT_SPI_STRONG\0");
     let _ = std::hint::black_box(b"AT_SPI_CHROME\0");
@@ -190,6 +206,11 @@ pub enum Frame {
         window_id: u64,
         action: crate::inject::atspi_ladder::AtSpiAction,
     },
+    /// `AT_TREE_REQ <wid> [path…]` — see [`parse_at_tree_req`].
+    AtTreeReq {
+        window_id: u64,
+        path: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,7 +235,11 @@ impl FrameError {
 pub enum Reply {
     HelloOk,
     AuthOk { bot_id: String },
-    BindOk,
+    BindOk {
+        wid: u64,
+        frontmost_wid: u64,
+        frontmost_app_id: String,
+    },
     BindPending,
     DispatchOk,
     DispatchErr { code: &'static str },
@@ -224,6 +249,7 @@ pub enum Reply {
     GrantAckOk,
     GrantAckDenied,
     AtElementReply { payload: String },
+    AtTreeReply { body: String },
     BackgroundUnavailable,
 }
 
@@ -232,7 +258,11 @@ impl Reply {
         let s = match self {
             Reply::HelloOk => format!("{REP_HELLO_OK}\n"),
             Reply::AuthOk { bot_id } => format!("{REP_AUTH_OK} {bot_id}\n"),
-            Reply::BindOk => format!("{REP_BIND_OK}\n"),
+            Reply::BindOk {
+                wid,
+                frontmost_wid,
+                frontmost_app_id,
+            } => format!("{REP_BIND_OK} {wid} {frontmost_wid} {frontmost_app_id}\n"),
             Reply::BindPending => format!("{REP_BIND_PENDING}\n"),
             Reply::DispatchOk => format!("{REP_DISPATCH_OK}\n"),
             Reply::DispatchErr { code } => format!("{REP_DISPATCH_ERR} {code}\n"),
@@ -243,6 +273,7 @@ impl Reply {
             Reply::GrantAckOk => format!("{REP_GRANT_ACK} {REP_GRANT_ACK_OK_W}\n"),
             Reply::GrantAckDenied => format!("{REP_GRANT_ACK} {REP_GRANT_DENIED_W}\n"),
             Reply::AtElementReply { payload } => format!("{REP_AT_ELEMENT_REPLY} {payload}\n"),
+            Reply::AtTreeReply { body } => format!("{REP_AT_TREE_REPLY} {body}"),
             Reply::BackgroundUnavailable => format!("{REP_AT_ELEMENT_REPLY} {REP_BG_UNAVAILABLE}\n"),
         };
         s.into_bytes()
@@ -479,6 +510,7 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
             (Frame::Drag { from, to }, after)
         }),
         OPC_AT_ELEMENT_REQ => parse_at_element_req(text).map(|frame| (frame, after)),
+        OPC_AT_TREE_REQ => parse_at_tree_req(text).map(|frame| (frame, after)),
         _ => Err(FrameError::UnknownOpcode),
     }
 }
@@ -582,6 +614,22 @@ fn parse_at_element_req(text: &str) -> Result<Frame, FrameError> {
         }
         _ => Err(FrameError::Malformed),
     }
+}
+
+/// `AT_TREE_REQ <wid>` or `AT_TREE_REQ <wid> <path…>` (path is the remainder
+/// joined by single spaces).
+fn parse_at_tree_req(text: &str) -> Result<Frame, FrameError> {
+    let mut parts = text.split_whitespace();
+    let _opc = parts.next().ok_or(FrameError::Malformed)?;
+    let window_id: u64 = parts
+        .next()
+        .ok_or(FrameError::Malformed)?
+        .parse()
+        .map_err(|_| FrameError::Malformed)?;
+    let path = remainder_after_tokens(text, 2)
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|s| !s.is_empty());
+    Ok(Frame::AtTreeReq { window_id, path })
 }
 
 fn remainder_after_tokens(line: &str, n: usize) -> Option<&str> {

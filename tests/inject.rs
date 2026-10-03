@@ -428,7 +428,7 @@ fn bind_click_drives_pointer_motion_on_agent_seat() {
 
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
 
     let rec = harness.surface_target.lock().unwrap();
@@ -470,9 +470,9 @@ fn bind_unknown_window_returns_err_and_keeps_open() {
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
     assert!(replies.contains("FRAME ERR BAD_WINDOW_ID\n"), "{replies:?}");
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     let bind_err = replies.find("FRAME ERR BAD_WINDOW_ID\n").unwrap();
-    let bind_ok = replies.find("BIND OK\n").unwrap();
+    let bind_ok = replies.find("BIND OK ").unwrap();
     assert!(bind_err < bind_ok, "{replies:?}");
 }
 
@@ -484,7 +484,7 @@ fn drag_synthesizes_motion_button_motion_button() {
     let replies = run_protocol(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
 
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
 
     let rec = harness.surface_target.lock().unwrap();
@@ -541,7 +541,7 @@ fn lock_screen_refuses_post_bind_click() {
 
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(replies.contains("DISPATCH ERR LOCKED\n"), "{replies:?}");
     assert!(!replies.contains("DISPATCH OK\n"), "{replies:?}");
     assert!(replies.ends_with("DISPATCH ERR LOCKED\n"), "{replies:?}");
@@ -615,7 +615,7 @@ fn proxy_lock_snapshot_refuses_dispatch() {
     let _ = fs::remove_file(&tokens);
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(replies.contains("DISPATCH ERR LOCKED\n"), "{replies:?}");
     assert!(!replies.contains("DISPATCH OK\n"), "{replies:?}");
     assert_eq!(state.snapshot_motion_count(), 0);
@@ -642,7 +642,7 @@ fn resolve_window_returns_mapped_surface() {
 
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
     assert_eq!(harness.surface_target.lock().unwrap().motion_count, 1);
     assert_eq!(
@@ -699,7 +699,7 @@ fn inject_locked_or_outputs_off_after_power_off() {
 
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(
         replies.contains("DISPATCH ERR OUTPUTS_OFF\n"),
         "{replies:?}"
@@ -766,7 +766,7 @@ fn key_dispatch_on_proxy_harness_increments_key_count() {
     let _ = fs::remove_file(&tokens);
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
     let rec = state.surface_target.lock().unwrap();
     assert_eq!(rec.key_count, 1);
@@ -1000,7 +1000,7 @@ fn bind_without_grant_returns_not_granted() {
         replies.contains("DISPATCH ERR NOT_GRANTED\n"),
         "{replies:?}"
     );
-    assert!(!replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(!replies.contains("BIND OK "), "{replies:?}");
     assert_eq!(state.surface_target.lock().unwrap().motion_count, 0);
 }
 
@@ -1031,7 +1031,7 @@ fn bind_with_grant_succeeds() {
     let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
 }
 
 #[test]
@@ -1095,7 +1095,7 @@ fn bind_without_grant_no_pending_returns_not_granted() {
         replies.contains("DISPATCH ERR NOT_GRANTED\n"),
         "{replies:?}"
     );
-    assert!(!replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(!replies.contains("BIND OK "), "{replies:?}");
     assert_eq!(state.surface_target.lock().unwrap().motion_count, 0);
 }
 
@@ -1127,7 +1127,7 @@ fn bind_without_grant_with_pending_returns_bind_pending() {
         !replies.contains("DISPATCH ERR NOT_GRANTED\n"),
         "{replies:?}"
     );
-    assert!(!replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(!replies.contains("BIND OK "), "{replies:?}");
     assert_eq!(
         replies.matches("BIND PENDING\n").count(),
         2,
@@ -1166,7 +1166,7 @@ fn bind_after_pending_grant_resolved_succeeds() {
     let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
 }
 
 
@@ -1196,7 +1196,7 @@ fn grant_resolved_transitions_to_bind_ok_when_grant_confirmed() {
     );
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(
         state
             .grants
@@ -1327,7 +1327,7 @@ fn bind_with_pending_grant_for_other_bot_returns_not_granted() {
         "{replies:?}"
     );
     assert!(!replies.contains("BIND PENDING\n"), "{replies:?}");
-    assert!(!replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(!replies.contains("BIND OK "), "{replies:?}");
 }
 
 #[test]
@@ -1760,7 +1760,7 @@ fn grant_click_then_bind_succeeds() {
     let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(!replies.contains("NOT_GRANTED"), "{replies:?}");
 }
 
@@ -2024,10 +2024,11 @@ fn atspi_per_action_policy_no_silent_fallback_to_user_seat() {
 #[test]
 fn atspi_strong_gnome_calculator_button_7() {
     use niri::inject::atspi_ladder::{
-        set_scan_override, take_bridge_click, BridgeClick, ElementBounds,
+        reset_gap4_test_hooks, set_scan_override, take_bridge_click, BridgeClick, ElementBounds,
     };
     use niri::inject::grant_confirm::Rect;
 
+    reset_gap4_test_hooks();
     set_scan_override(None);
     let _ = take_bridge_click();
 
@@ -2081,7 +2082,7 @@ fn atspi_strong_gnome_calculator_button_7() {
     let click = take_bridge_click();
     let last_motion = state.surface_target.lock().unwrap().last_motion;
     assert!(
-        replies.contains("AT_ELEMENT_REPLY atspi://42#button:7 10 20 40 16\n"),
+        replies.contains("AT_ELEMENT_REPLY atspi://42#button:7 10 20 40 16 FULL none\n"),
         "{replies:?}"
     );
     assert_eq!(click, Some(BridgeClick { x: 30.0, y: 28.0 }));
@@ -2091,10 +2092,11 @@ fn atspi_strong_gnome_calculator_button_7() {
 #[test]
 fn atspi_chrome_zen_search_textbox() {
     use niri::inject::atspi_ladder::{
-        set_scan_override, take_bridge_click, BridgeClick, ElementBounds,
+        reset_gap4_test_hooks, set_scan_override, take_bridge_click, BridgeClick, ElementBounds,
     };
     use niri::inject::grant_confirm::Rect;
 
+    reset_gap4_test_hooks();
     set_scan_override(None);
     let _ = take_bridge_click();
 
@@ -2148,7 +2150,7 @@ fn atspi_chrome_zen_search_textbox() {
     let click = take_bridge_click();
     let last_motion = state.surface_target.lock().unwrap().last_motion;
     assert!(
-        replies.contains("AT_ELEMENT_REPLY atspi://42#text:Search... 8 4 100 20\n"),
+        replies.contains("AT_ELEMENT_REPLY atspi://42#text:Search... 8 4 100 20 FULL none\n"),
         "{replies:?}"
     );
     assert_eq!(click, Some(BridgeClick { x: 58.0, y: 14.0 }));
@@ -2209,6 +2211,213 @@ fn atspi_missing_element_returns_background_unavailable() {
     assert_eq!(motion_count, 0);
 }
 
+#[test]
+fn at_tree_dump_returns_full_ax_tree() {
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_tree_dump_override, TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "AXButton".into(),
+            name: "7".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 40.0,
+            h: 16.0,
+            visible: true,
+            children: vec![TreeNode {
+                role: "AXText".into(),
+                name: "Search".into(),
+                x: 8.0,
+                y: 4.0,
+                w: 100.0,
+                h: 20.0,
+                visible: true,
+                children: vec![],
+            }],
+        }]
+    }
+
+    set_tree_dump_override(Some(dump));
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    let req = format!("{}BIND 42\nAT_TREE_REQ 42\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    reset_gap4_test_hooks();
+    assert!(replies.contains("AT_TREE_REPLY 2\n"), "{replies:?}");
+    assert!(
+        replies.contains("[AXButton] \"7\" 10 20 40 16 true\0"),
+        "{replies:?}"
+    );
+    assert!(
+        replies.contains("[AXText] \"Search\" 8 4 100 20 true\0"),
+        "{replies:?}"
+    );
+}
+
+#[test]
+fn at_element_diff_returns_full_on_first_query() {
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_scan_override, ElementBounds,
+    };
+    use niri::inject::grant_confirm::Rect;
+
+    reset_gap4_test_hooks();
+    set_scan_override(None);
+
+    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+        if role == "button" && name_query == "7" {
+            Some(ElementBounds {
+                path: format!("atspi://{window_id}#button:7"),
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 40.0,
+                    h: 16.0,
+                },
+            })
+        } else {
+            None
+        }
+    }
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    set_scan_override(Some(scan));
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button 7\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button 7\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    set_scan_override(None);
+    reset_gap4_test_hooks();
+    assert!(
+        replies.contains("AT_ELEMENT_REPLY atspi://42#button:7 10 20 40 16 FULL none"),
+        "{replies:?}"
+    );
+    assert!(
+        replies.contains("AT_ELEMENT_REPLY atspi://42#button:7 10 20 40 16 none none"),
+        "{replies:?}"
+    );
+}
+
+#[test]
+fn at_element_off_screen_warning() {
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_output_rects, set_scan_override, take_bridge_click,
+        BridgeClick, ElementBounds,
+    };
+    use niri::inject::grant_confirm::Rect;
+
+    reset_gap4_test_hooks();
+    let _ = take_bridge_click();
+    set_output_rects(Some(vec![Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 100.0,
+        h: 100.0,
+    }]));
+
+    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+        if role == "button" && name_query == "7" {
+            Some(ElementBounds {
+                path: format!("atspi://{window_id}#button:7"),
+                rect: Rect {
+                    x: 90.0,
+                    y: 10.0,
+                    w: 40.0,
+                    h: 20.0,
+                },
+            })
+        } else {
+            None
+        }
+    }
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    set_scan_override(Some(scan));
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button 7\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    let click = take_bridge_click();
+    set_scan_override(None);
+    reset_gap4_test_hooks();
+    assert!(
+        replies.contains("AT_ELEMENT_REPLY atspi://42#button:7 90 10 40 20 FULL <OCCLUDED>"),
+        "{replies:?}"
+    );
+    assert_eq!(click, Some(BridgeClick { x: 110.0, y: 20.0 }));
+}
+
+#[test]
+fn bind_ok_includes_frontmost_app() {
+    use niri::inject::atspi_ladder::{reset_gap4_test_hooks, set_frontmost_override};
+
+    reset_gap4_test_hooks();
+    set_frontmost_override(Some((99, "org.gnome.Calculator".into())));
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    let req = format!("{}BIND 42\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    reset_gap4_test_hooks();
+    assert!(
+        replies.contains("BIND OK 42 99 org.gnome.Calculator\n"),
+        "{replies:?}"
+    );
+}
+
 // ===========================================================================
 // Row 37+ — zwlr-layer-shell-v1 OVERLAY Exclusive registration tests.
 //
@@ -2244,7 +2453,7 @@ fn live_grant_confirm_overlay_layer_shell_registered_on_grant_resolved() {
     );
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
 
     // Row 37+ — the layer-shell overlay for `KNOWN_WINDOW` must be registered
     // in `state.grant_confirm.overlays` after the GRANT_RESOLVED GRANT arm.
@@ -2364,7 +2573,7 @@ fn live_grant_confirm_overlay_destroyed_on_dispatch_completion() {
     );
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
 
     // After BindOk the overlay must still be registered (bind completion
     // path is the destroy site; this test exercises the *register* site only).
@@ -2419,7 +2628,7 @@ fn live_grant_v38_overlay_client_handle_set_when_registered() {
     );
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
 
     let handle = state
         .grant_confirm
@@ -2560,7 +2769,7 @@ fn live_grant_v40_ipc_layers_enumerate_qlux_grant_confirm() {
     );
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(
         state.pending.lock().unwrap().is_none(),
         "v40: grant bar must clear after GRANT_RESOLVED"
@@ -2637,7 +2846,7 @@ fn live_grant_v40_1a_ipc_layers_enumerate_qlux_grant_confirm_after_grant_resolve
     );
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(
         state.grant_confirm.pending().lock().unwrap().is_none(),
         "v40.1a: pending slot must be empty after GRANT_RESOLVED (Bug A scenario)"
@@ -2831,7 +3040,7 @@ fn live_grant_v40_1b_overlay_bar_paints_to_framebuffer_in_isolation() {
     );
     let replies = run_protocol_on(&mut harness, req.as_bytes());
     let _ = fs::remove_file(&tokens);
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(
         !state.grant_confirm.overlay_window_ids().is_empty(),
         "v40.1b: overlay handle must be registered after GRANT"
@@ -3093,7 +3302,7 @@ fn key_t_protocol_records_shift_false() {
     let _ = fs::remove_file(&tokens);
     assert!(replies.contains("HELLO OK\n"), "{replies:?}");
     assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
-    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
     assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
     let rec = state.surface_target.lock().unwrap();
     assert_eq!(rec.last_key.as_deref(), Some("T"));

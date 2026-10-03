@@ -462,7 +462,21 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 } else if harness.grant_present(&bot_id, window_id) {
                     if let Some(focus) = harness.resolve_pointer_focus(window_id) {
                         let _ = harness.set_keyboard_focus(window_id);
-                        write_reply(&mut write, &Reply::BindOk).await?;
+                        let (frontmost_wid, frontmost_app_id) =
+                            crate::inject::atspi_ladder::frontmost_or_echo(
+                                window_id,
+                                harness.app_id_for(window_id).as_deref(),
+                            );
+                        let _ = std::hint::black_box(crate::inject::CROSS_APP_HANDOFF);
+                        write_reply(
+                            &mut write,
+                            &Reply::BindOk {
+                                wid: window_id,
+                                frontmost_wid,
+                                frontmost_app_id,
+                            },
+                        )
+                        .await?;
                         ClientPhase::Dispatch {
                             focus,
                             wid: window_id,
@@ -533,7 +547,20 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                         if window_ok {
                             if let Some(focus) = focus {
                                 let _ = harness.set_keyboard_focus(wid);
-                                write_reply(&mut write, &Reply::BindOk).await?;
+                                let (frontmost_wid, frontmost_app_id) =
+                                    crate::inject::atspi_ladder::frontmost_or_echo(
+                                        wid,
+                                        harness.app_id_for(wid).as_deref(),
+                                    );
+                                write_reply(
+                                    &mut write,
+                                    &Reply::BindOk {
+                                        wid,
+                                        frontmost_wid,
+                                        frontmost_app_id,
+                                    },
+                                )
+                                .await?;
                                 ClientPhase::Dispatch { focus, wid }
                             } else {
                                 write_reply(
@@ -612,7 +639,20 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 } else if harness.grant_present(&bot_id, window_id) {
                     if let Some(new_focus) = harness.resolve_pointer_focus(window_id) {
                         let _ = harness.set_keyboard_focus(window_id);
-                        write_reply(&mut write, &Reply::BindOk).await?;
+                        let (frontmost_wid, frontmost_app_id) =
+                            crate::inject::atspi_ladder::frontmost_or_echo(
+                                window_id,
+                                harness.app_id_for(window_id).as_deref(),
+                            );
+                        write_reply(
+                            &mut write,
+                            &Reply::BindOk {
+                                wid: window_id,
+                                frontmost_wid,
+                                frontmost_app_id,
+                            },
+                        )
+                        .await?;
                         ClientPhase::Dispatch {
                             focus: new_focus,
                             wid: window_id,
@@ -659,18 +699,30 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                         {
                             let cx = bounds.rect.x + bounds.rect.w / 2.0;
                             let cy = bounds.rect.y + bounds.rect.h / 2.0;
+                            let warning =
+                                crate::inject::atspi_ladder::offscreen_warning(&bounds.rect);
+                            let changed = crate::inject::atspi_ladder::element_changed_field(
+                                &bot_id,
+                                window_id,
+                                &role,
+                                &query,
+                                &bounds.path,
+                                &bounds.rect,
+                            );
                             crate::inject::atspi_ladder::record_bridge_click(cx, cy);
                             let _ = std::hint::black_box(
                                 crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
                             );
                             pointer_click(harness, &focus, Point::from((cx, cy)));
                             let payload = format!(
-                                "{} {} {} {} {}",
+                                "{} {} {} {} {} {} {}",
                                 bounds.path,
                                 bounds.rect.x,
                                 bounds.rect.y,
                                 bounds.rect.w,
-                                bounds.rect.h
+                                bounds.rect.h,
+                                changed,
+                                warning
                             );
                             tracing::debug!(payload = %payload, "atspi.reply");
                             write_reply(
@@ -699,6 +751,14 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                         write_reply(&mut write, &Reply::DispatchOk).await?;
                     }
                 }
+                ClientPhase::Dispatch { focus, wid }
+            }
+            (ClientPhase::Dispatch { focus, wid }, Frame::AtTreeReq { window_id, path }) => {
+                let _ = std::hint::black_box(crate::inject::AT_TREE_DUMP);
+                let nodes = crate::inject::atspi_ladder::dump_full_tree(path.as_deref());
+                let body = crate::inject::atspi_ladder::format_tree_reply(&nodes);
+                tracing::debug!(window_id, node_count = nodes.len(), "atspi.tree");
+                write_reply(&mut write, &Reply::AtTreeReply { body }).await?;
                 ClientPhase::Dispatch { focus, wid }
             }
             (
