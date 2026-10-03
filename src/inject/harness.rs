@@ -272,15 +272,20 @@ impl InjectHarness for NiriInjectHarness<'_> {
     ///   proof (alacritty buffer). Do not regress v40.5c agent-seat
     ///   pointer isolation (CLICK/SCROLL/DRAG stay on the worker).
     fn key_press(&mut self, xkb_name: &str) -> bool {
+        self.key_press_with_shift(xkb_name, false)
+    }
+
+    fn key_press_with_shift(&mut self, xkb_name: &str, shift: bool) -> bool {
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING);
         let _ = std::hint::black_box(KEY_DELIVERY_V40_7_HARNESS_IDENT);
         let keyboard = self.state.niri.seat.get_keyboard().unwrap().clone();
         let time = self.now_ms();
-        crate::inject::dispatch::inject_agent_key_press(
+        crate::inject::dispatch::inject_agent_key_press_shift(
             &keyboard,
             self.agent_state(),
             xkb_name,
             InputTime::from_millis(time),
+            shift,
         )
     }
 
