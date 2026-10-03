@@ -106,6 +106,8 @@ pub static INJECT_PLANE_IDENTS: &[&str] = &[
     "GRANT_RESOLVED_OPCODE",
     "GRANT_NOT_PENDING",
     "AT_SPI_BRIDGE_LIVE",
+    "AT_TREE_DUMP",
+    "CROSS_APP_HANDOFF",
 ];
 
 /// v8 ELF idents (separate #[used] static; original list unchanged).
@@ -227,3 +229,11 @@ pub static KEY_DELIVERY_V40_13_PLANE_IDENTS: &[&str] = &[
 pub static AT_SPI_BRIDGE_LIVE_PLANE_IDENTS: &[&str] = &[
     crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
 ];
+
+pub const AT_TREE_DUMP: &str = "AT_TREE_DUMP";
+#[used]
+pub static AT_TREE_DUMP_PLANE_IDENTS: &[&str] = &[AT_TREE_DUMP];
+
+pub const CROSS_APP_HANDOFF: &str = "CROSS_APP_HANDOFF";
+#[used]
+pub static CROSS_APP_HANDOFF_PLANE_IDENTS: &[&str] = &[CROSS_APP_HANDOFF];
