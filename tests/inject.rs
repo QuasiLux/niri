@@ -2806,3 +2806,149 @@ fn live_grant_v40_5b_overlay_bar_full_width_at_presentation() {
 
     let _ = std::hint::black_box(GRANT_CONFIRM_V40_5B_OVERLAY_BAR_FULL_WIDTH_AT_PRESENTATION);
 }
+
+
+#[test]
+fn key_t_unshifted_parses_and_renders_lowercase() {
+    let (frame, rest) = niri::inject::protocol::parse_frame(b"KEY T\n").unwrap();
+    assert_eq!(
+        frame,
+        niri::inject::Frame::Key {
+            name: "T".into(),
+            shift: false,
+        }
+    );
+    assert!(rest.is_empty());
+    assert_eq!(
+        niri::inject::dispatch::rendered_inject_glyph("T", false),
+        Some('t')
+    );
+}
+
+#[test]
+fn key_t_shifted_parses_and_renders_uppercase() {
+    let (frame, rest) = niri::inject::protocol::parse_frame(b"KEY T shifted\n").unwrap();
+    assert_eq!(
+        frame,
+        niri::inject::Frame::Key {
+            name: "T".into(),
+            shift: true,
+        }
+    );
+    assert!(rest.is_empty());
+    assert_eq!(
+        niri::inject::dispatch::rendered_inject_glyph("T", true),
+        Some('T')
+    );
+}
+
+#[test]
+fn key_1_unshifted_parses_and_renders_digit() {
+    let (frame, rest) = niri::inject::protocol::parse_frame(b"KEY 1\n").unwrap();
+    assert_eq!(
+        frame,
+        niri::inject::Frame::Key {
+            name: "1".into(),
+            shift: false,
+        }
+    );
+    assert!(rest.is_empty());
+    assert_eq!(
+        niri::inject::dispatch::rendered_inject_glyph("1", false),
+        Some('1')
+    );
+}
+
+#[test]
+fn key_exclam_shifted_parses_and_renders_bang() {
+    let (frame, rest) = niri::inject::protocol::parse_frame(b"KEY exclam shifted\n").unwrap();
+    assert_eq!(
+        frame,
+        niri::inject::Frame::Key {
+            name: "exclam".into(),
+            shift: true,
+        }
+    );
+    assert!(rest.is_empty());
+    assert_eq!(
+        niri::inject::dispatch::rendered_inject_glyph("exclam", true),
+        Some('!')
+    );
+}
+
+#[test]
+fn key_t_protocol_records_shift_false() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\nKEY T\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK\n"), "{replies:?}");
+    assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
+    let rec = state.surface_target.lock().unwrap();
+    assert_eq!(rec.last_key.as_deref(), Some("T"));
+    assert_eq!(rec.last_shift, Some(false));
+}
+
+#[test]
+fn key_t_shifted_protocol_records_shift_true() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\nKEY T shifted\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    let rec = state.surface_target.lock().unwrap();
+    assert_eq!(rec.last_shift, Some(true));
+    if replies.contains("DISPATCH OK\n") {
+        assert_eq!(rec.last_key.as_deref(), Some("T"));
+    } else {
+        // Shift_L missing from the test keymap: inject returns false / NOT_BOUND,
+        // but last_shift is recorded before that call.
+        assert!(
+            replies.contains("DISPATCH ERR NOT_BOUND\n"),
+            "{replies:?}"
+        );
+    }
+}

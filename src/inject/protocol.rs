@@ -428,7 +428,7 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
             let name = parts.next().ok_or(FrameError::Malformed)?;
             let shift = match parts.next() {
                 None => false,
-                Some("SHIFT") | Some("1") => true,
+                Some("SHIFT") | Some("1") | Some("shifted") => true,
                 Some(_) => return Err(FrameError::Malformed),
             };
             if parts.next().is_some() {
