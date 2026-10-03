@@ -500,32 +500,26 @@ pub(crate) fn inject_agent_key_press_shift<D: SeatHandler + 'static>(
     };
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_10_SHIFT_MODIFIER);
+    let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY);
     let mut t = time.micros();
-    if shift {
+    let shift_kc = if shift {
         let Some(sk) = lookup_inject_keysym("Shift_L").and_then(|s| keyboard.keycode_for_keysym(s))
         else {
             return false;
         };
-        let st = InputTime::from_micros(t);
-        let sr = InputTime::from_micros(t.saturating_add(RELEASE_DELAY_MICROS));
         keyboard.input(
             state,
             sk,
             KeyState::Pressed,
             SERIAL_COUNTER.next_serial(),
-            st,
+            InputTime::from_micros(t),
             |_d, _mods, _handle| FilterResult::<()>::Forward,
         );
-        keyboard.input(
-            state,
-            sk,
-            KeyState::Released,
-            SERIAL_COUNTER.next_serial(),
-            sr,
-            |_d, _mods, _handle| FilterResult::<()>::Forward,
-        );
-        t = t.saturating_add(2 * RELEASE_DELAY_MICROS);
-    }
+        t = t.saturating_add(RELEASE_DELAY_MICROS);
+        Some(sk)
+    } else {
+        None
+    };
     let time = InputTime::from_micros(t);
     let release_time = InputTime::from_micros(t.saturating_add(RELEASE_DELAY_MICROS));
     let serial = SERIAL_COUNTER.next_serial();
@@ -546,6 +540,16 @@ pub(crate) fn inject_agent_key_press_shift<D: SeatHandler + 'static>(
         release_time,
         |_d, _mods, _handle| FilterResult::<()>::Forward,
     );
+    if let Some(sk) = shift_kc {
+        keyboard.input(
+            state,
+            sk,
+            KeyState::Released,
+            SERIAL_COUNTER.next_serial(),
+            InputTime::from_micros(t.saturating_add(2 * RELEASE_DELAY_MICROS)),
+            |_d, _mods, _handle| FilterResult::<()>::Forward,
+        );
+    }
     true
 }
 
