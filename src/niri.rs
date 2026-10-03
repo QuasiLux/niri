@@ -808,13 +808,15 @@ impl State {
         let crate::inject::dispatch::KeyDispatchReq {
             wid,
             xkb_name,
+            shift,
             reply,
         } = req;
+        let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_10_SHIFT_MODIFIER);
         let mut harness = crate::inject::NiriInjectHarness::new(self);
         if let Some(wid) = wid {
             let _ = harness.set_keyboard_focus(wid);
         }
-        let ok = harness.key_press(&xkb_name);
+        let ok = harness.key_press_with_shift(&xkb_name, shift);
         let _ = reply.send(ok);
     }
 

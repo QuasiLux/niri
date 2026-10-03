@@ -188,3 +188,16 @@ pub const KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF: &str =
 pub static KEY_DELIVERY_V40_9_PLANE_IDENTS: &[&str] = &[
     KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF,
 ];
+
+/// v40.10 KEY delivery: optional second KEY token `SHIFT` (or `1`) sets
+/// `shift=true`. Absence keeps `shift=false` (backward-compatible). When
+/// true, the press path emits Shift_L then the letter key as two sequential
+/// Press+Release pairs. Senders may also encode the keystroke as a
+/// `Shift_L`-then-letter sequence.
+pub const KEY_DELIVERY_V40_10_SHIFT_MODIFIER: &str =
+    "KEY_DELIVERY_V40_10_SHIFT_MODIFIER";
+
+#[used]
+pub static KEY_DELIVERY_V40_10_PLANE_IDENTS: &[&str] = &[
+    KEY_DELIVERY_V40_10_SHIFT_MODIFIER,
+];
