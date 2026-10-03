@@ -201,3 +201,13 @@ pub const KEY_DELIVERY_V40_10_SHIFT_MODIFIER: &str =
 pub static KEY_DELIVERY_V40_10_PLANE_IDENTS: &[&str] = &[
     KEY_DELIVERY_V40_10_SHIFT_MODIFIER,
 ];
+
+/// v40.11 KEY delivery: monotonic InputTime::now() on the main-loop
+/// press path, and Shift_L held across the letter Press+Release.
+pub const KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY: &str =
+    "KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY";
+
+#[used]
+pub static KEY_DELIVERY_V40_11_PLANE_IDENTS: &[&str] = &[
+    KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY,
+];
