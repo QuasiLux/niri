@@ -842,7 +842,7 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
             pointer_click(harness, focus, Point::from((x, y)));
             write_reply(write, &Reply::DispatchOk).await?;
         }
-        Frame::Key(name) => {
+        Frame::Key { name, shift } => {
             // architecture-delta (v40.9): do not apply KEY on this worker
             // thread. Post KeyDispatchReq over the calloop channel and wait
             // for the main-loop ACK. Tests have no sender (thread-local None)
@@ -859,10 +859,11 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
                 crate::inject::KEY_DELIVERY_V40_6_SURFACE_ACTIVATION,
             );
             let _ = std::hint::black_box(KEY_DELIVERY_V40_6_SOCKET_IDENT);
-            let ok = crate::inject::dispatch::try_handoff_key_to_main(Some(wid), &name)
+            let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_10_SHIFT_MODIFIER);
+            let ok = crate::inject::dispatch::try_handoff_key_to_main(Some(wid), &name, shift)
                 .unwrap_or_else(|| {
                     let _ = harness.set_keyboard_focus(wid);
-                    harness.key_press(&name)
+                    harness.key_press_with_shift(&name, shift)
                 });
             if ok {
                 write_reply(write, &Reply::DispatchOk).await?;

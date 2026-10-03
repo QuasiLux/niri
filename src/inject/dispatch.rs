@@ -68,6 +68,7 @@ use crate::input::agent_seat::AgentSeat;
 pub struct KeyDispatchReq {
     pub wid: Option<u64>,
     pub xkb_name: String,
+    pub shift: bool,
     pub reply: std::sync::mpsc::Sender<bool>,
 }
 
@@ -83,10 +84,10 @@ fn bind_worker_key_dispatch_tx(tx: Option<calloop::channel::Sender<KeyDispatchRe
 /// Post a KEY frame to the main loop and block for ACK.
 ///
 /// Returns `None` when this thread has no handoff sender (in-process tests).
-pub fn try_handoff_key_to_main(wid: Option<u64>, xkb_name: &str) -> Option<bool> {
+pub fn try_handoff_key_to_main(wid: Option<u64>, xkb_name: &str, shift: bool) -> Option<bool> {
     WORKER_KEY_DISPATCH_TX.with(|slot| {
         let tx = slot.borrow();
-        tx.as_ref().map(|tx| post_key_dispatch(tx, wid, xkb_name))
+        tx.as_ref().map(|tx| post_key_dispatch(tx, wid, xkb_name, shift))
     })
 }
 
@@ -95,6 +96,7 @@ pub fn post_key_dispatch(
     tx: &calloop::channel::Sender<KeyDispatchReq>,
     wid: Option<u64>,
     xkb_name: &str,
+    shift: bool,
 ) -> bool {
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
     let _ = std::hint::black_box(KEY_DELIVERY_V40_9_DISPATCH_IDENT);
@@ -102,6 +104,7 @@ pub fn post_key_dispatch(
     let req = KeyDispatchReq {
         wid,
         xkb_name: xkb_name.to_string(),
+        shift,
         reply: reply_tx,
     };
     if tx.send(req).is_err() {
@@ -479,14 +482,52 @@ pub(crate) fn inject_agent_key_press<D: SeatHandler + 'static>(
     xkb_name: &str,
     time: InputTime,
 ) -> bool {
+    inject_agent_key_press_shift(keyboard, state, xkb_name, time, false)
+}
+
+pub(crate) fn inject_agent_key_press_shift<D: SeatHandler + 'static>(
+    keyboard: &KeyboardHandle<D>,
+    state: &mut D,
+    xkb_name: &str,
+    time: InputTime,
+    shift: bool,
+) -> bool {
     let Some(keysym) = lookup_inject_keysym(xkb_name) else {
         return false;
     };
     let Some(keycode) = keyboard.keycode_for_keysym(keysym) else {
         return false;
     };
-    let release_time = InputTime::from_micros(time.micros().saturating_add(RELEASE_DELAY_MICROS));
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT);
+    let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_10_SHIFT_MODIFIER);
+    let mut t = time.micros();
+    if shift {
+        let Some(sk) = lookup_inject_keysym("Shift_L").and_then(|s| keyboard.keycode_for_keysym(s))
+        else {
+            return false;
+        };
+        let st = InputTime::from_micros(t);
+        let sr = InputTime::from_micros(t.saturating_add(RELEASE_DELAY_MICROS));
+        keyboard.input(
+            state,
+            sk,
+            KeyState::Pressed,
+            SERIAL_COUNTER.next_serial(),
+            st,
+            |_d, _mods, _handle| FilterResult::<()>::Forward,
+        );
+        keyboard.input(
+            state,
+            sk,
+            KeyState::Released,
+            SERIAL_COUNTER.next_serial(),
+            sr,
+            |_d, _mods, _handle| FilterResult::<()>::Forward,
+        );
+        t = t.saturating_add(2 * RELEASE_DELAY_MICROS);
+    }
+    let time = InputTime::from_micros(t);
+    let release_time = InputTime::from_micros(t.saturating_add(RELEASE_DELAY_MICROS));
     let serial = SERIAL_COUNTER.next_serial();
     keyboard.input(
         state,
@@ -744,17 +785,27 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     }
 
     fn key_press(&mut self, xkb_name: &str) -> bool {
+        self.key_press_with_shift(xkb_name, false)
+    }
+
+    fn key_press_with_shift(&mut self, xkb_name: &str, shift: bool) -> bool {
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
         let _ = std::hint::black_box(KEY_DELIVERY_V40_9_DISPATCH_IDENT);
         if let Some(tx) = self.state.key_dispatch_tx.as_ref() {
             // Production worker: post to the main compositor loop and await ACK.
-            return post_key_dispatch(tx, self.state.pending_key_wid, xkb_name);
+            return post_key_dispatch(tx, self.state.pending_key_wid, xkb_name, shift);
         }
         // tests/inject.rs + src/inject_e2e.rs: no main-loop receiver, so keep
         // the agent-seat path (e2e asserts key_count=1, not alacritty).
         let keyboard = self.state.agent_seat.keyboard.clone();
         let time = self.now_ms();
-        if !inject_agent_key_press(&keyboard, self.state, xkb_name, InputTime::from_millis(time)) {
+        if !inject_agent_key_press_shift(
+            &keyboard,
+            self.state,
+            xkb_name,
+            InputTime::from_millis(time),
+            shift,
+        ) {
             return false;
         }
         let mut rec = self.state.surface_target.lock().unwrap();

@@ -163,7 +163,10 @@ pub enum Frame {
         x: f64,
         y: f64,
     },
-    Key(String),
+    Key {
+        name: String,
+        shift: bool,
+    },
     Scroll {
         dx: f64,
         dy: f64,
@@ -292,6 +295,11 @@ pub trait InjectHarness {
         let _ = xkb_name;
         false
     }
+    /// KEY hook with optional Shift (v40.10). Default ignores `shift`.
+    fn key_press_with_shift(&mut self, xkb_name: &str, shift: bool) -> bool {
+        let _ = shift;
+        self.key_press(xkb_name)
+    }
     /// Focus the agent seat's keyboard on `window_id`'s surface.
     /// Default no-op for stub harnesses. Production/e2e override.
     fn set_keyboard_focus(&mut self, _wid: u64) -> bool {
@@ -418,10 +426,15 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
         OPC_CLICK => parse_two_f64(parts).map(|(x, y)| (Frame::Click { x, y }, after)),
         OPC_KEY => {
             let name = parts.next().ok_or(FrameError::Malformed)?;
+            let shift = match parts.next() {
+                None => false,
+                Some("SHIFT") | Some("1") => true,
+                Some(_) => return Err(FrameError::Malformed),
+            };
             if parts.next().is_some() {
                 return Err(FrameError::Malformed);
             }
-            Ok((Frame::Key(name.to_string()), after))
+            Ok((Frame::Key { name: name.to_string(), shift }, after))
         }
         OPC_SCROLL => parse_two_f64(parts).map(|(dx, dy)| (Frame::Scroll { dx, dy }, after)),
         OPC_GRANT_REQUEST => {
@@ -669,7 +682,13 @@ mod tests {
     #[test]
     fn parse_key_name() {
         let (frame, rest) = parse_frame(b"KEY XF86XK_AudioMute\n").unwrap();
-        assert_eq!(frame, Frame::Key("XF86XK_AudioMute".into()));
+        assert_eq!(
+            frame,
+            Frame::Key {
+                name: "XF86XK_AudioMute".into(),
+                shift: false,
+            }
+        );
         assert!(rest.is_empty());
     }
 
