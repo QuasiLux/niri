@@ -3349,3 +3349,95 @@ fn key_t_shifted_protocol_records_shift_true() {
         );
     }
 }
+
+
+#[test]
+fn atspi_bridge_real_connects_to_session_dbus() {
+    use niri::inject::atspi_ladder::{
+        real_scan_attempts, scan_session_dbus_for_element, set_scan_override,
+        set_tree_dump_override,
+    };
+
+    set_scan_override(None);
+    set_tree_dump_override(None);
+    let before = real_scan_attempts();
+    let _found = scan_session_dbus_for_element(42, "button", "7");
+    assert!(
+        real_scan_attempts() >= before + 1,
+        "real scan path must increment even when the bus is absent"
+    );
+    assert_eq!(
+        niri::inject::atspi_ladder::AT_SPI_BRIDGE_REAL,
+        "AT_SPI_BRIDGE_REAL"
+    );
+}
+
+#[test]
+fn atspi_tree_dump_walks_real_at_spi_bus() {
+    use niri::inject::atspi_ladder::{
+        dump_full_tree, real_tree_walk_attempts, set_scan_override, set_tree_dump_override,
+    };
+
+    set_scan_override(None);
+    set_tree_dump_override(None);
+    let before = real_tree_walk_attempts();
+    let _nodes = dump_full_tree(None);
+    assert!(
+        real_tree_walk_attempts() >= before + 1,
+        "real tree walk must increment even when the bus is absent"
+    );
+}
+
+#[test]
+fn atspi_missing_element_returns_background_unavailable_after_real_scan() {
+    use niri::inject::atspi_ladder::{
+        real_scan_attempts, set_scan_override, set_tree_dump_override, take_bridge_click,
+    };
+
+    set_scan_override(None);
+    set_tree_dump_override(None);
+    let _ = take_bridge_click();
+    let before = real_scan_attempts();
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button __qlux_missing_element_v40_14_2__\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    let click = take_bridge_click();
+    let motion_count = state.snapshot_motion_count();
+    assert!(
+        replies.contains("AT_ELEMENT_REPLY BACKGROUND_UNAVAILABLE"),
+        "{replies:?}"
+    );
+    assert_eq!(click, None);
+    assert_eq!(motion_count, 0);
+    assert!(
+        real_scan_attempts() >= before + 1,
+        "missing-element safety path must run a real scan"
+    );
+}

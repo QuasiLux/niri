@@ -106,6 +106,7 @@ pub static INJECT_PLANE_IDENTS: &[&str] = &[
     "GRANT_RESOLVED_OPCODE",
     "GRANT_NOT_PENDING",
     "AT_SPI_BRIDGE_LIVE",
+    "AT_SPI_BRIDGE_REAL",
     "AT_TREE_DUMP",
     "CROSS_APP_HANDOFF",
 ];
@@ -228,6 +229,11 @@ pub static KEY_DELIVERY_V40_13_PLANE_IDENTS: &[&str] = &[
 #[used]
 pub static AT_SPI_BRIDGE_LIVE_PLANE_IDENTS: &[&str] = &[
     crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
+];
+
+#[used]
+pub static AT_SPI_BRIDGE_REAL_PLANE_IDENTS: &[&str] = &[
+    crate::inject::atspi_ladder::AT_SPI_BRIDGE_REAL,
 ];
 
 pub const AT_TREE_DUMP: &str = "AT_TREE_DUMP";
