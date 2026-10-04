@@ -236,6 +236,12 @@ pub static AT_SPI_BRIDGE_REAL_PLANE_IDENTS: &[&str] = &[
     crate::inject::atspi_ladder::AT_SPI_BRIDGE_REAL,
 ];
 
+pub const AT_SPI_BRIDGE_BOUND_APP_ID: &str = "AT_SPI_BRIDGE_BOUND_APP_ID";
+#[used]
+pub static AT_SPI_BRIDGE_BOUND_APP_ID_PLANE_IDENTS: &[&str] = &[
+    AT_SPI_BRIDGE_BOUND_APP_ID,
+];
+
 pub const AT_TREE_DUMP: &str = "AT_TREE_DUMP";
 #[used]
 pub static AT_TREE_DUMP_PLANE_IDENTS: &[&str] = &[AT_TREE_DUMP];

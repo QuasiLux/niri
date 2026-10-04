@@ -3441,3 +3441,120 @@ fn atspi_missing_element_returns_background_unavailable_after_real_scan() {
         "missing-element safety path must run a real scan"
     );
 }
+
+
+/// v40.14.3: BIND copies the live toplevel app_id from `app_id_map` into
+/// `bound_app_id`, so later catalog lookups do not depend on the test-only
+/// `set_bound_app_id` helper.
+#[test]
+fn bind_sets_bound_app_id_from_window_id_via_app_id_map() {
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    let map = Arc::new(Mutex::new(HashMap::new()));
+    map.lock()
+        .unwrap()
+        .insert(KNOWN_WINDOW, "gnome-calculator".into());
+    state.set_app_id_map(map);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\n", hello_auth());
+    let _replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    assert_eq!(state.bound_app_id, Some("gnome-calculator".into()));
+    assert_eq!(
+        state.app_id_for(KNOWN_WINDOW),
+        Some("gnome-calculator".into())
+    );
+}
+
+/// v40.14.3: a worker DispatchHarness with only `app_id_map` populated (no
+/// `set_bound_app_id`) must route AT_ELEMENT_REQ for an AtSpiStrong app
+/// through the catalog to `AtSpiRoute::Element`, not CanvasRaw.
+#[test]
+fn route_after_bind_is_not_canvasraw_for_atspi_strong_app() {
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_scan_override, set_tree_dump_override, take_bridge_click,
+        ElementBounds,
+    };
+    use niri::inject::grant_confirm::Rect;
+
+    reset_gap4_test_hooks();
+    set_scan_override(None);
+    set_tree_dump_override(None);
+    let _ = take_bridge_click();
+
+    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+        if role == "button" && name_query == "7" {
+            Some(ElementBounds {
+                path: format!("atspi://{window_id}#button:7"),
+                rect: Rect {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 40.0,
+                    h: 16.0,
+                },
+            })
+        } else {
+            None
+        }
+    }
+    set_scan_override(Some(scan));
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    let map = Arc::new(Mutex::new(HashMap::new()));
+    map.lock()
+        .unwrap()
+        .insert(KNOWN_WINDOW, "gnome-calculator".into());
+    state.set_app_id_map(map);
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button 7\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    set_scan_override(None);
+    set_tree_dump_override(None);
+    assert!(
+        !replies.contains("AT_ELEMENT_REPLY BACKGROUND_UNAVAILABLE"),
+        "{replies:?}"
+    );
+}
