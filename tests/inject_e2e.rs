@@ -126,7 +126,7 @@ fn e2e_hello_auth_bind_click_scroll_key_drag() {
 
     send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
     let bind = read_line(&mut stream);
-    assert_eq!(bind, "BIND OK\n", "{bind:?}");
+    assert_eq!(bind, "BIND OK 42 42 none\n", "{bind:?}");
 
     send(&mut stream, b"CLICK 100 200\n");
     let click = read_line(&mut stream);
@@ -228,7 +228,7 @@ fn lock_screen_refuses_post_bind_click_e2e() {
 
     send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
     let bind = read_line(&mut stream);
-    assert_eq!(bind, "BIND OK\n", "{bind:?}");
+    assert_eq!(bind, "BIND OK 42 42 none\n", "{bind:?}");
 
     send(&mut stream, b"CLICK 100 200\n");
     let click = read_line(&mut stream);
@@ -293,7 +293,7 @@ fn resolve_window_e2e() {
 
     send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
     let bind = read_line(&mut stream);
-    assert_eq!(bind, "BIND OK\n", "{bind:?}");
+    assert_eq!(bind, "BIND OK 42 42 none\n", "{bind:?}");
 
     send(&mut stream, b"CLICK 100 200\n");
     let click = read_line(&mut stream);
@@ -383,7 +383,7 @@ fn e2e_key_delivery_sets_keyboard_focus_on_bound_surface() {
     }
     let (child, mut stream, runtime, socket, tokens, output) = start_session();
     send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
-    assert_eq!(read_line(&mut stream), "BIND OK\n");
+    assert_eq!(read_line(&mut stream), "BIND OK 42 42 none\n");
     send(&mut stream, b"KEY XF86XK_a\n");
     assert_eq!(read_line(&mut stream), "DISPATCH OK\n");
     let body = finish_session(child, stream, runtime, socket, tokens, output);
@@ -404,11 +404,11 @@ fn e2e_key_delivery_after_rebind_uses_new_focus() {
     }
     let (child, mut stream, runtime, socket, tokens, output) = start_session();
     send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
-    assert_eq!(read_line(&mut stream), "BIND OK\n");
+    assert_eq!(read_line(&mut stream), "BIND OK 42 42 none\n");
     send(&mut stream, b"KEY XF86XK_a\n");
     assert_eq!(read_line(&mut stream), "DISPATCH OK\n");
     send(&mut stream, b"BIND 43\n");
-    assert_eq!(read_line(&mut stream), "BIND OK\n");
+    assert_eq!(read_line(&mut stream), "BIND OK 43 43 none\n");
     send(&mut stream, b"KEY XF86XK_b\n");
     assert_eq!(read_line(&mut stream), "DISPATCH OK\n");
     let body = finish_session(child, stream, runtime, socket, tokens, output);
@@ -429,7 +429,7 @@ fn e2e_key_to_unknown_window_returns_not_bound() {
     }
     let (child, mut stream, runtime, socket, tokens, output) = start_session();
     send(&mut stream, format!("BIND {KNOWN_WINDOW}\n").as_bytes());
-    assert_eq!(read_line(&mut stream), "BIND OK\n");
+    assert_eq!(read_line(&mut stream), "BIND OK 42 42 none\n");
     send(&mut stream, b"KEY XF86XK_a\n");
     assert_eq!(read_line(&mut stream), "DISPATCH OK\n");
     send(&mut stream, b"BIND 999999\n");
