@@ -117,6 +117,10 @@ pub fn post_key_dispatch(
 static KEY_DELIVERY_V40_9_DISPATCH_IDENT: &[u8] =
     b"\x01KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF\x01";
 
+#[used]
+static AT_SPI_BRIDGE_BOUND_APP_ID_DISPATCH_IDENT: &[u8] =
+    b"\x01AT_SPI_BRIDGE_BOUND_APP_ID\x01";
+
 /// Niri-shaped fields the v4.6 harness reads via `self.state.niri`.
 /// On the worker thread we don't have `niri::State`; we hold only the
 /// snapshot the dispatch loop needs.
@@ -722,6 +726,7 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     }
 
     fn resolve_window(&mut self, window_id: u64) -> Option<WlSurface> {
+        let _ = std::hint::black_box(AT_SPI_BRIDGE_BOUND_APP_ID_DISPATCH_IDENT);
         if let Some(app_id) = self
             .state
             .app_id_map
