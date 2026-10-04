@@ -187,11 +187,10 @@ struct TreeCache {
 thread_local! {
     static TREE_DUMP_OVERRIDE: std::cell::RefCell<Option<fn(Option<&str>) -> Vec<TreeNode>>> =
         const { std::cell::RefCell::new(None) };
-    static TREE_CACHE: std::cell::RefCell<TreeCache> = const {
+    static TREE_CACHE: std::cell::RefCell<TreeCache> =
         std::cell::RefCell::new(TreeCache {
             by_bot: std::collections::HashMap::new(),
-        })
-    };
+        });
     static FOCUS_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static OUTPUT_RECTS: std::cell::RefCell<Option<Vec<crate::inject::grant_confirm::Rect>>> =
         const { std::cell::RefCell::new(None) };
