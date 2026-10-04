@@ -1,7 +1,7 @@
 //! Row 13: per-action AT-SPI routing ladder.
 //!
-//! Pure logic module — no Smithay, no D-Bus connection here. Reads the
-//! Row-12 catalog via `app_id_routes`, returns one of three variants.
+//! Row-13 routing plus the real AT-SPI session/a11y-bus walk used when the
+//! test override hooks are unset. No Smithay types.
 
 use crate::inject::app_catalog::{SemanticStrength, Toolkit};
 
@@ -129,10 +129,11 @@ pub fn scan_session_dbus_for_element(
     role: &str,
     name_query: &str,
 ) -> Option<ElementBounds> {
-    SCAN_OVERRIDE.with(|slot| match *slot.borrow() {
+    let hook = SCAN_OVERRIDE.with(|slot| *slot.borrow());
+    match hook {
         Some(f) => f(window_id, role, name_query),
-        None => None,
-    })
+        None => real_scan_session_dbus_for_element(window_id, role, name_query),
+    }
 }
 
 pub fn record_bridge_click(x: f64, y: f64) {
@@ -147,7 +148,7 @@ pub fn take_bridge_click() -> Option<BridgeClick> {
 
 pub const AT_SPI_BRIDGE_LIVE: &str = "AT_SPI_BRIDGE_LIVE";
 
-
+pub const AT_SPI_BRIDGE_REAL: &str = "AT_SPI_BRIDGE_REAL";
 
 /// Flattened AX node. `children` exists so a dump override can return a tree;
 /// [`dump_full_tree`] clears them after a pre-order walk.
@@ -203,10 +204,11 @@ pub fn set_tree_dump_override(f: Option<fn(Option<&str>) -> Vec<TreeNode>>) {
 }
 
 pub fn dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
-    let roots = TREE_DUMP_OVERRIDE.with(|slot| match *slot.borrow() {
+    let hook = TREE_DUMP_OVERRIDE.with(|slot| *slot.borrow());
+    let roots = match hook {
         Some(f) => f(root_path),
-        None => Vec::new(),
-    });
+        None => real_dump_full_tree(root_path),
+    };
     flatten_preorder(roots)
 }
 
@@ -221,6 +223,500 @@ fn flatten_preorder(nodes: Vec<TreeNode>) -> Vec<TreeNode> {
     }
     walk(nodes, &mut out);
     out
+}
+
+thread_local! {
+    static REAL_SCAN_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static REAL_TREE_WALK_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub fn real_scan_attempts() -> u64 {
+    REAL_SCAN_ATTEMPTS.with(std::cell::Cell::get)
+}
+
+pub fn real_tree_walk_attempts() -> u64 {
+    REAL_TREE_WALK_ATTEMPTS.with(std::cell::Cell::get)
+}
+
+fn increment_real_scan_attempts() {
+    REAL_SCAN_ATTEMPTS.with(|c| c.set(c.get() + 1));
+}
+
+fn increment_real_tree_walk_attempts() {
+    REAL_TREE_WALK_ATTEMPTS.with(|c| c.set(c.get() + 1));
+}
+
+fn real_scan_session_dbus_for_element(
+    window_id: u64,
+    role: &str,
+    name_query: &str,
+) -> Option<ElementBounds> {
+    let _ = std::hint::black_box(AT_SPI_BRIDGE_REAL);
+    increment_real_scan_attempts();
+    #[cfg(feature = "dbus")]
+    {
+        let role = role.to_owned();
+        let name_query = name_query.to_owned();
+        return match std::thread::spawn(move || {
+            real_bus::scan_session_dbus_for_element(window_id, &role, &name_query)
+        })
+        .join()
+        {
+            Ok(v) => v,
+            Err(_) => None,
+        };
+    }
+    #[cfg(not(feature = "dbus"))]
+    {
+        let _ = (window_id, role, name_query);
+        None
+    }
+}
+
+fn real_dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
+    increment_real_tree_walk_attempts();
+    #[cfg(feature = "dbus")]
+    {
+        let root_path = root_path.map(str::to_owned);
+        return match std::thread::spawn(move || real_bus::dump_full_tree(root_path.as_deref()))
+            .join()
+        {
+            Ok(v) => v,
+            Err(_) => Vec::new(),
+        };
+    }
+    #[cfg(not(feature = "dbus"))]
+    {
+        let _ = root_path;
+        Vec::new()
+    }
+}
+
+#[cfg(feature = "dbus")]
+mod real_bus {
+    use std::collections::{HashMap, HashSet};
+
+    use super::{ElementBounds, TreeNode};
+
+    const REGISTRY_DEST: &str = "org.a11y.atspi.Registry";
+    const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
+    const NULL_PATH: &str = "/org/a11y/atspi/null";
+    const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
+    const COMPONENT: &str = "org.a11y.atspi.Component";
+    const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+    const MAX_DEPTH: usize = 10;
+    const MAX_NODES: usize = 1000;
+    const STATE_VISIBLE: u32 = 1u32 << 30;
+
+    struct WalkLimits {
+        visited: HashSet<(String, String)>,
+        nodes: usize,
+    }
+
+    impl WalkLimits {
+        fn new() -> Self {
+            Self {
+                visited: HashSet::new(),
+                nodes: 0,
+            }
+        }
+
+        fn enter(&mut self, bus: &str, path: &str, depth: usize) -> bool {
+            if depth > MAX_DEPTH || self.nodes >= MAX_NODES {
+                return false;
+            }
+            if !self.visited.insert((bus.to_string(), path.to_string())) {
+                return false;
+            }
+            self.nodes += 1;
+            true
+        }
+    }
+
+    pub(super) fn scan_session_dbus_for_element(
+        window_id: u64,
+        role: &str,
+        name_query: &str,
+    ) -> Option<ElementBounds> {
+        let conn = match connect_a11y_bus() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(error = %e, "atspi.real_scan connect failed");
+                return None;
+            }
+        };
+        let (bus, path) = start_node(None);
+        let mut first: Option<ElementBounds> = None;
+        match walk_scan(
+            &conn,
+            &bus,
+            &path,
+            0,
+            &mut WalkLimits::new(),
+            window_id,
+            role,
+            name_query,
+            None,
+            &mut first,
+        ) {
+            Ok(Some(hit)) => Some(hit),
+            Ok(None) => first,
+            Err(e) => {
+                tracing::debug!(error = %e, "atspi.real_scan walk failed");
+                first
+            }
+        }
+    }
+
+    pub(super) fn dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
+        let conn = match connect_a11y_bus() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(error = %e, "atspi.real_tree connect failed");
+                return Vec::new();
+            }
+        };
+        let (bus, path) = start_node(root_path);
+        match walk_dump(&conn, &bus, &path, 0, &mut WalkLimits::new()) {
+            Ok(Some(node)) => vec![node],
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                tracing::debug!(error = %e, "atspi.real_tree walk failed");
+                Vec::new()
+            }
+        }
+    }
+
+    fn connect_a11y_bus() -> zbus::Result<zbus::blocking::Connection> {
+        let session = zbus::blocking::Connection::session()?;
+        let message = session.call_method(
+            Some("org.a11y.Bus"),
+            "/org/a11y/bus",
+            Some("org.a11y.Bus"),
+            "GetAddress",
+            &(),
+        )?;
+        let addr: String = message.body().deserialize()?;
+        zbus::blocking::connection::Builder::address(addr.as_str())?.build()
+    }
+
+    fn start_node(root_path: Option<&str>) -> (String, String) {
+        match root_path {
+            None => (REGISTRY_DEST.to_string(), ROOT_PATH.to_string()),
+            Some(p) if p.contains(':') => {
+                if let Some(idx) = p.find(":/") {
+                    let bus = &p[..idx];
+                    let obj = &p[idx + 1..];
+                    if !bus.is_empty() && obj.starts_with('/') {
+                        return (bus.to_string(), obj.to_string());
+                    }
+                }
+                if p.starts_with(':') {
+                    if let Some(slash) = p.find('/') {
+                        return (p[..slash].to_string(), p[slash..].to_string());
+                    }
+                }
+                match p.split_once(':') {
+                    Some((bus, obj)) if !bus.is_empty() && !obj.is_empty() => {
+                        (bus.to_string(), obj.to_string())
+                    }
+                    _ => (REGISTRY_DEST.to_string(), ROOT_PATH.to_string()),
+                }
+            }
+            Some(p) if p.starts_with('/') => (REGISTRY_DEST.to_string(), p.to_string()),
+            Some(_) => (REGISTRY_DEST.to_string(), ROOT_PATH.to_string()),
+        }
+    }
+
+    fn walk_scan(
+        conn: &zbus::blocking::Connection,
+        bus: &str,
+        path: &str,
+        depth: usize,
+        limits: &mut WalkLimits,
+        window_id: u64,
+        role_query: &str,
+        name_query: &str,
+        inherited_window_id: Option<String>,
+        first: &mut Option<ElementBounds>,
+    ) -> zbus::Result<Option<ElementBounds>> {
+        if bus.is_empty() || path == NULL_PATH || !limits.enter(bus, path, depth) {
+            return Ok(None);
+        }
+
+        let role_name = get_role_name(conn, bus, path).unwrap_or_default();
+        let name = get_name(conn, bus, path);
+        let attrs = get_attributes(conn, bus, path);
+        let node_wid = attrs.get("window-id").cloned();
+        let effective_wid = node_wid.or(inherited_window_id);
+        let preferred = effective_wid.as_deref() == Some(&window_id.to_string());
+
+        if role_matches(role_query, &role_name) && name_matches(name_query, &name) {
+            let (x, y, w, h) = get_extents(conn, bus, path);
+            let bounds = ElementBounds {
+                path: stamp_path(window_id, role_query, &name),
+                rect: crate::inject::grant_confirm::Rect { x, y, w, h },
+            };
+            if preferred {
+                return Ok(Some(bounds));
+            }
+            if first.is_none() {
+                *first = Some(bounds);
+            }
+        }
+
+        for (child_bus, child_path) in get_children(conn, bus, path) {
+            if let Some(hit) = walk_scan(
+                conn,
+                &child_bus,
+                &child_path,
+                depth + 1,
+                limits,
+                window_id,
+                role_query,
+                name_query,
+                effective_wid.clone(),
+                first,
+            )? {
+                return Ok(Some(hit));
+            }
+        }
+        Ok(None)
+    }
+
+    fn walk_dump(
+        conn: &zbus::blocking::Connection,
+        bus: &str,
+        path: &str,
+        depth: usize,
+        limits: &mut WalkLimits,
+    ) -> zbus::Result<Option<TreeNode>> {
+        if bus.is_empty() || path == NULL_PATH || !limits.enter(bus, path, depth) {
+            return Ok(None);
+        }
+
+        let role = get_role_name(conn, bus, path).unwrap_or_default();
+        let name = get_name(conn, bus, path);
+        let (x, y, w, h) = get_extents(conn, bus, path);
+        let visible = get_visible(conn, bus, path);
+        let mut children = Vec::new();
+        for (child_bus, child_path) in get_children(conn, bus, path) {
+            match walk_dump(conn, &child_bus, &child_path, depth + 1, limits) {
+                Ok(Some(child)) => children.push(child),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(error = %e, "atspi.real_tree child failed");
+                }
+            }
+        }
+        Ok(Some(TreeNode {
+            role,
+            name,
+            x,
+            y,
+            w,
+            h,
+            visible,
+            children,
+        }))
+    }
+
+    fn get_role_name(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+    ) -> Option<String> {
+        let message = conn
+            .call_method(Some(dest), path, Some(ACCESSIBLE), "GetRoleName", &())
+            .ok()?;
+        message.body().deserialize().ok()
+    }
+
+    fn get_name(conn: &zbus::blocking::Connection, dest: &str, path: &str) -> String {
+        let Ok(message) = conn.call_method(
+            Some(dest),
+            path,
+            Some(PROPERTIES),
+            "Get",
+            &("org.a11y.atspi.Accessible", "Name"),
+        ) else {
+            return String::new();
+        };
+        match message.body().deserialize::<zbus::zvariant::OwnedValue>() {
+            Ok(v) => String::try_from(v).unwrap_or_default(),
+            Err(_) => String::new(),
+        }
+    }
+
+    fn get_extents(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+    ) -> (f64, f64, f64, f64) {
+        let Ok(message) =
+            conn.call_method(Some(dest), path, Some(COMPONENT), "GetExtents", &0u32)
+        else {
+            return (0.0, 0.0, 0.0, 0.0);
+        };
+        match message.body().deserialize::<(i32, i32, i32, i32)>() {
+            Ok((x, y, w, h)) => (x as f64, y as f64, w as f64, h as f64),
+            Err(_) => (0.0, 0.0, 0.0, 0.0),
+        }
+    }
+
+    fn get_visible(conn: &zbus::blocking::Connection, dest: &str, path: &str) -> bool {
+        let Ok(message) = conn.call_method(Some(dest), path, Some(ACCESSIBLE), "GetState", &())
+        else {
+            return false;
+        };
+        if let Ok(words) = message.body().deserialize::<Vec<u32>>() {
+            return words.first().is_some_and(|w| w & STATE_VISIBLE != 0);
+        }
+        if let Ok(words) = message.body().deserialize::<[u32; 2]>() {
+            return words[0] & STATE_VISIBLE != 0;
+        }
+        false
+    }
+
+    fn get_attributes(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+    ) -> HashMap<String, String> {
+        let Ok(message) =
+            conn.call_method(Some(dest), path, Some(ACCESSIBLE), "GetAttributes", &())
+        else {
+            return HashMap::new();
+        };
+        message.body().deserialize().unwrap_or_default()
+    }
+
+    fn get_children(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+    ) -> Vec<(String, String)> {
+        match conn.call_method(Some(dest), path, Some(ACCESSIBLE), "GetChildren", &()) {
+            Ok(message) => match decode_children(&message) {
+                Some(children) => filter_children(dest, children),
+                None => filter_children(dest, children_by_index(conn, dest, path)),
+            },
+            Err(_) => filter_children(dest, children_by_index(conn, dest, path)),
+        }
+    }
+
+    fn children_by_index(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+    ) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for i in 0i32..MAX_NODES as i32 {
+            let Ok(message) =
+                conn.call_method(Some(dest), path, Some(ACCESSIBLE), "GetChildAtIndex", &i)
+            else {
+                break;
+            };
+            match decode_one_child(&message) {
+                Some(child) => out.push(child),
+                None => break,
+            }
+        }
+        out
+    }
+
+    fn decode_children(message: &zbus::message::Message) -> Option<Vec<(String, String)>> {
+        if let Ok(v) = message
+            .body()
+            .deserialize::<Vec<(String, zbus::zvariant::OwnedObjectPath)>>()
+        {
+            return Some(
+                v.into_iter()
+                    .map(|(bus, path)| (bus, path.to_string()))
+                    .collect(),
+            );
+        }
+        if let Ok(v) = message.body().deserialize::<Vec<(
+            zbus::names::OwnedBusName,
+            zbus::zvariant::OwnedObjectPath,
+        )>>() {
+            return Some(
+                v.into_iter()
+                    .map(|(bus, path)| (bus.to_string(), path.to_string()))
+                    .collect(),
+            );
+        }
+        None
+    }
+
+    fn decode_one_child(message: &zbus::message::Message) -> Option<(String, String)> {
+        if let Ok((bus, path)) = message
+            .body()
+            .deserialize::<(String, zbus::zvariant::OwnedObjectPath)>()
+        {
+            return Some((bus, path.to_string()));
+        }
+        if let Ok((bus, path)) = message.body().deserialize::<(
+            zbus::names::OwnedBusName,
+            zbus::zvariant::OwnedObjectPath,
+        )>() {
+            return Some((bus.to_string(), path.to_string()));
+        }
+        None
+    }
+
+    fn filter_children(
+        parent_bus: &str,
+        children: Vec<(String, String)>,
+    ) -> Vec<(String, String)> {
+        children
+            .into_iter()
+            .filter_map(|(bus, path)| {
+                if path == NULL_PATH || path.is_empty() {
+                    return None;
+                }
+                let bus = if bus.is_empty() {
+                    parent_bus.to_string()
+                } else {
+                    bus
+                };
+                if bus.is_empty() {
+                    None
+                } else {
+                    Some((bus, path))
+                }
+            })
+            .collect()
+    }
+
+    fn role_matches(query: &str, role_name: &str) -> bool {
+        let q = query.to_ascii_lowercase();
+        let r = role_name.to_ascii_lowercase();
+        if q.contains(&r) || r.contains(&q) {
+            return true;
+        }
+        if q == "button" && r.contains("button") {
+            return true;
+        }
+        matches!(q.as_str(), "text" | "textbox" | "entry")
+            && (r == "entry"
+                || r == "text"
+                || r == "password text"
+                || r.contains("text")
+                || r.contains("entry"))
+    }
+
+    fn name_matches(query: &str, name: &str) -> bool {
+        query.trim() == name.trim()
+    }
+
+    fn stamp_path(window_id: u64, role: &str, name: &str) -> String {
+        let name: String = name
+            .chars()
+            .map(|c| if c.is_ascii_whitespace() { '_' } else { c })
+            .collect();
+        format!("atspi://{window_id}#{role}:{name}")
+    }
 }
 
 pub fn format_tree_reply(nodes: &[TreeNode]) -> String {
