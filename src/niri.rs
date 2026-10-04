@@ -2993,15 +2993,25 @@ impl Niri {
                                                 server.track_connection(String::new());
                                             let mut surface_map: HashMap<u64, WlSurface> =
                                                 HashMap::new();
+                                            let mut app_id_map: HashMap<u64, String> =
+                                                HashMap::new();
                                             for (_, m) in state.niri.layout.windows() {
                                                 if let Some(toplevel) = m.window.toplevel() {
                                                     surface_map.insert(
                                                         m.id().get(),
                                                         toplevel.wl_surface().clone(),
                                                     );
+                                                    let app_id = crate::utils::with_toplevel_role(
+                                                        toplevel,
+                                                        |role| {
+                                                            role.app_id.clone().unwrap_or_default()
+                                                        },
+                                                    );
+                                                    app_id_map.insert(m.id().get(), app_id);
                                                 }
                                             }
                                             let surface_map = Arc::new(Mutex::new(surface_map));
+                                            let app_id_map = Arc::new(Mutex::new(app_id_map));
                                             let grants = state.niri.grant_map.arc();
                                             let pending = state.niri.grant_confirm.pending();
                                             // v40.3: share the compositor's GrantConfirmSurface Arc with the worker
@@ -3021,6 +3031,7 @@ impl Niri {
                                                     pending,
                                                     grant_confirm_surface,
                                                     Some(key_tx),
+                                                    app_id_map,
                                                 );
                                             });
                                         }

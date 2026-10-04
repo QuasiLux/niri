@@ -148,6 +148,8 @@ pub struct DispatchState {
     /// Last `set_keyboard_focus(wid)` seen on this worker; carried on the
     /// handoff request when `DispatchHarness::key_press` is used directly.
     pub pending_key_wid: Option<u64>,
+    /// v40.14.3: window_id → live toplevel app_id, captured at worker spawn.
+    pub app_id_map: Arc<Mutex<HashMap<u64, String>>>,
 }
 
 #[derive(Default)]
@@ -223,6 +225,7 @@ impl DispatchState {
             bound_app_id: None,
             key_dispatch_tx: None,
             pending_key_wid: None,
+            app_id_map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -240,12 +243,21 @@ impl DispatchState {
         *self.motion_count.borrow()
     }
 
-    pub fn app_id_for(&self, _window_id: u64) -> Option<String> {
-        self.bound_app_id.clone()
+    pub fn app_id_for(&self, window_id: u64) -> Option<String> {
+        self.app_id_map
+            .lock()
+            .unwrap()
+            .get(&window_id)
+            .cloned()
+            .or_else(|| self.bound_app_id.clone())
     }
 
     pub fn set_bound_app_id(&mut self, app_id: impl Into<String>) {
         self.bound_app_id = Some(app_id.into());
+    }
+
+    pub fn set_app_id_map(&mut self, map: Arc<Mutex<HashMap<u64, String>>>) {
+        self.app_id_map = map;
     }
 }
 
@@ -710,6 +722,16 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     }
 
     fn resolve_window(&mut self, window_id: u64) -> Option<WlSurface> {
+        if let Some(app_id) = self
+            .state
+            .app_id_map
+            .lock()
+            .unwrap()
+            .get(&window_id)
+            .cloned()
+        {
+            self.state.bound_app_id = Some(app_id);
+        }
         let map = self.state.surface_map.lock().unwrap();
         map.get(&window_id).cloned()
     }
@@ -902,6 +924,7 @@ pub fn dispatch_inject_connection(
     pending: Arc<Mutex<Option<PendingGrant>>>,
     grant_confirm_surface: Arc<Mutex<crate::inject::grant_confirm::GrantConfirmSurface>>,
     key_dispatch_tx: Option<calloop::channel::Sender<KeyDispatchReq>>,
+    app_id_map: Arc<Mutex<HashMap<u64, String>>>,
 ) -> anyhow::Result<()> {
     let mut state = DispatchState::new(
         is_locked,
@@ -916,6 +939,7 @@ pub fn dispatch_inject_connection(
     // post without a new InjectHarness trait method (protocol.rs is frozen).
     state.key_dispatch_tx = key_dispatch_tx.clone();
     bind_worker_key_dispatch_tx(key_dispatch_tx);
+    state.set_app_id_map(app_id_map);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
     state.set_grant_confirm_surface(grant_confirm_surface);
     let mut harness = DispatchHarness::new(&mut state);
