@@ -165,9 +165,13 @@ fn ax_role_matches(query: &str, role_name: &str) -> bool {
             || r.contains("entry"))
 }
 
-/// Inline mirror of `real_bus::name_matches` (exact trimmed equality).
+/// Inline mirror of `real_bus::name_matches` (case-insensitive substring).
 fn ax_name_matches(query: &str, name: &str) -> bool {
-    query.trim() == name.trim()
+    let q = query.trim();
+    if q.is_empty() {
+        return false;
+    }
+    name.trim().to_lowercase().contains(&q.to_lowercase())
 }
 
 /// Inline mirror of `real_bus::stamp_path` (whitespace → `_`).
@@ -274,7 +278,17 @@ pub fn set_tree_dump_override(f: Option<fn(Option<&str>) -> Vec<TreeNode>>) {
     TREE_DUMP_OVERRIDE.with(|slot| *slot.borrow_mut() = f);
 }
 
+/// v40.14.7: pavucontrol Mute is an AT-SPI node at depth 15.
+/// `WalkLimits::enter` used `depth > 10`, so dump and scan dropped that
+/// row (diag-B on t_d47714ef). Cap is 20, not unlimited: MAX_NODES stays
+/// 1000 and an unbounded a11y walk can hang the bus.
+pub const TREE_WALK_MAX_DEPTH: usize = 20;
+
+#[used]
+static DEEP_TREE_WALK_V40_14_7_IDENT: &[u8] = b"\x01DEEP_TREE_WALK_V40_14_7\x01";
+
 pub fn dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
+    let _ = std::hint::black_box(DEEP_TREE_WALK_V40_14_7_IDENT);
     let hook = TREE_DUMP_OVERRIDE.with(|slot| *slot.borrow());
     let roots = match hook {
         Some(f) => f(root_path),
@@ -285,14 +299,17 @@ pub fn dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
 
 fn flatten_preorder(nodes: Vec<TreeNode>) -> Vec<TreeNode> {
     let mut out = Vec::new();
-    fn walk(nodes: Vec<TreeNode>, out: &mut Vec<TreeNode>) {
+    fn walk(nodes: Vec<TreeNode>, out: &mut Vec<TreeNode>, depth: usize) {
+        if depth > TREE_WALK_MAX_DEPTH {
+            return;
+        }
         for mut node in nodes {
             let children = std::mem::take(&mut node.children);
             out.push(node);
-            walk(children, out);
+            walk(children, out, depth + 1);
         }
     }
-    walk(nodes, &mut out);
+    walk(nodes, &mut out, 0);
     out
 }
 
@@ -375,7 +392,6 @@ mod real_bus {
     const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
     const COMPONENT: &str = "org.a11y.atspi.Component";
     const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
-    const MAX_DEPTH: usize = 10;
     const MAX_NODES: usize = 1000;
     const STATE_VISIBLE: u32 = 1u32 << 30;
 
@@ -393,7 +409,7 @@ mod real_bus {
         }
 
         fn enter(&mut self, bus: &str, path: &str, depth: usize) -> bool {
-            if depth > MAX_DEPTH || self.nodes >= MAX_NODES {
+            if depth > super::TREE_WALK_MAX_DEPTH || self.nodes >= MAX_NODES {
                 return false;
             }
             if !self.visited.insert((bus.to_string(), path.to_string())) {
@@ -778,7 +794,7 @@ mod real_bus {
     }
 
     fn name_matches(query: &str, name: &str) -> bool {
-        query.trim() == name.trim()
+        super::ax_name_matches(query, name)
     }
 
     fn stamp_path(window_id: u64, role: &str, name: &str) -> String {
