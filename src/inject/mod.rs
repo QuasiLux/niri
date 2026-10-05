@@ -249,3 +249,18 @@ pub static AT_TREE_DUMP_PLANE_IDENTS: &[&str] = &[AT_TREE_DUMP];
 pub const CROSS_APP_HANDOFF: &str = "CROSS_APP_HANDOFF";
 #[used]
 pub static CROSS_APP_HANDOFF_PLANE_IDENTS: &[&str] = &[CROSS_APP_HANDOFF];
+
+/// v40.14.6 AX-tree walk: `Element { role, query }` lookup now prefers
+/// `element_lookup_via_tree_dump` (which filters the published
+/// `AT_TREE_DUMP` subtree by `(role, name)` and returns bounds from the
+/// dump) over the per-node `Component.GetExtents` round-trip in
+/// `scan_session_dbus_for_element`. Bounds from the dump sidestep the
+/// `xdg-desktop-portal-gtk` `impl_GetExtents: ATK_IS_COMPONENT
+/// (user_data) failed` assertion that blocked G2/G4/G5 of the v40.14.3
+/// 6-gate e2e.
+pub const ELEMENT_AX_LOOKUP_V40_14_6: &str =
+    crate::inject::atspi_ladder::ELEMENT_AX_LOOKUP_V40_14_6;
+#[used]
+pub static ELEMENT_AX_LOOKUP_V40_14_6_PLANE_IDENTS: &[&str] = &[
+    ELEMENT_AX_LOOKUP_V40_14_6,
+];
