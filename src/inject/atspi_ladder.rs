@@ -136,6 +136,77 @@ pub fn scan_session_dbus_for_element(
     }
 }
 
+/// v40.14.6: filter the already-published `AT_TREE_DUMP` subtree by
+/// `(role, name)`. Bounds come from the dump, so no second
+/// `Component.GetExtents` round-trip on the matched node — which is the
+/// path that triggered `xdg-desktop-portal-gtk` `impl_GetExtents:
+/// assertion 'ATK_IS_COMPONENT (user_data) failed'` on the desktop root
+/// during the v40.14.3 6-gate e2e. The dump's own `walk_dump` recovers
+/// from `get_children` errors with `Err(e) → skip`; the resulting bounds
+/// for per-app subtrees are real.
+pub const ELEMENT_AX_LOOKUP_V40_14_6: &str = "ELEMENT_AX_LOOKUP_V40_14_6";
+
+/// Inline mirror of `real_bus::role_matches` so this helper is callable
+/// outside the `#[cfg(feature = "dbus")]` `real_bus` module. Same rules.
+fn ax_role_matches(query: &str, role_name: &str) -> bool {
+    let q = query.to_ascii_lowercase();
+    let r = role_name.to_ascii_lowercase();
+    if q.contains(&r) || r.contains(&q) {
+        return true;
+    }
+    if q == "button" && r.contains("button") {
+        return true;
+    }
+    matches!(q.as_str(), "text" | "textbox" | "entry")
+        && (r == "entry"
+            || r == "text"
+            || r == "password text"
+            || r.contains("text")
+            || r.contains("entry"))
+}
+
+/// Inline mirror of `real_bus::name_matches` (exact trimmed equality).
+fn ax_name_matches(query: &str, name: &str) -> bool {
+    query.trim() == name.trim()
+}
+
+/// Inline mirror of `real_bus::stamp_path` (whitespace → `_`).
+fn ax_stamp_path(window_id: u64, role: &str, name: &str) -> String {
+    let name: String = name
+        .chars()
+        .map(|c| if c.is_ascii_whitespace() { '_' } else { c })
+        .collect();
+    format!("atspi://{window_id}#{role}:{name}")
+}
+
+/// v40.14.6: try `dump_full_tree(None)` first, filter by `(role, name)`.
+/// On a hit, return `Some(ElementBounds)` with the bounds from the dump.
+/// On a miss, return `None` so the caller can fall back to
+/// `scan_session_dbus_for_element` (e.g. when the dump itself returned
+/// empty because the desktop root had no children).
+pub fn element_lookup_via_tree_dump(
+    window_id: u64,
+    role: &str,
+    name_query: &str,
+) -> Option<ElementBounds> {
+    let _ = std::hint::black_box(ELEMENT_AX_LOOKUP_V40_14_6);
+    let nodes = dump_full_tree(None);
+    for node in nodes.iter() {
+        if ax_role_matches(role, &node.role) && ax_name_matches(name_query, &node.name) {
+            return Some(ElementBounds {
+                path: ax_stamp_path(window_id, role, &node.name),
+                rect: crate::inject::grant_confirm::Rect {
+                    x: node.x,
+                    y: node.y,
+                    w: node.w,
+                    h: node.h,
+                },
+            });
+        }
+    }
+    None
+}
+
 pub fn record_bridge_click(x: f64, y: f64) {
     LAST_BRIDGE_CLICK.with(|slot| {
         *slot.borrow_mut() = Some(BridgeClick { x, y });

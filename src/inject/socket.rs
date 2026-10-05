@@ -692,11 +692,65 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 use super::atspi_ladder::AtSpiRoute;
                 match harness.route(&app_id, &action) {
                     AtSpiRoute::Element { role, query } => {
+                        // v40.14.6: prefer the AX-tree dump filter. The
+                        // dump already enumerates every published node
+                        // with bounds, so we sidestep the
+                        // xdg-desktop-portal-gtk
+                        // `impl_GetExtents: ATK_IS_COMPONENT
+                        // (user_data) failed` assertion on the desktop
+                        // root. Fall back to the scan path only when
+                        // the dump returned empty (no children).
                         if let Some(bounds) =
+                            crate::inject::atspi_ladder::element_lookup_via_tree_dump(
+                                window_id, &role, &query,
+                            )
+                        {
+                            let cx = bounds.rect.x + bounds.rect.w / 2.0;
+                            let cy = bounds.rect.y + bounds.rect.h / 2.0;
+                            let warning =
+                                crate::inject::atspi_ladder::offscreen_warning(&bounds.rect);
+                            let changed = crate::inject::atspi_ladder::element_changed_field(
+                                &bot_id,
+                                window_id,
+                                &role,
+                                &query,
+                                &bounds.path,
+                                &bounds.rect,
+                            );
+                            crate::inject::atspi_ladder::record_bridge_click(cx, cy);
+                            let _ = std::hint::black_box(
+                                crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
+                            );
+                            let _ = std::hint::black_box(
+                                crate::inject::ELEMENT_AX_LOOKUP_V40_14_6,
+                            );
+                            pointer_click(harness, &focus, Point::from((cx, cy)));
+                            let payload = format!(
+                                "{} {} {} {} {} {} {}",
+                                bounds.path,
+                                bounds.rect.x,
+                                bounds.rect.y,
+                                bounds.rect.w,
+                                bounds.rect.h,
+                                changed,
+                                warning
+                            );
+                            tracing::debug!(payload = %payload, "atspi.reply");
+                            write_reply(
+                                &mut write,
+                                &Reply::AtElementReply { payload },
+                            )
+                            .await?;
+                        } else if let Some(bounds) =
                             crate::inject::atspi_ladder::scan_session_dbus_for_element(
                                 window_id, &role, &query,
                             )
                         {
+                            // Fallback: dump returned no children — try
+                            // the scan path. Preserves the G3 evidence
+                            // path (35 nodes) for callers using
+                            // `scan_session_dbus_for_element` as a
+                            // primary path.
                             let cx = bounds.rect.x + bounds.rect.w / 2.0;
                             let cy = bounds.rect.y + bounds.rect.h / 2.0;
                             let warning =
