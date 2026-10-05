@@ -3558,3 +3558,117 @@ fn route_after_bind_is_not_canvasraw_for_atspi_strong_app() {
         "{replies:?}"
     );
 }
+
+/// v40.14.6: the new `element_lookup_via_tree_dump` helper must return
+/// `Some(ElementBounds { .. })` when a dumped-tree node matches both
+/// `role` and `name` — the hit path. Uses `set_tree_dump_override` so no
+/// real AT-SPI bus is required; matches the v40.14.3 `set_tree_dump_override`
+/// pattern from `at_tree_dump_returns_full_ax_tree`.
+#[test]
+fn live_grant_v40_14_6_element_lookup_via_tree_dump_hit() {
+    use niri::inject::atspi_ladder::{
+        element_lookup_via_tree_dump, reset_gap4_test_hooks, set_scan_override,
+        set_tree_dump_override, TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+    set_scan_override(None);
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![
+            TreeNode {
+                role: "button".into(),
+                name: "OK".into(),
+                x: 100.0,
+                y: 200.0,
+                w: 80.0,
+                h: 32.0,
+                visible: true,
+                children: vec![],
+            },
+            TreeNode {
+                role: "button".into(),
+                name: "Cancel".into(),
+                x: 200.0,
+                y: 200.0,
+                w: 80.0,
+                h: 32.0,
+                visible: true,
+                children: vec![],
+            },
+            TreeNode {
+                role: "label".into(),
+                name: "Volume".into(),
+                x: 10.0,
+                y: 10.0,
+                w: 100.0,
+                h: 16.0,
+                visible: true,
+                children: vec![],
+            },
+        ]
+    }
+    set_tree_dump_override(Some(dump));
+
+    let found = element_lookup_via_tree_dump(42, "button", "OK");
+    let b = found.expect("expected Some for button/OK match");
+    assert_eq!(b.rect.x, 100.0);
+    assert_eq!(b.rect.y, 200.0);
+    assert_eq!(b.rect.w, 80.0);
+    assert_eq!(b.rect.h, 32.0);
+    assert!(b.path.contains("atspi://42"), "path: {}", b.path);
+    assert!(b.path.contains("button"), "path: {}", b.path);
+    assert!(b.path.contains("OK"), "path: {}", b.path);
+
+    set_tree_dump_override(None);
+    set_scan_override(None);
+    reset_gap4_test_hooks();
+}
+
+/// v40.14.6: the new `element_lookup_via_tree_dump` helper must return
+/// `None` when no node in the dumped tree matches the queried
+/// `(role, name)` — the miss path. The caller is expected to fall back
+/// to `scan_session_dbus_for_element` on this `None`.
+#[test]
+fn live_grant_v40_14_6_element_lookup_via_tree_dump_miss() {
+    use niri::inject::atspi_ladder::{
+        element_lookup_via_tree_dump, reset_gap4_test_hooks, set_scan_override,
+        set_tree_dump_override, TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+    set_scan_override(None);
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![
+            TreeNode {
+                role: "button".into(),
+                name: "OK".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+                visible: true,
+                children: vec![],
+            },
+            TreeNode {
+                role: "label".into(),
+                name: "Volume".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+                visible: true,
+                children: vec![],
+            },
+        ]
+    }
+    set_tree_dump_override(Some(dump));
+
+    let found = element_lookup_via_tree_dump(42, "button", "Mute");
+    assert!(found.is_none(), "expected None for non-existent button/Mute");
+
+    set_tree_dump_override(None);
+    set_scan_override(None);
+    reset_gap4_test_hooks();
+}
