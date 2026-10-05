@@ -3672,3 +3672,137 @@ fn live_grant_v40_14_6_element_lookup_via_tree_dump_miss() {
     set_scan_override(None);
     reset_gap4_test_hooks();
 }
+
+#[test]
+fn tree_dump_walks_past_depth_10_to_find_stream_rows() {
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_tree_dump_override, TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+
+    fn nest_to_depth(leaf_depth: usize, leaf: TreeNode) -> TreeNode {
+        let mut node = leaf;
+        for i in 0..leaf_depth {
+            node = TreeNode {
+                role: "panel".into(),
+                name: format!("level-{i}"),
+                x: 1.0,
+                y: 1.0,
+                w: 1.0,
+                h: 1.0,
+                visible: true,
+                children: vec![node],
+            };
+        }
+        node
+    }
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        let mute = TreeNode {
+            role: "push button".into(),
+            name: "Mute audio".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 40.0,
+            h: 16.0,
+            visible: true,
+            children: vec![],
+        };
+        let too_deep = TreeNode {
+            role: "push button".into(),
+            name: "TOO_DEEP_SENTINEL".into(),
+            x: 11.0,
+            y: 21.0,
+            w: 41.0,
+            h: 17.0,
+            visible: true,
+            children: vec![],
+        };
+        vec![
+            nest_to_depth(15, mute),
+            nest_to_depth(21, too_deep),
+        ]
+    }
+
+    set_tree_dump_override(Some(dump));
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    let req = format!("{}BIND 42\nAT_TREE_REQ 42\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    reset_gap4_test_hooks();
+    assert!(
+        replies.contains("Mute audio"),
+        "depth-15 Mute audio missing from dump: {replies:?}"
+    );
+    assert!(
+        !replies.contains("TOO_DEEP_SENTINEL"),
+        "depth-21 sentinel must be dropped by cap 20: {replies:?}"
+    );
+}
+
+#[test]
+fn name_match_substring_misses_with_exact_query_returns_empty() {
+    use niri::inject::atspi_ladder::{
+        element_lookup_via_tree_dump, reset_gap4_test_hooks, set_tree_dump_override, TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "push button".into(),
+            name: "Mute audio".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 40.0,
+            h: 16.0,
+            visible: true,
+            children: vec![],
+        }]
+    }
+
+    set_tree_dump_override(Some(dump));
+    let mute = element_lookup_via_tree_dump(42, "button", "Mute");
+    assert!(
+        mute.is_some(),
+        "substring query Mute must match Mute audio"
+    );
+    let mute_ci = element_lookup_via_tree_dump(42, "button", "mute");
+    assert!(
+        mute_ci.is_some(),
+        "case-insensitive query mute must match Mute audio"
+    );
+    reset_gap4_test_hooks();
+}
+
+#[test]
+fn name_match_substring_misses_completely_unrelated_query() {
+    use niri::inject::atspi_ladder::{
+        element_lookup_via_tree_dump, reset_gap4_test_hooks, set_tree_dump_override, TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "push button".into(),
+            name: "Mute audio".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 40.0,
+            h: 16.0,
+            visible: true,
+            children: vec![],
+        }]
+    }
+
+    set_tree_dump_override(Some(dump));
+    let miss = element_lookup_via_tree_dump(42, "button", "ZZZNOMATCHZZZ");
+    assert!(
+        miss.is_none(),
+        "unrelated query must be None, got {miss:?}"
+    );
+    reset_gap4_test_hooks();
+}
