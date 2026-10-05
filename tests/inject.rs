@@ -3806,3 +3806,175 @@ fn name_match_substring_misses_completely_unrelated_query() {
     );
     reset_gap4_test_hooks();
 }
+
+
+/// v40.14.8: unknown-catalog app_ids (pavucontrol) used to fail-close in
+/// `atspi_ladder::route` as CanvasRaw before any tree-dump lookup. DispatchHarness
+/// now promotes LabelClick/EditInsert CanvasRaw to Element so the socket dump-first
+/// arm can return bounds from `element_lookup_via_tree_dump`.
+#[test]
+fn at_element_req_returns_valid_bounds_for_known_element() {
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_scan_override, set_tree_dump_override, ElementBounds, TreeNode,
+    };
+    use niri::inject::grant_confirm::Rect;
+
+    reset_gap4_test_hooks();
+
+    fn scan(_window_id: u64, _role: &str, _name_query: &str) -> Option<ElementBounds> {
+        Some(ElementBounds {
+            path: "atspi://scan-sentinel".into(),
+            rect: Rect {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0,
+            },
+        })
+    }
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "push button".into(),
+            name: "Mute audio".into(),
+            x: 111.0,
+            y: 222.0,
+            w: 33.0,
+            h: 44.0,
+            visible: true,
+            children: vec![],
+        }]
+    }
+    set_scan_override(Some(scan));
+    set_tree_dump_override(Some(dump));
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    let map = Arc::new(Mutex::new(HashMap::new()));
+    map.lock()
+        .unwrap()
+        .insert(KNOWN_WINDOW, "org.pulseaudio.pavucontrol".into());
+    state.set_app_id_map(map);
+    state.set_bound_app_id("org.pulseaudio.pavucontrol");
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button Mute\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    reset_gap4_test_hooks();
+    assert!(
+        replies.contains(
+            "AT_ELEMENT_REPLY atspi://42#button:Mute_audio 111 222 33 44 FULL none"
+        ),
+        "{replies:?}"
+    );
+    assert!(
+        !replies.contains("BACKGROUND_UNAVAILABLE"),
+        "{replies:?}"
+    );
+    assert!(!replies.contains("1 2 3 4"), "{replies:?}");
+}
+
+/// v40.14.8: AT_ELEMENT_REQ bounds for a dump-known node must match the
+/// AT_TREE_REQ body for the same node (stand-in for the tree dump CLI).
+#[test]
+fn at_element_req_bounds_match_tree_dump() {
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_scan_override, set_tree_dump_override, ElementBounds, TreeNode,
+    };
+    use niri::inject::grant_confirm::Rect;
+
+    reset_gap4_test_hooks();
+
+    fn scan(_window_id: u64, _role: &str, _name_query: &str) -> Option<ElementBounds> {
+        Some(ElementBounds {
+            path: "atspi://scan-sentinel".into(),
+            rect: Rect {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0,
+            },
+        })
+    }
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "push button".into(),
+            name: "Mute audio".into(),
+            x: 111.0,
+            y: 222.0,
+            w: 33.0,
+            h: 44.0,
+            visible: true,
+            children: vec![],
+        }]
+    }
+    set_scan_override(Some(scan));
+    set_tree_dump_override(Some(dump));
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    let map = Arc::new(Mutex::new(HashMap::new()));
+    map.lock()
+        .unwrap()
+        .insert(KNOWN_WINDOW, "org.pulseaudio.pavucontrol".into());
+    state.set_app_id_map(map);
+    state.set_bound_app_id("org.pulseaudio.pavucontrol");
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_TREE_REQ {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button Mute\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    reset_gap4_test_hooks();
+    assert!(
+        replies.contains("[push button] \"Mute audio\" 111 222 33 44 true"),
+        "{replies:?}"
+    );
+    assert!(replies.contains("111 222 33 44"), "{replies:?}");
+    assert!(
+        !replies.contains("BACKGROUND_UNAVAILABLE"),
+        "{replies:?}"
+    );
+    assert!(!replies.contains("1 2 3 4"), "{replies:?}");
+}
