@@ -118,6 +118,10 @@ static KEY_DELIVERY_V40_9_DISPATCH_IDENT: &[u8] =
     b"\x01KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF\x01";
 
 #[used]
+static ELEMENT_REQ_VIA_TREE_DUMP_BYPASS_PORTAL_GETEXTENTS: &[u8] =
+    b"\x01ELEMENT_REQ_VIA_TREE_DUMP_BYPASS_PORTAL_GETEXTENTS\x01";
+
+#[used]
 static AT_SPI_BRIDGE_BOUND_APP_ID_DISPATCH_IDENT: &[u8] =
     b"\x01AT_SPI_BRIDGE_BOUND_APP_ID\x01";
 
@@ -822,7 +826,32 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         app_id: &str,
         action: &crate::inject::atspi_ladder::AtSpiAction,
     ) -> crate::inject::atspi_ladder::AtSpiRoute {
-        crate::inject::atspi_ladder::route(app_id, action)
+        use crate::inject::atspi_ladder::{AtSpiAction, AtSpiRoute};
+        let routed = crate::inject::atspi_ladder::route(app_id, action);
+        match (&routed, action) {
+            (
+                AtSpiRoute::CanvasRaw { .. },
+                AtSpiAction::LabelClick {
+                    acc_role,
+                    name_query,
+                },
+            )
+            | (
+                AtSpiRoute::CanvasRaw { .. },
+                AtSpiAction::EditInsert {
+                    acc_role,
+                    name_query,
+                    ..
+                },
+            ) => {
+                let _ = std::hint::black_box(ELEMENT_REQ_VIA_TREE_DUMP_BYPASS_PORTAL_GETEXTENTS);
+                AtSpiRoute::Element {
+                    role: acc_role.clone(),
+                    query: name_query.clone(),
+                }
+            }
+            _ => routed,
+        }
     }
 
     fn app_id_for(&self, window_id: u64) -> Option<String> {
