@@ -63,6 +63,14 @@ pub static _OVERLAY_CLIENT_DRAW_SHM_POOL_RESIZE_ON_SIZE_CHANGE_BYTES: &[u8] =
 #[used]
 pub static SCT_CONNECTION_LIFETIME_V40_14_9: &[u8] = b"SCT_CONNECTION_LIFETIME_V40_14_9\0";
 
+/// Ident marker for the v40.14.9 overlay-client keepalive fix (Fix-A).
+/// The SCT `Connection` is preserved for the grant lifetime by holding an
+/// `SctJoin` (JoinHandle + wakeup + shutdown flag) in `OverlayHandle`; drop
+/// signals shutdown, wakes the thread, and joins. `#[used]` + `black_box`
+/// below keep this literal in the release ELF past lld's gc.
+#[used]
+pub static OVERLAY_CLIENT_KEEPALIVE_V40_14_9: &[u8] = b"OVERLAY_CLIENT_KEEPALIVE_V40_14_9\0";
+
 /// Sentinel that `spawn_overlay_client` started the SCT thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverlayClientHandle {
@@ -116,6 +124,7 @@ pub fn spawn_overlay_client(
         Ok(join) => {
             let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED);
             let _ = std::hint::black_box(SCT_CONNECTION_LIFETIME_V40_14_9);
+            let _ = std::hint::black_box(OVERLAY_CLIENT_KEEPALIVE_V40_14_9);
             (
                 OverlayClientHandle { is_spawned: true },
                 Some(Arc::new(SctJoin {
