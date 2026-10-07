@@ -5,8 +5,13 @@
 //! (unit tests run without a compositor).
 
 use std::ffi::OsStr;
+use std::io::Write;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 use smithay_client_toolkit::reexports::client::{
     globals::registry_queue_init,
@@ -55,24 +60,73 @@ pub const OVERLAY_CLIENT_DRAW_SHM_POOL_RESIZE_ON_SIZE_CHANGE: &str =
 pub static _OVERLAY_CLIENT_DRAW_SHM_POOL_RESIZE_ON_SIZE_CHANGE_BYTES: &[u8] =
     b"v40.5a.1_overlay_client_draw_shm_pool_resize_on_size_change\0";
 
+#[used]
+pub static SCT_CONNECTION_LIFETIME_V40_14_9: &[u8] = b"SCT_CONNECTION_LIFETIME_V40_14_9\0";
+
 /// Sentinel that `spawn_overlay_client` started the SCT thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverlayClientHandle {
     pub is_spawned: bool,
 }
 
-/// Spawn a dedicated `niri-overlay-client` thread. The handle is returned
-/// immediately; connect/bind happens inside the thread and must not panic.
-pub fn spawn_overlay_client(socket_name: &OsStr, window_id: u64) -> OverlayClientHandle {
-    let socket_name = socket_name.to_os_string();
-    let spawned = std::thread::Builder::new()
-        .name("niri-overlay-client".into())
-        .spawn(move || run_overlay_client(socket_name, window_id))
-        .is_ok();
-    if spawned {
-        let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED);
+/// Owns the overlay-client thread. Last `Arc` drop signals shutdown and joins.
+#[derive(Debug)]
+pub struct SctJoin {
+    join: Mutex<Option<JoinHandle<()>>>,
+    shutdown: Arc<AtomicBool>,
+    wakeup_tx: UnixStream,
+}
+
+impl Drop for SctJoin {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        let _ = self.wakeup_tx.write(&[1u8]);
+        if let Some(handle) = self.join.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let _ = handle.join();
+        }
     }
-    OverlayClientHandle { is_spawned: spawned }
+}
+
+/// Spawn a dedicated overlay-client thread. The handle is returned
+/// immediately; connect/bind happens inside the thread and must not panic.
+/// The `JoinHandle` is stored in [`SctJoin`] so the Wayland `Connection`
+/// lives until the last `Arc<SctJoin>` is dropped.
+pub fn spawn_overlay_client(
+    socket_name: &OsStr,
+    window_id: u64,
+) -> (OverlayClientHandle, Option<Arc<SctJoin>>) {
+    let socket_name = socket_name.to_os_string();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let (wakeup_rx, wakeup_tx) = match UnixStream::pair() {
+        Ok(pair) => pair,
+        Err(_) => {
+            return (
+                OverlayClientHandle { is_spawned: false },
+                None,
+            );
+        }
+    };
+    let shutdown_for_thread = Arc::clone(&shutdown);
+    let spawned = std::thread::Builder::new()
+        .name("niri-overlay-cl".into())
+        .spawn(move || {
+            run_overlay_client(socket_name, window_id, shutdown_for_thread, wakeup_rx)
+        });
+    match spawned {
+        Ok(join) => {
+            let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED);
+            let _ = std::hint::black_box(SCT_CONNECTION_LIFETIME_V40_14_9);
+            (
+                OverlayClientHandle { is_spawned: true },
+                Some(Arc::new(SctJoin {
+                    join: Mutex::new(Some(join)),
+                    shutdown,
+                    wakeup_tx,
+                })),
+            )
+        }
+        Err(_) => (OverlayClientHandle { is_spawned: false }, None),
+    }
 }
 
 fn connect(socket_name: &OsStr) -> Result<Connection, String> {
@@ -97,12 +151,39 @@ fn connect(socket_name: &OsStr) -> Result<Connection, String> {
     Err(format!("cannot connect to {}", path.display()))
 }
 
-fn run_overlay_client(socket_name: std::ffi::OsString, window_id: u64) {
+fn wait_for_shutdown(wakeup_rx: &UnixStream, shutdown: &AtomicBool) {
+    while !shutdown.load(Ordering::SeqCst) {
+        let mut fds = [libc::pollfd {
+            fd: wakeup_rx.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), 1, -1) };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            eprintln!("niri-overlay-client: poll: {err}");
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+    }
+}
+
+fn run_overlay_client(
+    socket_name: std::ffi::OsString,
+    window_id: u64,
+    shutdown: Arc<AtomicBool>,
+    wakeup_rx: UnixStream,
+) {
     let _ = std::hint::black_box(window_id);
     let conn = match connect(&socket_name) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("niri-overlay-client: {e}");
+            wait_for_shutdown(&wakeup_rx, &shutdown);
             return;
         }
     };
@@ -110,6 +191,7 @@ fn run_overlay_client(socket_name: std::ffi::OsString, window_id: u64) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("niri-overlay-client: registry_queue_init: {e}");
+            wait_for_shutdown(&wakeup_rx, &shutdown);
             return;
         }
     };
@@ -118,6 +200,7 @@ fn run_overlay_client(socket_name: std::ffi::OsString, window_id: u64) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("niri-overlay-client: wl_compositor bind: {e}");
+            wait_for_shutdown(&wakeup_rx, &shutdown);
             return;
         }
     };
@@ -125,6 +208,7 @@ fn run_overlay_client(socket_name: std::ffi::OsString, window_id: u64) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("niri-overlay-client: layer shell bind: {e}");
+            wait_for_shutdown(&wakeup_rx, &shutdown);
             return;
         }
     };
@@ -132,6 +216,7 @@ fn run_overlay_client(socket_name: std::ffi::OsString, window_id: u64) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("niri-overlay-client: wl_shm bind: {e}");
+            wait_for_shutdown(&wakeup_rx, &shutdown);
             return;
         }
     };
@@ -150,6 +235,7 @@ fn run_overlay_client(socket_name: std::ffi::OsString, window_id: u64) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("niri-overlay-client: SlotPool: {e}");
+            wait_for_shutdown(&wakeup_rx, &shutdown);
             return;
         }
     };
@@ -159,7 +245,6 @@ fn run_overlay_client(socket_name: std::ffi::OsString, window_id: u64) {
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
         shm,
-        exit: false,
         first_configure: true,
         pool,
         width: 2560,
@@ -171,22 +256,84 @@ fn run_overlay_client(socket_name: std::ffi::OsString, window_id: u64) {
         pointer: None,
     };
     loop {
-        if let Err(e) = event_queue.blocking_dispatch(&mut state) {
-            eprintln!("niri-overlay-client: dispatch: {e}");
+        if shutdown.load(Ordering::SeqCst) {
             break;
         }
-        if state.exit {
+        if let Err(e) = event_queue.dispatch_pending(&mut state) {
+            eprintln!("niri-overlay-client: dispatch: {e}");
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            wait_for_shutdown(&wakeup_rx, &shutdown);
+            continue;
+        }
+        if let Err(e) = event_queue.flush() {
+            eprintln!("niri-overlay-client: flush: {e}");
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            wait_for_shutdown(&wakeup_rx, &shutdown);
+            continue;
+        }
+        let Some(guard) = event_queue.prepare_read() else {
+            continue;
+        };
+        let mut fds = [
+            libc::pollfd {
+                fd: guard.connection_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: wakeup_rx.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+        if shutdown.load(Ordering::SeqCst) || fds[1].revents != 0 {
             break;
+        }
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                eprintln!("niri-overlay-client: poll: {err}");
+            }
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            continue;
+        }
+        match guard.read() {
+            Ok(_) => {
+                if let Err(e) = event_queue.dispatch_pending(&mut state) {
+                    eprintln!("niri-overlay-client: dispatch: {e}");
+                    if shutdown.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    wait_for_shutdown(&wakeup_rx, &shutdown);
+                    continue;
+                }
+            }
+            Err(e) => {
+                eprintln!("niri-overlay-client: read: {e}");
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                wait_for_shutdown(&wakeup_rx, &shutdown);
+                continue;
+            }
         }
     }
+    let _ = conn;
 }
+
 
 struct SimpleLayer {
     registry_state: RegistryState,
     seat_state: SeatState,
     output_state: OutputState,
     shm: Shm,
-    exit: bool,
     first_configure: bool,
     pool: SlotPool,
     width: u32,
@@ -343,7 +490,7 @@ impl OutputHandler for SimpleLayer {
 }
 
 impl LayerShellHandler for SimpleLayer {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) { self.exit = true; }
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {}
     fn configure(
         &mut self, _: &Connection, qh: &QueueHandle<Self>, _: &LayerSurface,
         configure: LayerSurfaceConfigure, _: u32,
