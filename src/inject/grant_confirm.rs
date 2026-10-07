@@ -45,9 +45,9 @@ use crate::inject::app_catalog;
 use crate::inject::grants::GrantMap;
 
 #[path = "overlay_client.rs"]
-mod overlay_client;
+pub mod overlay_client;
 pub use overlay_client::{
-    OverlayClientHandle, GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED,
+    OverlayClientHandle, SctJoin, GRANT_CONFIRM_OVERLAY_SELF_CONNECT_THREAD_SPAWNED,
 };
 
 /// Slot width for Grant / Deny buttons in the data-structure surface.
@@ -636,7 +636,7 @@ impl Default for OverlayLayerConfig {
 /// In-process handle to the grant-confirm bar overlay (NOT a `WlLayer`).
 ///
 /// `shm_buffer` is laid out as BGRA bytes, `width * height * 4` long.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct OverlayHandle {
     pub window_id: u64,
     pub config: OverlayLayerConfig,
@@ -644,6 +644,18 @@ pub struct OverlayHandle {
     pub painted: bool,
     /// v38 — `Some` after `spawn_overlay_client` when a socket name was given.
     pub client_handle: Option<OverlayClientHandle>,
+    /// v40.14.9 — last `Arc` drop signals the SCT thread to exit and joins it.
+    pub sct_join_handle: Option<std::sync::Arc<overlay_client::SctJoin>>,
+}
+
+impl PartialEq for OverlayHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.window_id == other.window_id
+            && self.config == other.config
+            && self.shm_buffer == other.shm_buffer
+            && self.painted == other.painted
+            && self.client_handle == other.client_handle
+    }
 }
 
 impl OverlayHandle {
@@ -653,14 +665,20 @@ impl OverlayHandle {
         let shm_buffer = vec![0u8; (config.width * config.height * 4) as usize];
         let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED);
         let _ = std::hint::black_box(GRANT_CONFIRM_OVERLAY_BUFFER_SHM_ALLOCATED);
-        let client_handle =
-            socket_name.map(|name| overlay_client::spawn_overlay_client(name, window_id));
+        let (client_handle, sct_join_handle) = match socket_name {
+            Some(name) => {
+                let (handle, join) = overlay_client::spawn_overlay_client(name, window_id);
+                (Some(handle), join)
+            }
+            None => (None, None),
+        };
         Self {
             window_id,
             config,
             shm_buffer,
             painted: false,
             client_handle,
+            sct_join_handle,
         }
     }
 

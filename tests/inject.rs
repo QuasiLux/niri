@@ -2649,6 +2649,57 @@ fn live_grant_v38_overlay_client_handle_set_when_registered() {
 }
 
 #[test]
+fn sct_connection_alive_for_grant_lifetime() {
+    let state = niri::inject::GrantConfirmState::new();
+    state.set_socket_name_for_test(std::ffi::OsString::from(
+        "/tmp/qlux-v40-14-9-no-such-socket",
+    ));
+    let handle = state.register_overlay(7, true);
+    assert!(handle.sct_join_handle.is_some());
+    assert!(handle.client_handle.is_some());
+
+    let comm_equals = |want: &str| -> bool {
+        let Ok(dir) = std::fs::read_dir("/proc/self/task") else {
+            return false;
+        };
+        dir.filter_map(|e| e.ok()).any(|e| {
+            std::fs::read_to_string(e.path().join("comm"))
+                .ok()
+                .is_some_and(|s| s.trim_end_matches('\n') == want)
+        })
+    };
+
+    let appear_deadline = Instant::now() + Duration::from_secs(5);
+    while !comm_equals("niri-overlay-cl") {
+        assert!(
+            Instant::now() < appear_deadline,
+            "niri-overlay-cl must appear in /proc/self/task/*/comm while OverlayHandle is alive"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let ident = niri::inject::overlay_client::SCT_CONNECTION_LIFETIME_V40_14_9;
+    assert!(
+        std::str::from_utf8(ident)
+            .unwrap_or("")
+            .contains("SCT_CONNECTION_LIFETIME_V40_14_9")
+    );
+
+    drop(handle);
+    let removed = state.destroy_overlay(7);
+    drop(removed);
+
+    let gone_deadline = Instant::now() + Duration::from_secs(5);
+    while comm_equals("niri-overlay-cl") {
+        assert!(
+            Instant::now() < gone_deadline,
+            "niri-overlay-cl must leave /proc/self/task/*/comm after last OverlayHandle drop"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn live_grant_v39_socket_name_set_at_niri_new() {
     // v39: instantiate the dispatch state (the worker-thread snapshot that
     // owns GrantConfirmState — `DispatchState::new` mirrors `Niri::new` for
