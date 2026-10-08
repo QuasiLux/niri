@@ -272,10 +272,29 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static FRONTMOST_OVERRIDE: std::cell::RefCell<Option<(u64, String)>> =
         const { std::cell::RefCell::new(None) };
+    static EXTENTS_OVERRIDE: std::cell::RefCell<
+        Option<fn(u32) -> Option<(i32, i32, i32, i32)>>,
+    > = const { std::cell::RefCell::new(None) };
+    static PREV_TREE_PATHS: std::cell::RefCell<Option<std::collections::HashSet<String>>> =
+        const { std::cell::RefCell::new(None) };
+    static LAST_TREE_DIFF_TRAILER: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
 }
 
 pub fn set_tree_dump_override(f: Option<fn(Option<&str>) -> Vec<TreeNode>>) {
     TREE_DUMP_OVERRIDE.with(|slot| *slot.borrow_mut() = f);
+}
+
+pub fn set_extents_override(f: Option<fn(coord_type: u32) -> Option<(i32, i32, i32, i32)>>) {
+    EXTENTS_OVERRIDE.with(|slot| *slot.borrow_mut() = f);
+}
+
+fn extents_override_fn() -> Option<fn(u32) -> Option<(i32, i32, i32, i32)>> {
+    EXTENTS_OVERRIDE.with(|slot| *slot.borrow())
+}
+
+pub fn last_tree_diff_trailer() -> String {
+    LAST_TREE_DIFF_TRAILER.with(|slot| slot.borrow().clone())
 }
 
 /// v40.14.7: pavucontrol Mute is an AT-SPI node at depth 15.
@@ -287,14 +306,105 @@ pub const TREE_WALK_MAX_DEPTH: usize = 20;
 #[used]
 static DEEP_TREE_WALK_V40_14_7_IDENT: &[u8] = b"\x01DEEP_TREE_WALK_V40_14_7\x01";
 
+#[used]
+static GET_EXTENTS_WINDOW_WITH_FALLBACK_V40_14_12: &[u8] =
+    b"\x01GET_EXTENTS_WINDOW_WITH_FALLBACK_V40_14_12\x01";
+#[used]
+static OFF_SCREEN_DETECTION_V40_14_12: &[u8] =
+    b"\x01OFF_SCREEN_DETECTION_V40_14_12\x01";
+#[used]
+static ELEMENT_DIFF_LIST_V40_14_12: &[u8] =
+    b"\x01ELEMENT_DIFF_LIST_V40_14_12\x01";
+
 pub fn dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
     let _ = std::hint::black_box(DEEP_TREE_WALK_V40_14_7_IDENT);
     let hook = TREE_DUMP_OVERRIDE.with(|slot| *slot.borrow());
-    let roots = match hook {
+    let mut roots = match hook {
         Some(f) => f(root_path),
         None => real_dump_full_tree(root_path),
     };
-    flatten_preorder(roots)
+    if let Some(get) = extents_override_fn() {
+        apply_extents_override(&mut roots, get);
+    }
+    let nodes = flatten_preorder(roots);
+    record_tree_diff(&nodes);
+    nodes
+}
+
+/// Coord type 1 (Window) first; type 0 (Screen) if Window is missing or origin-zero.
+pub fn extents_with_fallback<F>(get: F) -> Option<(i32, i32, i32, i32)>
+where
+    F: Fn(u32) -> Option<(i32, i32, i32, i32)>,
+{
+    let _ = std::hint::black_box(GET_EXTENTS_WINDOW_WITH_FALLBACK_V40_14_12);
+    match get(1) {
+        Some((x, y, w, h)) if x != 0 || y != 0 => Some((x, y, w, h)),
+        type1 => match get(0) {
+            Some(t0) => Some(t0),
+            None => type1,
+        },
+    }
+}
+
+fn apply_extents_override(
+    nodes: &mut [TreeNode],
+    get: fn(u32) -> Option<(i32, i32, i32, i32)>,
+) {
+    for node in nodes.iter_mut() {
+        let (x, y, w, h) = match extents_with_fallback(get) {
+            Some((x, y, w, h)) => (x as f64, y as f64, w as f64, h as f64),
+            None => (0.0, 0.0, 0.0, 0.0),
+        };
+        node.x = x;
+        node.y = y;
+        node.w = w;
+        node.h = h;
+        apply_extents_override(&mut node.children, get);
+    }
+}
+
+fn diff_path_key(role: &str, name: &str) -> String {
+    let name: String = name
+        .chars()
+        .map(|c| if c.is_ascii_whitespace() { '_' } else { c })
+        .collect();
+    format!("{role}:{name}")
+}
+
+fn record_tree_diff(nodes: &[TreeNode]) {
+    let trailer = build_tree_diff_trailer(nodes);
+    LAST_TREE_DIFF_TRAILER.with(|slot| *slot.borrow_mut() = trailer);
+}
+
+fn build_tree_diff_trailer(nodes: &[TreeNode]) -> String {
+    let _ = std::hint::black_box(ELEMENT_DIFF_LIST_V40_14_12);
+    let mut current = std::collections::HashSet::new();
+    for n in nodes {
+        current.insert(diff_path_key(&n.role, &n.name));
+    }
+    let trailer = PREV_TREE_PATHS.with(|slot| match slot.borrow().as_ref() {
+        None => String::new(),
+        Some(prev) => {
+            let mut lines = Vec::new();
+            let mut added: Vec<_> = current.difference(prev).cloned().collect();
+            added.sort();
+            for p in added {
+                lines.push(format!("CHANGED: 1 {p}"));
+            }
+            let mut removed: Vec<_> = prev.difference(&current).cloned().collect();
+            removed.sort();
+            for p in removed {
+                lines.push(format!("CHANGED: 1 -{p}"));
+            }
+            if lines.is_empty() {
+                String::new()
+            } else {
+                lines.join("\n") + "\n"
+            }
+        }
+    });
+    PREV_TREE_PATHS.with(|slot| *slot.borrow_mut() = Some(current));
+    trailer
 }
 
 fn flatten_preorder(nodes: Vec<TreeNode>) -> Vec<TreeNode> {
@@ -640,14 +750,24 @@ mod real_bus {
         dest: &str,
         path: &str,
     ) -> (f64, f64, f64, f64) {
-        let Ok(message) =
-            conn.call_method(Some(dest), path, Some(COMPONENT), "GetExtents", &0u32)
-        else {
-            return (0.0, 0.0, 0.0, 0.0);
+        let tuple = if let Some(over) = super::extents_override_fn() {
+            super::extents_with_fallback(over)
+        } else {
+            super::extents_with_fallback(|coord: u32| {
+                let Ok(message) =
+                    conn.call_method(Some(dest), path, Some(COMPONENT), "GetExtents", &coord)
+                else {
+                    return None;
+                };
+                match message.body().deserialize::<(i32, i32, i32, i32)>() {
+                    Ok(t) => Some(t),
+                    Err(_) => None,
+                }
+            })
         };
-        match message.body().deserialize::<(i32, i32, i32, i32)>() {
-            Ok((x, y, w, h)) => (x as f64, y as f64, w as f64, h as f64),
-            Err(_) => (0.0, 0.0, 0.0, 0.0),
+        match tuple {
+            Some((x, y, w, h)) => (x as f64, y as f64, w as f64, h as f64),
+            None => (0.0, 0.0, 0.0, 0.0),
         }
     }
 
@@ -809,10 +929,25 @@ mod real_bus {
 pub fn format_tree_reply(nodes: &[TreeNode]) -> String {
     let mut body = format!("{}\n", nodes.len());
     for n in nodes {
+        let rect = crate::inject::grant_confirm::Rect {
+            x: n.x,
+            y: n.y,
+            w: n.w,
+            h: n.h,
+        };
+        let occ = if offscreen_warning(&rect) == "<OCCLUDED>" {
+            " <OCCLUDED>"
+        } else {
+            ""
+        };
         body.push_str(&format!(
-            "[{}] \"{}\" {} {} {} {} {}\0\n",
-            n.role, n.name, n.x, n.y, n.w, n.h, n.visible
+            "[{}] \"{}\" {} {} {} {} {}{}\0\n",
+            n.role, n.name, n.x, n.y, n.w, n.h, n.visible, occ
         ));
+    }
+    let trailer = last_tree_diff_trailer();
+    if !trailer.is_empty() {
+        body.push_str(&trailer);
     }
     body
 }
@@ -902,11 +1037,12 @@ fn rects_intersect(
 }
 
 pub fn offscreen_warning(rect: &crate::inject::grant_confirm::Rect) -> &'static str {
+    let _ = std::hint::black_box(OFF_SCREEN_DETECTION_V40_14_12);
     OUTPUT_RECTS.with(|slot| match slot.borrow().as_ref() {
         None => "none",
         Some(outputs) => {
             if !outputs.iter().any(|o| rects_intersect(rect, o)) {
-                return "<OFFSCREEN>";
+                return "<OCCLUDED>";
             }
             let cx = rect.x + rect.w / 2.0;
             let cy = rect.y + rect.h / 2.0;
@@ -940,8 +1076,11 @@ pub fn frontmost_or_echo(bind_wid: u64, app_id: Option<&str>) -> (u64, String) {
 
 pub fn reset_gap4_test_hooks() {
     set_tree_dump_override(None);
+    set_extents_override(None);
     set_output_rects(None);
     set_frontmost_override(None);
     set_focus_gen(0);
     clear_tree_cache();
+    PREV_TREE_PATHS.with(|slot| *slot.borrow_mut() = None);
+    LAST_TREE_DIFF_TRAILER.with(|slot| slot.borrow_mut().clear());
 }

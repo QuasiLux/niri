@@ -725,7 +725,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 crate::inject::ELEMENT_AX_LOOKUP_V40_14_6,
                             );
                             pointer_click(harness, &focus, Point::from((cx, cy)));
-                            let payload = format!(
+                            let mut payload = format!(
                                 "{} {} {} {} {} {} {}",
                                 bounds.path,
                                 bounds.rect.x,
@@ -735,6 +735,12 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 changed,
                                 warning
                             );
+                            let trailer =
+                                crate::inject::atspi_ladder::last_tree_diff_trailer();
+                            if !trailer.is_empty() {
+                                payload.push('\n');
+                                payload.push_str(&trailer);
+                            }
                             tracing::debug!(payload = %payload, "atspi.reply");
                             write_reply(
                                 &mut write,
@@ -768,7 +774,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
                             );
                             pointer_click(harness, &focus, Point::from((cx, cy)));
-                            let payload = format!(
+                            let mut payload = format!(
                                 "{} {} {} {} {} {} {}",
                                 bounds.path,
                                 bounds.rect.x,
@@ -778,6 +784,12 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 changed,
                                 warning
                             );
+                            let trailer =
+                                crate::inject::atspi_ladder::last_tree_diff_trailer();
+                            if !trailer.is_empty() {
+                                payload.push('\n');
+                                payload.push_str(&trailer);
+                            }
                             tracing::debug!(payload = %payload, "atspi.reply");
                             write_reply(
                                 &mut write,
