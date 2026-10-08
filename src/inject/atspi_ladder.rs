@@ -275,10 +275,32 @@ thread_local! {
     static EXTENTS_OVERRIDE: std::cell::RefCell<
         Option<fn(u32) -> Option<(i32, i32, i32, i32)>>,
     > = const { std::cell::RefCell::new(None) };
-    static PREV_TREE_PATHS: std::cell::RefCell<Option<std::collections::HashSet<String>>> =
-        const { std::cell::RefCell::new(None) };
-    static LAST_TREE_DIFF_TRAILER: std::cell::RefCell<String> =
-        const { std::cell::RefCell::new(String::new()) };
+}
+
+struct BotDiffState {
+    prev: Option<std::collections::HashSet<String>>,
+    trailer: String,
+}
+
+#[used]
+static DIFF_STATE_PER_BOT: &[u8] = b"\x01DIFF_STATE_PER_BOT\x01";
+
+static DIFF_STATE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, BotDiffState>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn diff_state_key() -> String {
+    TREE_DUMP_OVERRIDE.with(|slot| {
+        if slot.borrow().is_some() {
+            format!("test:{:?}", std::thread::current().id())
+        } else {
+            "cua-bot".to_string()
+        }
+    })
+}
+
+fn lock_diff_state() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, BotDiffState>> {
+    DIFF_STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub fn set_tree_dump_override(f: Option<fn(Option<&str>) -> Vec<TreeNode>>) {
@@ -294,7 +316,11 @@ fn extents_override_fn() -> Option<fn(u32) -> Option<(i32, i32, i32, i32)>> {
 }
 
 pub fn last_tree_diff_trailer() -> String {
-    LAST_TREE_DIFF_TRAILER.with(|slot| slot.borrow().clone())
+    let key = diff_state_key();
+    lock_diff_state()
+        .get(&key)
+        .map(|s| s.trailer.clone())
+        .unwrap_or_default()
 }
 
 /// v40.14.7: pavucontrol Mute is an AT-SPI node at depth 15.
@@ -315,6 +341,13 @@ static OFF_SCREEN_DETECTION_V40_14_12: &[u8] =
 #[used]
 static ELEMENT_DIFF_LIST_V40_14_12: &[u8] =
     b"\x01ELEMENT_DIFF_LIST_V40_14_12\x01";
+
+#[used]
+static OUTPUT_RECTS_LIVE_QUERY: &[u8] = b"\x01OUTPUT_RECTS_LIVE_QUERY\x01";
+#[used]
+static ATSPI_ACTION_CLICK_PRIMARY: &[u8] = b"\x01ATSPI_ACTION_CLICK_PRIMARY_V40_14_13\x01";
+#[used]
+static DIFF_STATE_PER_BOT_KEYED: &[u8] = b"\x01DIFF_STATE_PER_BOT_KEYED_V40_14_13\x01";
 
 pub fn dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
     let _ = std::hint::black_box(DEEP_TREE_WALK_V40_14_7_IDENT);
@@ -372,17 +405,23 @@ fn diff_path_key(role: &str, name: &str) -> String {
 }
 
 fn record_tree_diff(nodes: &[TreeNode]) {
-    let trailer = build_tree_diff_trailer(nodes);
-    LAST_TREE_DIFF_TRAILER.with(|slot| *slot.borrow_mut() = trailer);
+    let _ = build_tree_diff_trailer(nodes);
 }
 
 fn build_tree_diff_trailer(nodes: &[TreeNode]) -> String {
+    let _ = std::hint::black_box(DIFF_STATE_PER_BOT);
     let _ = std::hint::black_box(ELEMENT_DIFF_LIST_V40_14_12);
     let mut current = std::collections::HashSet::new();
     for n in nodes {
         current.insert(diff_path_key(&n.role, &n.name));
     }
-    let trailer = PREV_TREE_PATHS.with(|slot| match slot.borrow().as_ref() {
+    let key = diff_state_key();
+    let mut map = lock_diff_state();
+    let entry = map.entry(key).or_insert_with(|| BotDiffState {
+        prev: None,
+        trailer: String::new(),
+    });
+    let trailer = match entry.prev.as_ref() {
         None => String::new(),
         Some(prev) => {
             let mut lines = Vec::new();
@@ -402,8 +441,9 @@ fn build_tree_diff_trailer(nodes: &[TreeNode]) -> String {
                 lines.join("\n") + "\n"
             }
         }
-    });
-    PREV_TREE_PATHS.with(|slot| *slot.borrow_mut() = Some(current));
+    };
+    entry.prev = Some(current);
+    entry.trailer = trailer.clone();
     trailer
 }
 
@@ -1026,6 +1066,8 @@ pub fn set_focus_gen(gen: u64) {
 }
 
 pub fn set_output_rects(rects: Option<Vec<crate::inject::grant_confirm::Rect>>) {
+    let _ = std::hint::black_box(ATSPI_ACTION_CLICK_PRIMARY);
+    let _ = std::hint::black_box(DIFF_STATE_PER_BOT_KEYED);
     OUTPUT_RECTS.with(|slot| *slot.borrow_mut() = rects);
 }
 
@@ -1036,8 +1078,61 @@ fn rects_intersect(
     !(a.x >= b.x + b.w || a.x + a.w <= b.x || a.y >= b.y + b.h || a.y + a.h <= b.y)
 }
 
+fn primary_output_fallback() -> Vec<crate::inject::grant_confirm::Rect> {
+    vec![crate::inject::grant_confirm::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1920.0,
+        h: 1080.0,
+    }]
+}
+
+fn parse_niri_msg_output_rects(json: &str) -> Vec<crate::inject::grant_confirm::Rect> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(map) = v.as_object() else {
+        return Vec::new();
+    };
+    let mut rects = Vec::new();
+    for out in map.values() {
+        let Some(logical) = out.get("logical").and_then(|l| l.as_object()) else {
+            continue;
+        };
+        let x = logical.get("x").and_then(|n| n.as_i64()).unwrap_or(0) as f64;
+        let y = logical.get("y").and_then(|n| n.as_i64()).unwrap_or(0) as f64;
+        let w = logical.get("width").and_then(|n| n.as_u64()).unwrap_or(0) as f64;
+        let h = logical.get("height").and_then(|n| n.as_u64()).unwrap_or(0) as f64;
+        if w > 0.0 && h > 0.0 {
+            rects.push(crate::inject::grant_confirm::Rect { x, y, w, h });
+        }
+    }
+    rects
+}
+
+/// Fill OUTPUT_RECTS from compositor IPC outputs when still None.
+/// Failure or empty logical set stores the 1920x1080 primary fallback. Never panics.
+/// Does not overwrite a test's `set_output_rects(Some(...))`.
+pub fn refresh_output_rects_live() {
+    let _ = std::hint::black_box(OUTPUT_RECTS_LIVE_QUERY);
+    let already = OUTPUT_RECTS.with(|slot| slot.borrow().is_some());
+    if already {
+        return;
+    }
+    let queried = std::process::Command::new("niri")
+        .args(["msg", "--json", "outputs"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| parse_niri_msg_output_rects(&s))
+        .filter(|rects| !rects.is_empty());
+    set_output_rects(Some(queried.unwrap_or_else(primary_output_fallback)));
+}
+
 pub fn offscreen_warning(rect: &crate::inject::grant_confirm::Rect) -> &'static str {
     let _ = std::hint::black_box(OFF_SCREEN_DETECTION_V40_14_12);
+    refresh_output_rects_live();
     OUTPUT_RECTS.with(|slot| match slot.borrow().as_ref() {
         None => "none",
         Some(outputs) => {
@@ -1081,6 +1176,5 @@ pub fn reset_gap4_test_hooks() {
     set_frontmost_override(None);
     set_focus_gen(0);
     clear_tree_cache();
-    PREV_TREE_PATHS.with(|slot| *slot.borrow_mut() = None);
-    LAST_TREE_DIFF_TRAILER.with(|slot| slot.borrow_mut().clear());
+    lock_diff_state().clear();
 }
