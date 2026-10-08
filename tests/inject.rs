@@ -4029,3 +4029,221 @@ fn at_element_req_bounds_match_tree_dump() {
     );
     assert!(!replies.contains("1 2 3 4"), "{replies:?}");
 }
+
+
+#[test]
+fn tree_dump_uses_window_coord_type_with_fallback() {
+    use niri::inject::atspi_ladder::{
+        dump_full_tree, format_tree_reply, reset_gap4_test_hooks, set_extents_override,
+        set_tree_dump_override, TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+
+    fn dump_origin_zero(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "push button".into(),
+            name: "Mute audio".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 34.0,
+            h: 34.0,
+            visible: true,
+            children: vec![],
+        }]
+    }
+
+    fn extents_window_nonzero(coord_type: u32) -> Option<(i32, i32, i32, i32)> {
+        match coord_type {
+            0 => Some((0, 0, 34, 34)),
+            1 => Some((111, 222, 34, 34)),
+            _ => None,
+        }
+    }
+
+    fn extents_window_origin_zero(coord_type: u32) -> Option<(i32, i32, i32, i32)> {
+        match coord_type {
+            1 => Some((0, 0, 34, 34)),
+            0 => Some((50, 60, 34, 34)),
+            _ => None,
+        }
+    }
+
+    set_tree_dump_override(Some(dump_origin_zero));
+    set_extents_override(Some(extents_window_nonzero));
+    let nodes = dump_full_tree(None);
+    assert_eq!(nodes[0].x, 111.0);
+    assert_eq!(nodes[0].y, 222.0);
+    let body = format_tree_reply(&nodes);
+    assert!(body.contains("111"), "{body:?}");
+    assert!(body.contains("222"), "{body:?}");
+    assert!(
+        body.contains("111 222"),
+        "formatted x/y must be the type-1 offset, not origin-zero: {body:?}"
+    );
+    assert!(
+        !body.contains("\"Mute audio\" 0 0 "),
+        "must not treat type-1 offset as origin-zero: {body:?}"
+    );
+
+    reset_gap4_test_hooks();
+    set_tree_dump_override(Some(dump_origin_zero));
+    set_extents_override(Some(extents_window_origin_zero));
+    let nodes = dump_full_tree(None);
+    assert_eq!(nodes[0].x, 50.0);
+    assert_eq!(nodes[0].y, 60.0);
+    let body = format_tree_reply(&nodes);
+    assert!(
+        body.contains("50 60"),
+        "type-1 origin-zero must fall back to type-0: {body:?}"
+    );
+    reset_gap4_test_hooks();
+}
+
+#[test]
+fn tree_dump_marks_off_screen_nodes_with_occluded_token() {
+    use niri::inject::atspi_ladder::{
+        dump_full_tree, format_tree_reply, reset_gap4_test_hooks, set_output_rects,
+        set_tree_dump_override, TreeNode,
+    };
+    use niri::inject::grant_confirm::Rect;
+
+    reset_gap4_test_hooks();
+    set_output_rects(Some(vec![Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1920.0,
+        h: 1080.0,
+    }]));
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "push button".into(),
+            name: "Offscreen".into(),
+            x: 2000.0,
+            y: 2000.0,
+            w: 10.0,
+            h: 10.0,
+            visible: true,
+            children: vec![],
+        }]
+    }
+
+    set_tree_dump_override(Some(dump));
+    let body = format_tree_reply(&dump_full_tree(None));
+    assert!(
+        body.contains("<OCCLUDED>"),
+        "off-monitor node must carry <OCCLUDED>: {body:?}"
+    );
+    reset_gap4_test_hooks();
+}
+
+#[test]
+fn second_element_query_returns_diff() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use niri::inject::atspi_ladder::{
+        dump_full_tree, format_tree_reply, reset_gap4_test_hooks, set_tree_dump_override, TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    CALLS.store(0, Ordering::SeqCst);
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        let n = CALLS.fetch_add(1, Ordering::SeqCst);
+        let keep = TreeNode {
+            role: "button".into(),
+            name: "Keep".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 40.0,
+            h: 16.0,
+            visible: true,
+            children: vec![],
+        };
+        if n == 0 {
+            vec![keep]
+        } else {
+            vec![
+                keep,
+                TreeNode {
+                    role: "button".into(),
+                    name: "NewNode".into(),
+                    x: 50.0,
+                    y: 60.0,
+                    w: 40.0,
+                    h: 16.0,
+                    visible: true,
+                    children: vec![],
+                },
+            ]
+        }
+    }
+
+    set_tree_dump_override(Some(dump));
+    let first = format_tree_reply(&dump_full_tree(None));
+    assert!(
+        !first.contains("CHANGED: 1"),
+        "first snapshot must not mark initial nodes as added: {first:?}"
+    );
+    let second = format_tree_reply(&dump_full_tree(None));
+    assert!(
+        second.contains("NewNode"),
+        "second dump must include the added node: {second:?}"
+    );
+    assert!(
+        second.contains("CHANGED: 1 button:NewNode"),
+        "second dump must list the added path: {second:?}"
+    );
+    reset_gap4_test_hooks();
+}
+
+#[test]
+fn tree_dump_bounds_match_real_window_position_for_pavucontrol() {
+    // Live spawn of pavucontrol belongs to the install+e2e card. This sandbox
+    // has no pavucontrol, DISPLAY, WAYLAND_DISPLAY, or niri binary; model the
+    // live v40.14.9 failure (coord type 0 → 0,0,34,34; type 1 → nonzero
+    // window offset) through the GetExtents mock.
+    use niri::inject::atspi_ladder::{
+        dump_full_tree, reset_gap4_test_hooks, set_extents_override, set_tree_dump_override,
+        TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "push button".into(),
+            name: "Mute audio".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 34.0,
+            h: 34.0,
+            visible: true,
+            children: vec![],
+        }]
+    }
+
+    fn extents(coord_type: u32) -> Option<(i32, i32, i32, i32)> {
+        match coord_type {
+            0 => Some((0, 0, 34, 34)),
+            1 => Some((111, 222, 34, 34)),
+            _ => None,
+        }
+    }
+
+    set_tree_dump_override(Some(dump));
+    set_extents_override(Some(extents));
+    let nodes = dump_full_tree(None);
+    let mute = nodes
+        .iter()
+        .find(|n| n.name == "Mute audio")
+        .expect("Mute audio node");
+    assert_eq!(mute.x, 111.0);
+    assert_eq!(mute.y, 222.0);
+    assert_ne!(mute.x, 0.0);
+    assert_ne!(mute.y, 0.0);
+    reset_gap4_test_hooks();
+}
