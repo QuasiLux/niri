@@ -4,6 +4,7 @@
 //! JSON was rejected: the seven opcodes fit on one line and tagged-line stays
 //! branch-free at a few hundred lines.
 
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::os::unix::fs::PermissionsExt;
@@ -45,6 +46,9 @@ static GRANT_RESOLVED_OPCODE: &[u8] = b"GRANT_RESOLVED_OPCODE\0";
 /// `AT_ELEMENT_REQ <wid> LC <role> <name>` / `EI <role> <name> <text…>` / `CV <query>`.
 pub const OPC_AT_ELEMENT_REQ: &str = "AT_ELEMENT_REQ";
 
+/// `AT_ACTION_REQ <wid> <role> <name> [<action_name>] <index>` — v40.15.3a.
+pub const OPC_AT_ACTION_REQ: &str = "AT_ACTION_REQ";
+
 /// `AT_TREE_REQ <wid> [path…]`
 pub const OPC_AT_TREE_REQ: &str = "AT_TREE_REQ";
 
@@ -57,6 +61,16 @@ static OPC_GRANT_REQUEST_IDENT: &str = "GRANT_REQUEST";
 #[used]
 #[allow(dead_code)]
 static OPC_AT_ELEMENT_REQ_IDENT: &str = "AT_ELEMENT_REQ";
+
+#[used]
+#[allow(dead_code)]
+static OPC_AT_ACTION_REQ_IDENT: &str = "AT_ACTION_REQ";
+
+/// Live ident for `strings | grep AT_ACTION_REQ_OPCODE_V40_15_3`.
+/// Referenced at a live call site via `std::hint::black_box` (same shape as
+/// `KEY_DELIVERY_V40_9_DISPATCH_IDENT` in `src/inject/dispatch.rs`).
+#[used]
+pub(crate) static AT_ACTION_REQ_OPCODE_V40_15_3: &[u8] = b"AT_ACTION_REQ_OPCODE_V40_15_3\0";
 
 #[used]
 #[allow(dead_code)]
@@ -75,6 +89,7 @@ pub const REP_GRANT_QUEUED: &str = "QUEUED";
 pub const REP_GRANT_DENIED_W: &str = "DENIED";
 pub const REP_GRANT_ACK_OK_W: &str = "OK";
 pub const REP_AT_ELEMENT_REPLY: &str = "AT_ELEMENT_REPLY";
+pub const REP_AT_ACTION_REPLY: &str = "AT_ACTION_REPLY";
 pub const REP_AT_TREE_REPLY: &str = "AT_TREE_REPLY";
 pub const REP_BG_UNAVAILABLE: &str = "BACKGROUND_UNAVAILABLE";
 pub const IDENT_AT_SPI_STRONG: &str = "AT_SPI_STRONG";
@@ -87,6 +102,10 @@ static REP_BIND_PENDING_IDENT: &str = "BIND PENDING";
 #[used]
 #[allow(dead_code)]
 static REP_AT_ELEMENT_REPLY_IDENT: &str = "AT_ELEMENT_REPLY";
+
+#[used]
+#[allow(dead_code)]
+static REP_AT_ACTION_REPLY_IDENT: &str = "AT_ACTION_REPLY";
 
 #[used]
 #[allow(dead_code)]
@@ -150,7 +169,9 @@ pub fn token_file_path() -> PathBuf {
     // token_file_path is called from Niri::new; packed &str literals do not survive.
     let _ = std::hint::black_box((
         OPC_AT_ELEMENT_REQ,
+        OPC_AT_ACTION_REQ,
         REP_AT_ELEMENT_REPLY,
+        REP_AT_ACTION_REPLY,
         REP_BG_UNAVAILABLE,
         IDENT_AT_SPI_STRONG,
         IDENT_AT_SPI_CHROME,
@@ -158,8 +179,11 @@ pub fn token_file_path() -> PathBuf {
         OPC_AT_TREE_REQ,
         REP_AT_TREE_REPLY,
     ));
+    let _ = std::hint::black_box(AT_ACTION_REQ_OPCODE_V40_15_3);
     let _ = std::hint::black_box(b"AT_ELEMENT_REQ\0");
+    let _ = std::hint::black_box(b"AT_ACTION_REQ\0");
     let _ = std::hint::black_box(b"AT_ELEMENT_REPLY\0");
+    let _ = std::hint::black_box(b"AT_ACTION_REPLY\0");
     let _ = std::hint::black_box(b"AT_TREE_REQ\0");
     let _ = std::hint::black_box(b"AT_TREE_REPLY\0");
     let _ = std::hint::black_box(b"BACKGROUND_UNAVAILABLE\0");
@@ -206,6 +230,13 @@ pub enum Frame {
         window_id: u64,
         action: crate::inject::atspi_ladder::AtSpiAction,
     },
+    /// `AT_ACTION_REQ <wid> <role> <name> [<action_name>] <index>` — v40.15.3a.
+    AtActionReq {
+        wid: u64,
+        role: String,
+        name: String,
+        index: i32,
+    },
     /// `AT_TREE_REQ <wid> [path…]` — see [`parse_at_tree_req`].
     AtTreeReq {
         window_id: u64,
@@ -249,6 +280,7 @@ pub enum Reply {
     GrantAckOk,
     GrantAckDenied,
     AtElementReply { payload: String },
+    AtActionReply { ok: bool, error: Option<String> },
     AtTreeReply { body: String },
     BackgroundUnavailable,
 }
@@ -273,6 +305,15 @@ impl Reply {
             Reply::GrantAckOk => format!("{REP_GRANT_ACK} {REP_GRANT_ACK_OK_W}\n"),
             Reply::GrantAckDenied => format!("{REP_GRANT_ACK} {REP_GRANT_DENIED_W}\n"),
             Reply::AtElementReply { payload } => format!("{REP_AT_ELEMENT_REPLY} {payload}\n"),
+            Reply::AtActionReply { ok, error } => {
+                // Trap 45: live encoder call site (not token_file_path-only).
+                let _ = std::hint::black_box(AT_ACTION_REQ_OPCODE_V40_15_3);
+                match (ok, error) {
+                    (true, _) => format!("{REP_AT_ACTION_REPLY} OK\n"),
+                    (false, Some(code)) => format!("{REP_AT_ACTION_REPLY} ERR {code}\n"),
+                    (false, None) => format!("{REP_AT_ACTION_REPLY} ERR UNKNOWN\n"),
+                }
+            }
             Reply::AtTreeReply { body } => format!("{REP_AT_TREE_REPLY} {body}"),
             Reply::BackgroundUnavailable => format!("{REP_AT_ELEMENT_REPLY} {REP_BG_UNAVAILABLE}\n"),
         };
@@ -407,6 +448,17 @@ pub trait InjectHarness {
     fn is_occluded(&mut self) -> bool {
         false
     }
+    /// v40.15.3a: `AT_ACTION_REQ` routes through this hook.
+    /// Default plants `AT_ACTION_REQ_OPCODE_V40_15_3` and dispatches
+    /// `DoAction(index)` (test override or live a11y bus).
+    fn apply_action_on_element(
+        &mut self,
+        wid: u64,
+        path: &str,
+        index: i32,
+    ) -> Result<(), &'static str> {
+        apply_action_on_element_default(wid, path, index)
+    }
 }
 
 /// Parse one complete frame. AUTH consumes two lines. Remainder is unparsed
@@ -510,6 +562,7 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
             (Frame::Drag { from, to }, after)
         }),
         OPC_AT_ELEMENT_REQ => parse_at_element_req(text).map(|frame| (frame, after)),
+        OPC_AT_ACTION_REQ => parse_at_action_req(text).map(|frame| (frame, after)),
         OPC_AT_TREE_REQ => parse_at_tree_req(text).map(|frame| (frame, after)),
         _ => Err(FrameError::UnknownOpcode),
     }
@@ -616,6 +669,33 @@ fn parse_at_element_req(text: &str) -> Result<Frame, FrameError> {
     }
 }
 
+/// Wire shapes:
+/// - `AT_ACTION_REQ <wid> <role> <name> <index>`
+/// - `AT_ACTION_REQ <wid> <role> <name> <action_name> <index>`
+fn parse_at_action_req(text: &str) -> Result<Frame, FrameError> {
+    let mut parts = text.split_whitespace();
+    let _opc = parts.next().ok_or(FrameError::Malformed)?;
+    let wid: u64 = parts
+        .next()
+        .ok_or(FrameError::Malformed)?
+        .parse()
+        .map_err(|_| FrameError::Malformed)?;
+    let role = parts.next().ok_or(FrameError::Malformed)?;
+    let name = parts.next().ok_or(FrameError::Malformed)?;
+    let rest: Vec<&str> = parts.collect();
+    let index_tok = rest.last().ok_or(FrameError::Malformed)?;
+    if rest.len() > 2 {
+        return Err(FrameError::Malformed);
+    }
+    let index: i32 = index_tok.parse().map_err(|_| FrameError::Malformed)?;
+    Ok(Frame::AtActionReq {
+        wid,
+        role: role.to_string(),
+        name: name.to_string(),
+        index,
+    })
+}
+
 /// `AT_TREE_REQ <wid>` or `AT_TREE_REQ <wid> <path…>` (path is the remainder
 /// joined by single spaces).
 fn parse_at_tree_req(text: &str) -> Result<Frame, FrameError> {
@@ -639,6 +719,117 @@ fn remainder_after_tokens(line: &str, n: usize) -> Option<&str> {
         rest = rest[idx..].trim_start();
     }
     Some(rest)
+}
+
+thread_local! {
+    static APPLY_ACTION_OVERRIDE: RefCell<Option<fn(i32) -> bool>> =
+        const { RefCell::new(None) };
+    static LAST_ACTION_DEST: RefCell<String> = const { RefCell::new(String::new()) };
+    static LAST_ACTION_OBJ: RefCell<String> = const { RefCell::new(String::new()) };
+    static LAST_ACTION_N: Cell<i32> = const { Cell::new(0) };
+}
+
+/// Test hook: `do_action(index)` used by [`InjectHarness::apply_action_on_element`].
+pub fn set_apply_action_on_element_override(v: Option<fn(i32) -> bool>) {
+    APPLY_ACTION_OVERRIDE.with(|slot| *slot.borrow_mut() = v);
+}
+
+pub(crate) fn set_last_action_target(dest: &str, obj_path: &str, n_actions: i32) {
+    LAST_ACTION_DEST.with(|s| *s.borrow_mut() = dest.to_string());
+    LAST_ACTION_OBJ.with(|s| *s.borrow_mut() = obj_path.to_string());
+    LAST_ACTION_N.with(|c| c.set(n_actions));
+}
+
+/// Live call site for `AT_ACTION_REQ_OPCODE_V40_15_3` (mirrors
+/// `post_key_dispatch` + `KEY_DELIVERY_V40_9_DISPATCH_IDENT`).
+pub(crate) fn apply_action_on_element_default(
+    wid: u64,
+    path: &str,
+    index: i32,
+) -> Result<(), &'static str> {
+    let _ = std::hint::black_box(AT_ACTION_REQ_OPCODE_V40_15_3);
+    let _ = wid;
+    let n_actions = LAST_ACTION_N.with(|c| c.get());
+    if n_actions <= 0 || index < 0 || index >= n_actions {
+        return Err("ACTION_NOT_FOUND");
+    }
+    if let Some(do_action) = APPLY_ACTION_OVERRIDE.with(|slot| *slot.borrow()) {
+        return if do_action(index) {
+            Ok(())
+        } else {
+            Err("ACTION_NOT_FOUND")
+        };
+    }
+    let dest = LAST_ACTION_DEST.with(|s| s.borrow().clone());
+    let obj = LAST_ACTION_OBJ.with(|s| s.borrow().clone());
+    let obj_path = if obj.is_empty() {
+        path.to_string()
+    } else {
+        obj
+    };
+    if dest.is_empty() || obj_path.is_empty() {
+        return Err("ACTION_NOT_FOUND");
+    }
+    #[cfg(feature = "dbus")]
+    {
+        return live_do_action_at_index(&dest, &obj_path, index);
+    }
+    #[cfg(not(feature = "dbus"))]
+    {
+        Err("ACTION_NOT_FOUND")
+    }
+}
+
+#[cfg(feature = "dbus")]
+fn live_do_action_at_index(dest: &str, obj_path: &str, index: i32) -> Result<(), &'static str> {
+    let dest = dest.to_owned();
+    let obj_path = obj_path.to_owned();
+    match std::thread::spawn(move || live_do_action_on_a11y_bus(&dest, &obj_path, index)).join() {
+        Ok(r) => r,
+        Err(_) => Err("ACTION_NOT_FOUND"),
+    }
+}
+
+#[cfg(feature = "dbus")]
+fn live_do_action_on_a11y_bus(
+    dest: &str,
+    obj_path: &str,
+    index: i32,
+) -> Result<(), &'static str> {
+    let conn = match crate::inject::atspi_ladder::connect_a11y_bus() {
+        Ok(c) => c,
+        Err(_) => return Err("ACTION_NOT_FOUND"),
+    };
+    const ACTION: &str = "org.a11y.atspi.Action";
+    const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+    let n_ok = conn
+        .call_method(
+            Some(dest),
+            obj_path,
+            Some(PROPERTIES),
+            "Get",
+            &(ACTION, "NActions"),
+        )
+        .ok()
+        .and_then(|m| m.body().deserialize::<zbus::zvariant::OwnedValue>().ok())
+        .and_then(|v| i32::try_from(v).ok());
+    let n_actions = match n_ok {
+        Some(n) if n > 0 => n,
+        _ => return Err("ACTION_NOT_FOUND"),
+    };
+    if index < 0 || index >= n_actions {
+        return Err("ACTION_NOT_FOUND");
+    }
+    let ok = conn
+        .call_method(Some(dest), obj_path, Some(ACTION), "DoAction", &index)
+        .ok()
+        .and_then(|m| m.body().deserialize::<bool>().ok())
+        .unwrap_or(false);
+    if ok {
+        Ok(())
+    } else {
+        Err("ACTION_NOT_FOUND")
+    }
 }
 
 /// Compare hex via `==` (constant-time is not required for v3).
