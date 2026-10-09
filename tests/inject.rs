@@ -4363,3 +4363,184 @@ fn label_click_chain_invokes_atspi_action_prefers_click_over_pointer() {
     assert_eq!(click, None);
     assert_eq!(last_motion, None);
 }
+
+
+#[test]
+fn at_action_req_invokes_do_action_on_matched_element() {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    use niri::inject::atspi_action::{set_action_override, ActionProbe};
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_scan_override, set_tree_dump_override, TreeNode,
+    };
+    use niri::inject::protocol::set_apply_action_on_element_override;
+
+    reset_gap4_test_hooks();
+    static LAST_DO_ACTION: AtomicI32 = AtomicI32::new(-1);
+    LAST_DO_ACTION.store(-1, Ordering::SeqCst);
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "toggle button".into(),
+            name: "Mute audio".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 34.0,
+            h: 34.0,
+            visible: true,
+            n_actions: 1,
+            action_name: "click".into(),
+            dbus_dest: ":1.1".into(),
+            dbus_path: "/org/a11y/atspi/accessible/1".into(),
+            children: vec![],
+            ..Default::default()
+        }]
+    }
+    fn do_action(idx: i32) -> bool {
+        LAST_DO_ACTION.store(idx, Ordering::SeqCst);
+        true
+    }
+    fn grab_focus_false() -> bool {
+        false
+    }
+
+    set_tree_dump_override(Some(dump));
+    set_scan_override(None);
+    set_apply_action_on_element_override(Some(do_action));
+    set_action_override(Some(ActionProbe {
+        names: vec!["click".into()],
+        do_action,
+        grab_focus: grab_focus_false,
+    }));
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ACTION_REQ {KNOWN_WINDOW} button Mute click 0\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    let last = LAST_DO_ACTION.load(Ordering::SeqCst);
+    reset_gap4_test_hooks();
+    set_apply_action_on_element_override(None);
+    set_action_override(None);
+    set_tree_dump_override(None);
+    set_scan_override(None);
+    assert!(
+        replies.contains("AT_ACTION_REPLY OK"),
+        "{replies:?}"
+    );
+    assert_eq!(last, 0, "do_action(0) must be invoked, got {last}");
+}
+
+#[test]
+fn at_action_req_replies_action_not_found_when_index_out_of_range() {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    use niri::inject::atspi_action::{set_action_override, ActionProbe};
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_scan_override, set_tree_dump_override, TreeNode,
+    };
+    use niri::inject::protocol::set_apply_action_on_element_override;
+
+    reset_gap4_test_hooks();
+    static LAST_DO_ACTION: AtomicI32 = AtomicI32::new(-1);
+    LAST_DO_ACTION.store(-1, Ordering::SeqCst);
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "toggle button".into(),
+            name: "Mute audio".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 34.0,
+            h: 34.0,
+            visible: true,
+            n_actions: 1,
+            action_name: "click".into(),
+            dbus_dest: ":1.1".into(),
+            dbus_path: "/org/a11y/atspi/accessible/1".into(),
+            children: vec![],
+            ..Default::default()
+        }]
+    }
+    fn do_action(idx: i32) -> bool {
+        LAST_DO_ACTION.store(idx, Ordering::SeqCst);
+        true
+    }
+    fn grab_focus_false() -> bool {
+        false
+    }
+
+    set_tree_dump_override(Some(dump));
+    set_scan_override(None);
+    set_apply_action_on_element_override(Some(do_action));
+    set_action_override(Some(ActionProbe {
+        names: vec!["click".into()],
+        do_action,
+        grab_focus: grab_focus_false,
+    }));
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ACTION_REQ {KNOWN_WINDOW} button Mute click 99\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    let last = LAST_DO_ACTION.load(Ordering::SeqCst);
+    reset_gap4_test_hooks();
+    set_apply_action_on_element_override(None);
+    set_action_override(None);
+    set_tree_dump_override(None);
+    set_scan_override(None);
+    assert!(
+        replies.contains("AT_ACTION_REPLY ERR ACTION_NOT_FOUND"),
+        "{replies:?}"
+    );
+    assert_eq!(last, -1, "do_action must not run for out-of-range index");
+}
