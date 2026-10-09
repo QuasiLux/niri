@@ -8,6 +8,7 @@
 //! default returns false and produces `DISPATCH ERR NOT_BOUND`.
 
 pub mod app_catalog;
+pub mod atspi_action;
 pub mod atspi_ladder;
 pub mod dispatch;
 pub mod grant_confirm;
