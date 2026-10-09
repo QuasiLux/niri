@@ -687,6 +687,63 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 reply_grant_request(harness, &mut write, &bot_id, req_id).await?;
                 ClientPhase::Dispatch { focus, wid }
             }
+            (
+                ClientPhase::Dispatch { focus, wid },
+                Frame::AtActionReq {
+                    wid: req_wid,
+                    role,
+                    name,
+                    index,
+                },
+            ) => {
+                let _ = std::hint::black_box(crate::inject::protocol::AT_ACTION_REQ_OPCODE_V40_15_3);
+                let bounds = crate::inject::atspi_ladder::element_lookup_via_tree_dump(
+                    req_wid, &role, &name,
+                )
+                .or_else(|| {
+                    crate::inject::atspi_ladder::scan_session_dbus_for_element(
+                        req_wid, &role, &name,
+                    )
+                });
+                let reply = match bounds {
+                    None => Reply::AtActionReply {
+                        ok: false,
+                        error: Some("ELEMENT_NOT_FOUND".into()),
+                    },
+                    Some(b) => {
+                        let path = if b.dbus_path.is_empty() {
+                            b.path.clone()
+                        } else {
+                            b.dbus_path.clone()
+                        };
+                        crate::inject::protocol::set_last_action_target(
+                            &b.dbus_dest,
+                            &path,
+                            b.n_actions,
+                        );
+                        match harness.apply_action_on_element(req_wid, &path, index) {
+                            Ok(()) => Reply::AtActionReply {
+                                ok: true,
+                                error: None,
+                            },
+                            Err(code) => Reply::AtActionReply {
+                                ok: false,
+                                error: Some(code.into()),
+                            },
+                        }
+                    }
+                };
+                tracing::debug!(
+                    window_id = req_wid,
+                    role = %role,
+                    name = %name,
+                    index,
+                    ?reply,
+                    "atspi.action_req"
+                );
+                write_reply(&mut write, &reply).await?;
+                ClientPhase::Dispatch { focus, wid }
+            }
             (ClientPhase::Dispatch { focus, wid }, Frame::AtElementReq { window_id, action }) => {
                 let app_id = harness.app_id_for(window_id).unwrap_or_default();
                 use super::atspi_ladder::AtSpiRoute;
