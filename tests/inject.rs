@@ -2042,6 +2042,7 @@ fn atspi_strong_gnome_calculator_button_7() {
                     w: 40.0,
                     h: 16.0,
                 },
+                ..Default::default()
             })
         } else {
             None
@@ -2110,6 +2111,7 @@ fn atspi_chrome_zen_search_textbox() {
                     w: 100.0,
                     h: 20.0,
                 },
+                ..Default::default()
             })
         } else {
             None
@@ -2237,7 +2239,9 @@ fn at_tree_dump_returns_full_ax_tree() {
                 h: 20.0,
                 visible: true,
                 children: vec![],
+                ..Default::default()
             }],
+            ..Default::default()
         }]
     }
 
@@ -2279,6 +2283,7 @@ fn at_element_diff_returns_full_on_first_query() {
                     w: 40.0,
                     h: 16.0,
                 },
+                ..Default::default()
             })
         } else {
             None
@@ -2354,6 +2359,7 @@ fn at_element_off_screen_warning() {
                     w: 40.0,
                     h: 20.0,
                 },
+                ..Default::default()
             })
         } else {
             None
@@ -3562,6 +3568,7 @@ fn route_after_bind_is_not_canvasraw_for_atspi_strong_app() {
                     w: 40.0,
                     h: 16.0,
                 },
+                ..Default::default()
             })
         } else {
             None
@@ -3636,6 +3643,7 @@ fn live_grant_v40_14_6_element_lookup_via_tree_dump_hit() {
                 h: 32.0,
                 visible: true,
                 children: vec![],
+                ..Default::default()
             },
             TreeNode {
                 role: "button".into(),
@@ -3646,6 +3654,7 @@ fn live_grant_v40_14_6_element_lookup_via_tree_dump_hit() {
                 h: 32.0,
                 visible: true,
                 children: vec![],
+                ..Default::default()
             },
             TreeNode {
                 role: "label".into(),
@@ -3656,6 +3665,7 @@ fn live_grant_v40_14_6_element_lookup_via_tree_dump_hit() {
                 h: 16.0,
                 visible: true,
                 children: vec![],
+                ..Default::default()
             },
         ]
     }
@@ -3701,6 +3711,7 @@ fn live_grant_v40_14_6_element_lookup_via_tree_dump_miss() {
                 h: 1.0,
                 visible: true,
                 children: vec![],
+                ..Default::default()
             },
             TreeNode {
                 role: "label".into(),
@@ -3711,6 +3722,7 @@ fn live_grant_v40_14_6_element_lookup_via_tree_dump_miss() {
                 h: 1.0,
                 visible: true,
                 children: vec![],
+                ..Default::default()
             },
         ]
     }
@@ -3744,6 +3756,7 @@ fn tree_dump_walks_past_depth_10_to_find_stream_rows() {
                 h: 1.0,
                 visible: true,
                 children: vec![node],
+                ..Default::default()
             };
         }
         node
@@ -3759,6 +3772,7 @@ fn tree_dump_walks_past_depth_10_to_find_stream_rows() {
             h: 16.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         };
         let too_deep = TreeNode {
             role: "push button".into(),
@@ -3769,6 +3783,7 @@ fn tree_dump_walks_past_depth_10_to_find_stream_rows() {
             h: 17.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         };
         vec![
             nest_to_depth(15, mute),
@@ -3811,6 +3826,7 @@ fn name_match_substring_misses_with_exact_query_returns_empty() {
             h: 16.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         }]
     }
 
@@ -3846,6 +3862,7 @@ fn name_match_substring_misses_completely_unrelated_query() {
             h: 16.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         }]
     }
 
@@ -3881,6 +3898,7 @@ fn at_element_req_returns_valid_bounds_for_known_element() {
                 w: 3.0,
                 h: 4.0,
             },
+            ..Default::default()
         })
     }
     fn dump(_path: Option<&str>) -> Vec<TreeNode> {
@@ -3893,6 +3911,7 @@ fn at_element_req_returns_valid_bounds_for_known_element() {
             h: 44.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         }]
     }
     set_scan_override(Some(scan));
@@ -3966,6 +3985,7 @@ fn at_element_req_bounds_match_tree_dump() {
                 w: 3.0,
                 h: 4.0,
             },
+            ..Default::default()
         })
     }
     fn dump(_path: Option<&str>) -> Vec<TreeNode> {
@@ -3978,6 +3998,7 @@ fn at_element_req_bounds_match_tree_dump() {
             h: 44.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         }]
     }
     set_scan_override(Some(scan));
@@ -4050,6 +4071,7 @@ fn tree_dump_uses_window_coord_type_with_fallback() {
             h: 34.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         }]
     }
 
@@ -4126,6 +4148,7 @@ fn tree_dump_marks_off_screen_nodes_with_occluded_token() {
             h: 10.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         }]
     }
 
@@ -4162,6 +4185,7 @@ fn second_element_query_returns_diff() {
             h: 16.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         };
         if n == 0 {
             vec![keep]
@@ -4177,6 +4201,7 @@ fn second_element_query_returns_diff() {
                     h: 16.0,
                     visible: true,
                     children: vec![],
+                    ..Default::default()
                 },
             ]
         }
@@ -4223,6 +4248,7 @@ fn tree_dump_bounds_match_real_window_position_for_pavucontrol() {
             h: 34.0,
             visible: true,
             children: vec![],
+            ..Default::default()
         }]
     }
 
@@ -4246,4 +4272,94 @@ fn tree_dump_bounds_match_real_window_position_for_pavucontrol() {
     assert_ne!(mute.x, 0.0);
     assert_ne!(mute.y, 0.0);
     reset_gap4_test_hooks();
+}
+
+#[test]
+fn label_click_chain_invokes_atspi_action_prefers_click_over_pointer() {
+    use niri::inject::atspi_action::{set_action_override, ActionProbe};
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_scan_override, set_tree_dump_override, take_bridge_click,
+        TreeNode,
+    };
+
+    reset_gap4_test_hooks();
+    let _ = take_bridge_click();
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "toggle button".into(),
+            name: "Mute audio".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 34.0,
+            h: 34.0,
+            visible: true,
+            n_actions: 1,
+            action_name: "click".into(),
+            dbus_dest: ":1.1".into(),
+            dbus_path: "/org/a11y/atspi/accessible/1".into(),
+            children: vec![],
+            ..Default::default()
+        }]
+    }
+    fn do_action_true(_idx: i32) -> bool {
+        true
+    }
+    fn grab_focus_false() -> bool {
+        false
+    }
+
+    set_tree_dump_override(Some(dump));
+    set_action_override(Some(ActionProbe {
+        names: vec!["click".into()],
+        do_action: do_action_true,
+        grab_focus: grab_focus_false,
+    }));
+    set_scan_override(None);
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button Mute\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    let click = take_bridge_click();
+    let last_motion = state.surface_target.lock().unwrap().last_motion;
+    reset_gap4_test_hooks();
+    set_action_override(None);
+    set_tree_dump_override(None);
+    set_scan_override(None);
+    assert!(
+        replies.contains("AT_ELEMENT_REPLY"),
+        "{replies:?}"
+    );
+    assert!(
+        replies.contains("CHANGED: 1"),
+        "{replies:?}"
+    );
+    assert_eq!(click, None);
+    assert_eq!(last_motion, None);
 }

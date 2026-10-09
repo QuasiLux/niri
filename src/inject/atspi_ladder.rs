@@ -105,6 +105,28 @@ pub fn route(app_id: &str, action: &AtSpiAction) -> AtSpiRoute {
 pub struct ElementBounds {
     pub path: String,
     pub rect: crate::inject::grant_confirm::Rect,
+    pub n_actions: i32,
+    pub action_name: String,
+    pub dbus_dest: String,
+    pub dbus_path: String,
+}
+
+impl Default for ElementBounds {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            rect: crate::inject::grant_confirm::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            },
+            n_actions: 0,
+            action_name: String::new(),
+            dbus_dest: String::new(),
+            dbus_path: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -145,6 +167,33 @@ pub fn scan_session_dbus_for_element(
 /// from `get_children` errors with `Err(e) → skip`; the resulting bounds
 /// for per-app subtrees are real.
 pub const ELEMENT_AX_LOOKUP_V40_14_6: &str = "ELEMENT_AX_LOOKUP_V40_14_6";
+
+/// Source-of-truth: GTK 4 master `gtk/a11y/gtkatspiaction.c`
+/// switch_actions[].name = "toggle", button_actions[].name = "click".
+/// Action chain for toggling any AT-SPI AccessibleAction node.
+pub const ACTION_NAME_FALLBACK_CHAIN_V40_14_15: [(&str, &str); 7] = [
+    ("click", "GTK 4 GtkButton family (ToggleButton, CheckButton, plain Button)"),
+    ("toggle", "GTK 4 GtkSwitch"),
+    ("activate", "GTK 4 GtkExpander, GtkSearchEntry, GtkEntry"),
+    ("press", "older ATK; Qt5/6; Java AWT"),
+    ("release", "older ATK"),
+    ("expand", "collapsible toggle header"),
+    ("menu", "menu button (rare for toggles)"),
+];
+
+/// Parent walk for inner-switch resolution when matched node is a
+/// container (GtkSwitch / GtkToggleButton wrapped in a row).
+pub const INNER_SWITCH_RESOLUTION_V40_14_15: &str =
+    "if matched role in {toggle button, check box, switch} and \
+     matched node has NActions > 0: dispatch Action.DoAction(0) \
+     directly before considering parent walk or pointer_click";
+
+#[used]
+pub(crate) static ACTION_NAME_FALLBACK_CHAIN_V40_14_15_IDENT: &[u8] =
+    b"\x01ACTION_NAME_FALLBACK_CHAIN_V40_14_15\x01";
+#[used]
+pub(crate) static INNER_SWITCH_RESOLUTION_V40_14_15_IDENT: &[u8] =
+    b"\x01INNER_SWITCH_RESOLUTION_V40_14_15\x01";
 
 /// Inline mirror of `real_bus::role_matches` so this helper is callable
 /// outside the `#[cfg(feature = "dbus")]` `real_bus` module. Same rules.
@@ -194,18 +243,98 @@ pub fn element_lookup_via_tree_dump(
     name_query: &str,
 ) -> Option<ElementBounds> {
     let _ = std::hint::black_box(ELEMENT_AX_LOOKUP_V40_14_6);
-    let nodes = dump_full_tree(None);
-    for node in nodes.iter() {
+    let _ = std::hint::black_box(ACTION_NAME_FALLBACK_CHAIN_V40_14_15_IDENT);
+    let _ = std::hint::black_box(INNER_SWITCH_RESOLUTION_V40_14_15_IDENT);
+    let roots = acquire_tree_roots(None);
+    lookup_nested_tree(&roots, window_id, role, name_query)
+}
+
+fn lookup_nested_tree(
+    nodes: &[TreeNode],
+    window_id: u64,
+    role: &str,
+    name_query: &str,
+) -> Option<ElementBounds> {
+    for node in nodes {
         if ax_role_matches(role, &node.role) && ax_name_matches(name_query, &node.name) {
-            return Some(ElementBounds {
-                path: ax_stamp_path(window_id, role, &node.name),
-                rect: crate::inject::grant_confirm::Rect {
-                    x: node.x,
-                    y: node.y,
-                    w: node.w,
-                    h: node.h,
-                },
+            if node.n_actions > 0 {
+                return Some(element_bounds_from_nodes(window_id, role, node, node));
+            }
+            if let Some(inner) = find_actionable_switch_descendant(node) {
+                return Some(element_bounds_from_nodes(window_id, role, node, inner));
+            }
+            return Some(element_bounds_from_nodes(window_id, role, node, node));
+        }
+        if let Some(hit) = lookup_nested_tree(&node.children, window_id, role, name_query) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+fn element_bounds_from_nodes(
+    window_id: u64,
+    role: &str,
+    rect_src: &TreeNode,
+    action_src: &TreeNode,
+) -> ElementBounds {
+    ElementBounds {
+        path: ax_stamp_path(window_id, role, &rect_src.name),
+        rect: crate::inject::grant_confirm::Rect {
+            x: rect_src.x,
+            y: rect_src.y,
+            w: rect_src.w,
+            h: rect_src.h,
+        },
+        n_actions: action_src.n_actions,
+        action_name: action_src.action_name.clone(),
+        dbus_dest: action_src.dbus_dest.clone(),
+        dbus_path: action_src.dbus_path.clone(),
+    }
+}
+
+fn is_actionable_switch_role(role: &str) -> bool {
+    let r = role.to_ascii_lowercase();
+    r.contains("toggle button") || r.contains("check box") || r.contains("switch")
+}
+
+fn find_actionable_switch_descendant(node: &TreeNode) -> Option<&TreeNode> {
+    for child in &node.children {
+        if is_actionable_switch_role(&child.role) && child.n_actions > 0 {
+            return Some(child);
+        }
+        if let Some(hit) = find_actionable_switch_descendant(child) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+pub struct InnerSwitchHit {
+    pub outer_x: f64,
+    pub outer_y: f64,
+    pub outer_w: f64,
+    pub outer_h: f64,
+    pub n_actions: i32,
+    pub action_name: String,
+}
+
+pub fn find_inner_switch(nodes: &[TreeNode]) -> Option<InnerSwitchHit> {
+    let _ = std::hint::black_box(INNER_SWITCH_RESOLUTION_V40_14_15);
+    let _ = std::hint::black_box(INNER_SWITCH_RESOLUTION_V40_14_15_IDENT);
+    for node in nodes {
+        if let Some(inner) = find_actionable_switch_descendant(node) {
+            return Some(InnerSwitchHit {
+                outer_x: node.x,
+                outer_y: node.y,
+                outer_w: node.w,
+                outer_h: node.h,
+                n_actions: inner.n_actions,
+                action_name: inner.action_name.clone(),
             });
+        }
+        if let Some(hit) = find_inner_switch(&node.children) {
+            return Some(hit);
         }
     }
     None
@@ -227,7 +356,7 @@ pub const AT_SPI_BRIDGE_REAL: &str = "AT_SPI_BRIDGE_REAL";
 
 /// Flattened AX node. `children` exists so a dump override can return a tree;
 /// [`dump_full_tree`] clears them after a pre-order walk.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct TreeNode {
     pub role: String,
     pub name: String,
@@ -237,6 +366,10 @@ pub struct TreeNode {
     pub h: f64,
     pub visible: bool,
     pub children: Vec<TreeNode>,
+    pub n_actions: i32,
+    pub action_name: String,
+    pub dbus_dest: String,
+    pub dbus_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -349,8 +482,7 @@ static ATSPI_ACTION_CLICK_PRIMARY: &[u8] = b"\x01ATSPI_ACTION_CLICK_PRIMARY_V40_
 #[used]
 static DIFF_STATE_PER_BOT_KEYED: &[u8] = b"\x01DIFF_STATE_PER_BOT_KEYED_V40_14_13\x01";
 
-pub fn dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
-    let _ = std::hint::black_box(DEEP_TREE_WALK_V40_14_7_IDENT);
+fn acquire_tree_roots(root_path: Option<&str>) -> Vec<TreeNode> {
     let hook = TREE_DUMP_OVERRIDE.with(|slot| *slot.borrow());
     let mut roots = match hook {
         Some(f) => f(root_path),
@@ -359,6 +491,12 @@ pub fn dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
     if let Some(get) = extents_override_fn() {
         apply_extents_override(&mut roots, get);
     }
+    roots
+}
+
+pub fn dump_full_tree(root_path: Option<&str>) -> Vec<TreeNode> {
+    let _ = std::hint::black_box(DEEP_TREE_WALK_V40_14_7_IDENT);
+    let roots = acquire_tree_roots(root_path);
     let nodes = flatten_preorder(roots);
     record_tree_diff(&nodes);
     nodes
@@ -541,6 +679,7 @@ mod real_bus {
     const NULL_PATH: &str = "/org/a11y/atspi/null";
     const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
     const COMPONENT: &str = "org.a11y.atspi.Component";
+    const ACTION: &str = "org.a11y.atspi.Action";
     const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
     const MAX_NODES: usize = 1000;
     const STATE_VISIBLE: u32 = 1u32 << 30;
@@ -624,7 +763,7 @@ mod real_bus {
         }
     }
 
-    fn connect_a11y_bus() -> zbus::Result<zbus::blocking::Connection> {
+    pub(super) fn connect_a11y_bus() -> zbus::Result<zbus::blocking::Connection> {
         let session = zbus::blocking::Connection::session()?;
         let message = session.call_method(
             Some("org.a11y.Bus"),
@@ -690,9 +829,14 @@ mod real_bus {
 
         if role_matches(role_query, &role_name) && name_matches(name_query, &name) {
             let (x, y, w, h) = get_extents(conn, bus, path);
+            let (n_actions, action_name) = probe_actions(conn, bus, path);
             let bounds = ElementBounds {
                 path: stamp_path(window_id, role_query, &name),
                 rect: crate::inject::grant_confirm::Rect { x, y, w, h },
+                n_actions,
+                action_name,
+                dbus_dest: bus.to_string(),
+                dbus_path: path.to_string(),
             };
             if preferred {
                 return Ok(Some(bounds));
@@ -736,6 +880,7 @@ mod real_bus {
         let name = get_name(conn, bus, path);
         let (x, y, w, h) = get_extents(conn, bus, path);
         let visible = get_visible(conn, bus, path);
+        let (n_actions, action_name) = probe_actions(conn, bus, path);
         let mut children = Vec::new();
         for (child_bus, child_path) in get_children(conn, bus, path) {
             match walk_dump(conn, &child_bus, &child_path, depth + 1, limits) {
@@ -755,6 +900,10 @@ mod real_bus {
             h,
             visible,
             children,
+            n_actions,
+            action_name,
+            dbus_dest: bus.to_string(),
+            dbus_path: path.to_string(),
         }))
     }
 
@@ -765,6 +914,48 @@ mod real_bus {
     ) -> Option<String> {
         let message = conn
             .call_method(Some(dest), path, Some(ACCESSIBLE), "GetRoleName", &())
+            .ok()?;
+        message.body().deserialize().ok()
+    }
+
+    fn probe_actions(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+    ) -> (i32, String) {
+        let n_actions = get_n_actions(conn, dest, path);
+        let action_name = if n_actions > 0 {
+            get_action_name(conn, dest, path, 0).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        (n_actions, action_name)
+    }
+
+    fn get_n_actions(conn: &zbus::blocking::Connection, dest: &str, path: &str) -> i32 {
+        let Ok(message) = conn.call_method(
+            Some(dest),
+            path,
+            Some(PROPERTIES),
+            "Get",
+            &(ACTION, "NActions"),
+        ) else {
+            return 0;
+        };
+        match message.body().deserialize::<zbus::zvariant::OwnedValue>() {
+            Ok(v) => i32::try_from(v).unwrap_or(0).max(0),
+            Err(_) => 0,
+        }
+    }
+
+    fn get_action_name(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+        idx: i32,
+    ) -> Option<String> {
+        let message = conn
+            .call_method(Some(dest), path, Some(ACTION), "GetName", &idx)
             .ok()?;
         message.body().deserialize().ok()
     }
@@ -964,6 +1155,11 @@ mod real_bus {
             .collect();
         format!("atspi://{window_id}#{role}:{name}")
     }
+}
+
+#[cfg(feature = "dbus")]
+pub(crate) fn connect_a11y_bus() -> zbus::Result<zbus::blocking::Connection> {
+    real_bus::connect_a11y_bus()
 }
 
 pub fn format_tree_reply(nodes: &[TreeNode]) -> String {
@@ -1177,4 +1373,5 @@ pub fn reset_gap4_test_hooks() {
     set_focus_gen(0);
     clear_tree_cache();
     lock_diff_state().clear();
+    crate::inject::atspi_action::clear_action_override();
 }
