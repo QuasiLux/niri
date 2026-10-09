@@ -72,6 +72,11 @@ static OPC_AT_ACTION_REQ_IDENT: &str = "AT_ACTION_REQ";
 #[used]
 pub(crate) static AT_ACTION_REQ_OPCODE_V40_15_3: &[u8] = b"AT_ACTION_REQ_OPCODE_V40_15_3\0";
 
+/// Live ident for `strings | grep AT_ACTION_REQ_DISPATCHED_V40_15_3` —
+/// planted at the `Frame::AtActionReq` dispatch arm in `socket.rs`.
+#[used]
+pub(crate) static AT_ACTION_REQ_DISPATCHED_V40_15_3: &[u8] = b"AT_ACTION_REQ_DISPATCHED_V40_15_3\0";
+
 #[used]
 #[allow(dead_code)]
 static OPC_AT_TREE_REQ_IDENT: &str = "AT_TREE_REQ";
