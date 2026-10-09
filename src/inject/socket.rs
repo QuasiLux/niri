@@ -717,14 +717,26 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 &bounds.path,
                                 &bounds.rect,
                             );
-                            crate::inject::atspi_ladder::record_bridge_click(cx, cy);
-                            let _ = std::hint::black_box(
-                                crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
+                            let _ = std::hint::black_box(b"\x01LBL_CLICK_ACTION_V40_14_15\x01");
+                            let outcome = crate::inject::atspi_action::toggle_matched_node(
+                                &bounds.dbus_dest,
+                                &bounds.dbus_path,
                             );
-                            let _ = std::hint::black_box(
-                                crate::inject::ELEMENT_AX_LOOKUP_V40_14_6,
+                            let flipped = matches!(
+                                outcome,
+                                crate::inject::atspi_action::ToggleOutcome::Flipped
+                                    | crate::inject::atspi_action::ToggleOutcome::GrabFocusFallbackUsed
                             );
-                            pointer_click(harness, &focus, Point::from((cx, cy)));
+                            if !flipped {
+                                crate::inject::atspi_ladder::record_bridge_click(cx, cy);
+                                let _ = std::hint::black_box(
+                                    crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
+                                );
+                                let _ = std::hint::black_box(
+                                    crate::inject::ELEMENT_AX_LOOKUP_V40_14_6,
+                                );
+                                pointer_click(harness, &focus, Point::from((cx, cy)));
+                            }
                             let mut payload = format!(
                                 "{} {} {} {} {} {} {}",
                                 bounds.path,
@@ -740,6 +752,10 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                             if !trailer.is_empty() {
                                 payload.push('\n');
                                 payload.push_str(&trailer);
+                            }
+                            if flipped && !payload.contains("CHANGED: 1") {
+                                payload.push('\n');
+                                payload.push_str("CHANGED: 1");
                             }
                             tracing::debug!(payload = %payload, "atspi.reply");
                             write_reply(
@@ -769,11 +785,23 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 &bounds.path,
                                 &bounds.rect,
                             );
-                            crate::inject::atspi_ladder::record_bridge_click(cx, cy);
-                            let _ = std::hint::black_box(
-                                crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
+                            let _ = std::hint::black_box(b"\x01LBL_CLICK_ACTION_V40_14_15\x01");
+                            let outcome = crate::inject::atspi_action::toggle_matched_node(
+                                &bounds.dbus_dest,
+                                &bounds.dbus_path,
                             );
-                            pointer_click(harness, &focus, Point::from((cx, cy)));
+                            let flipped = matches!(
+                                outcome,
+                                crate::inject::atspi_action::ToggleOutcome::Flipped
+                                    | crate::inject::atspi_action::ToggleOutcome::GrabFocusFallbackUsed
+                            );
+                            if !flipped {
+                                crate::inject::atspi_ladder::record_bridge_click(cx, cy);
+                                let _ = std::hint::black_box(
+                                    crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
+                                );
+                                pointer_click(harness, &focus, Point::from((cx, cy)));
+                            }
                             let mut payload = format!(
                                 "{} {} {} {} {} {} {}",
                                 bounds.path,
@@ -789,6 +817,10 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                             if !trailer.is_empty() {
                                 payload.push('\n');
                                 payload.push_str(&trailer);
+                            }
+                            if flipped && !payload.contains("CHANGED: 1") {
+                                payload.push('\n');
+                                payload.push_str("CHANGED: 1");
                             }
                             tracing::debug!(payload = %payload, "atspi.reply");
                             write_reply(
