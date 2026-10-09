@@ -697,6 +697,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 },
             ) => {
                 let _ = std::hint::black_box(crate::inject::protocol::AT_ACTION_REQ_OPCODE_V40_15_3);
+                let _ = std::hint::black_box(crate::inject::protocol::AT_ACTION_REQ_DISPATCHED_V40_15_3);
                 let bounds = crate::inject::atspi_ladder::element_lookup_via_tree_dump(
                     req_wid, &role, &name,
                 )
