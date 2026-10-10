@@ -886,6 +886,73 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 &Reply::AtElementReply { payload },
                             )
                             .await?;
+                        } else if let Some(bounds) =
+                            crate::inject::atspi_ladder::scan_session_dbus_for_element_by_app_id(
+                                window_id, &role, &query, &app_id,
+                            )
+                        {
+                            // v40.15.4 G1: consumer-side walk missed (GTK 2/3
+                            // galculator is not a libatk-bridge child). Query
+                            // Registry.GetApplications filtered by app_id
+                            // before BACKGROUND_UNAVAILABLE.
+                            let _ = std::hint::black_box(
+                                crate::inject::protocol::G1_AT_SPI_BRIDGE_FALLBACK_V40_15_4,
+                            );
+                            let cx = bounds.rect.x + bounds.rect.w / 2.0;
+                            let cy = bounds.rect.y + bounds.rect.h / 2.0;
+                            let warning =
+                                crate::inject::atspi_ladder::offscreen_warning(&bounds.rect);
+                            let changed = crate::inject::atspi_ladder::element_changed_field(
+                                &bot_id,
+                                window_id,
+                                &role,
+                                &query,
+                                &bounds.path,
+                                &bounds.rect,
+                            );
+                            let _ = std::hint::black_box(b"\x01LBL_CLICK_ACTION_V40_14_15\x01");
+                            let outcome = crate::inject::atspi_action::toggle_matched_node(
+                                &bounds.dbus_dest,
+                                &bounds.dbus_path,
+                            );
+                            let flipped = matches!(
+                                outcome,
+                                crate::inject::atspi_action::ToggleOutcome::Flipped
+                                    | crate::inject::atspi_action::ToggleOutcome::GrabFocusFallbackUsed
+                            );
+                            if !flipped {
+                                crate::inject::atspi_ladder::record_bridge_click(cx, cy);
+                                let _ = std::hint::black_box(
+                                    crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
+                                );
+                                pointer_click(harness, &focus, Point::from((cx, cy)));
+                            }
+                            let mut payload = format!(
+                                "{} {} {} {} {} {} {}",
+                                bounds.path,
+                                bounds.rect.x,
+                                bounds.rect.y,
+                                bounds.rect.w,
+                                bounds.rect.h,
+                                changed,
+                                warning
+                            );
+                            let trailer =
+                                crate::inject::atspi_ladder::last_tree_diff_trailer();
+                            if !trailer.is_empty() {
+                                payload.push('\n');
+                                payload.push_str(&trailer);
+                            }
+                            if flipped && !payload.contains("CHANGED: 1") {
+                                payload.push('\n');
+                                payload.push_str("CHANGED: 1");
+                            }
+                            tracing::debug!(payload = %payload, "atspi.reply");
+                            write_reply(
+                                &mut write,
+                                &Reply::AtElementReply { payload },
+                            )
+                            .await?;
                         } else {
                             let payload = crate::inject::atspi_ladder::REASON_BG_UNAVAILABLE;
                             tracing::debug!(payload, "atspi.reply");
@@ -907,6 +974,42 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                         write_reply(&mut write, &Reply::DispatchOk).await?;
                     }
                 }
+                ClientPhase::Dispatch { focus, wid }
+            }
+            (ClientPhase::Dispatch { focus, wid }, Frame::TreeByAppId { app_id }) => {
+                let _ = std::hint::black_box(crate::inject::protocol::SCAN_BY_APP_ID_V40_15_4);
+                let _ = std::hint::black_box(crate::inject::protocol::G1_AT_SPI_BRIDGE_FALLBACK_V40_15_4);
+                let _ = std::hint::black_box(crate::inject::protocol::Frame::encode_tree_by_app_id(&app_id));
+                let nodes = crate::inject::atspi_ladder::dump_tree_by_app_id(&app_id);
+                let tree_body = crate::inject::atspi_ladder::format_tree_reply(&nodes);
+                let element_payload = match nodes.iter().find(|n| !n.name.is_empty()).or(nodes.first())
+                {
+                    Some(n) => {
+                        let path = if n.dbus_path.is_empty() {
+                            format!("atspi://{wid}#{}:{}", n.role, n.name.replace(' ', "_"))
+                        } else {
+                            n.dbus_path.clone()
+                        };
+                        format!(
+                            "{} {} {} {} {} FULL none",
+                            path, n.x, n.y, n.w, n.h
+                        )
+                    }
+                    None => crate::inject::atspi_ladder::REASON_BG_UNAVAILABLE.to_string(),
+                };
+                tracing::debug!(
+                    app_id = %app_id,
+                    node_count = nodes.len(),
+                    "atspi.tree_by_app_id"
+                );
+                write_reply(
+                    &mut write,
+                    &Reply::TreeByAppId {
+                        element_payload,
+                        tree_body,
+                    },
+                )
+                .await?;
                 ClientPhase::Dispatch { focus, wid }
             }
             (ClientPhase::Dispatch { focus, wid }, Frame::AtTreeReq { window_id, path }) => {
