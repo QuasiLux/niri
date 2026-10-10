@@ -1675,4 +1675,30 @@ pub fn reset_gap4_test_hooks() {
     clear_tree_cache();
     lock_diff_state().clear();
     crate::inject::atspi_action::clear_action_override();
+    set_force_icon_redraw_override(None);
+}
+
+thread_local! {
+    static FORCE_ICON_REDRAW_OVERRIDE: std::cell::RefCell<Option<fn(&str) -> bool>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Live ident for `strings | grep FORCE_ICON_REDRAW_V40_15_5_OVERRIDE`.
+#[used]
+pub(crate) static FORCE_ICON_REDRAW_V40_15_5_OVERRIDE_IDENT: &[u8] =
+    b"FORCE_ICON_REDRAW_V40_15_5_OVERRIDE\0";
+
+/// Test hook: `force_icon_redraw(dest)` after a successful toggle-button action.
+pub fn set_force_icon_redraw_override(v: Option<fn(&str) -> bool>) {
+    FORCE_ICON_REDRAW_OVERRIDE.with(|slot| *slot.borrow_mut() = v);
+}
+
+/// Synthetic icon-redraw poke. Override is test-only; live D-Bus emit is a later card.
+pub fn force_icon_redraw(dest: &str, obj_path: &str) -> bool {
+    let _ = std::hint::black_box(FORCE_ICON_REDRAW_V40_15_5_OVERRIDE_IDENT);
+    let _ = obj_path;
+    if let Some(hook) = FORCE_ICON_REDRAW_OVERRIDE.with(|slot| *slot.borrow()) {
+        return hook(dest);
+    }
+    true
 }
