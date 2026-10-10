@@ -698,6 +698,9 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
             ) => {
                 let _ = std::hint::black_box(crate::inject::protocol::AT_ACTION_REQ_OPCODE_V40_15_3);
                 let _ = std::hint::black_box(crate::inject::protocol::AT_ACTION_REQ_DISPATCHED_V40_15_3);
+                let _ = std::hint::black_box(
+                    crate::inject::atspi_ladder::FORCE_ICON_REDRAW_V40_15_5_OVERRIDE_IDENT,
+                );
                 let bounds = crate::inject::atspi_ladder::element_lookup_via_tree_dump(
                     req_wid, &role, &name,
                 )
@@ -710,6 +713,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     None => Reply::AtActionReply {
                         ok: false,
                         error: Some("ELEMENT_NOT_FOUND".into()),
+                        force_redraw: false,
                     },
                     Some(b) => {
                         let path = if b.dbus_path.is_empty() {
@@ -723,13 +727,24 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                             b.n_actions,
                         );
                         match harness.apply_action_on_element(req_wid, &path, index) {
-                            Ok(()) => Reply::AtActionReply {
-                                ok: true,
-                                error: None,
-                            },
+                            Ok(()) => {
+                                let force_redraw = role == "toggle button";
+                                if force_redraw {
+                                    let _ = crate::inject::atspi_ladder::force_icon_redraw(
+                                        &b.dbus_dest,
+                                        &path,
+                                    );
+                                }
+                                Reply::AtActionReply {
+                                    ok: true,
+                                    error: None,
+                                    force_redraw,
+                                }
+                            }
                             Err(code) => Reply::AtActionReply {
                                 ok: false,
                                 error: Some(code.into()),
+                                force_redraw: false,
                             },
                         }
                     }
