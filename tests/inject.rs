@@ -4544,3 +4544,140 @@ fn at_action_req_replies_action_not_found_when_index_out_of_range() {
     );
     assert_eq!(last, -1, "do_action must not run for out-of-range index");
 }
+
+#[test]
+fn tree_by_app_id_returns_nodes_only_for_matched_app_id() {
+    use niri::inject::atspi_ladder::{reset_gap4_test_hooks, set_tree_dump_override, TreeNode};
+
+    reset_gap4_test_hooks();
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![
+            TreeNode {
+                role: "application".into(),
+                name: "galculator".into(),
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 300.0,
+                visible: true,
+                children: vec![TreeNode {
+                    role: "push button".into(),
+                    name: "Equals".into(),
+                    x: 10.0,
+                    y: 20.0,
+                    w: 40.0,
+                    h: 16.0,
+                    visible: true,
+                    children: vec![],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            TreeNode {
+                role: "application".into(),
+                name: "pavucontrol".into(),
+                x: 400.0,
+                y: 0.0,
+                w: 500.0,
+                h: 400.0,
+                visible: true,
+                children: vec![TreeNode {
+                    role: "toggle button".into(),
+                    name: "Mute".into(),
+                    x: 111.0,
+                    y: 222.0,
+                    w: 33.0,
+                    h: 44.0,
+                    visible: true,
+                    children: vec![],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ]
+    }
+
+    set_tree_dump_override(Some(dump));
+    let tokens = token_file();
+    let mut harness = Harness::new(tokens.clone());
+    let req = format!("{}BIND 42\nAT_TREE_BY_APP_ID galculator\n", hello_auth());
+    let replies = run_protocol(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    reset_gap4_test_hooks();
+
+    assert!(
+        replies.contains("galculator"),
+        "expected galculator nodes in reply: {replies:?}"
+    );
+    assert!(
+        replies.contains("Equals"),
+        "expected galculator Equals button: {replies:?}"
+    );
+    assert!(
+        !replies.contains("pavucontrol"),
+        "pavucontrol nodes must be absent: {replies:?}"
+    );
+    assert!(
+        !replies.contains("Mute"),
+        "pavucontrol Mute node must be absent: {replies:?}"
+    );
+}
+
+#[test]
+fn atk_version_probe_selects_libatk_for_gtk2_apps() {
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::Duration;
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "qlux-atk-probe-{}-{nanos}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let lib = dir.join("libatk-1.0.so.0");
+    let src = dir.join("atk_dummy.c");
+    fs::write(&src, "int galculator_atk_dummy = 1;\n").unwrap();
+    let compiled = Command::new("gcc")
+        .args(["-shared", "-fPIC", "-o"])
+        .arg(&lib)
+        .arg(&src)
+        .status()
+        .expect("gcc spawn")
+        .success();
+    assert!(compiled, "gcc must build dummy libatk-1.0.so.0");
+
+    // Stand-in for galculator: a child that maps libatk-1.0.so.0 via
+    // LD_LIBRARY_PATH (GTK 2/3 atk, not libatk-bridge-2.0).
+    let mut child = Command::new("python3")
+        .arg("-c")
+        .arg("import ctypes, time; ctypes.CDLL('libatk-1.0.so.0'); time.sleep(30)")
+        .env("LD_LIBRARY_PATH", &dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn galculator-stand-in with libatk-1.0");
+    let pid = child.id();
+    let mut got: Option<&'static [u8]> = None;
+    for _ in 0..80 {
+        thread::sleep(Duration::from_millis(50));
+        let probe = niri::inject::atspi_ladder::atk_version_probe(pid);
+        if probe == b"libatk-1.0" {
+            got = Some(probe);
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(
+        got,
+        Some(&b"libatk-1.0"[..]),
+        "atk_version_probe must select libatk-1.0 for GTK 2/3 maps"
+    );
+}
