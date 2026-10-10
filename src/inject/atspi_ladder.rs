@@ -158,6 +158,82 @@ pub fn scan_session_dbus_for_element(
     }
 }
 
+/// v40.15.4 G1: Registry.GetApplications walk filtered by `app_id`.
+/// Used when the consumer-side dump/scan misses GTK 2/3 (galculator /
+/// `libatk-1.0`) apps that still register `toolkit="GTK"` on the a11y bus.
+pub fn scan_session_dbus_for_element_by_app_id(
+    window_id: u64,
+    role: &str,
+    name: &str,
+    app_id: &str,
+) -> Option<ElementBounds> {
+    let _ = std::hint::black_box(crate::inject::protocol::SCAN_BY_APP_ID_V40_15_4);
+    let _ = std::hint::black_box(crate::inject::protocol::G1_AT_SPI_BRIDGE_FALLBACK_V40_15_4);
+    if app_id.trim().is_empty() {
+        return None;
+    }
+    let roots = filter_tree_by_app_id(acquire_tree_roots(None), app_id);
+    if let Some(hit) = lookup_nested_tree(&roots, window_id, role, name) {
+        return Some(hit);
+    }
+    real_scan_session_dbus_for_element_by_app_id(window_id, role, name, app_id)
+}
+
+/// v40.15.4: dump only the matched application's subtree (not the full bus).
+pub fn dump_tree_by_app_id(app_id: &str) -> Vec<TreeNode> {
+    let _ = std::hint::black_box(crate::inject::protocol::SCAN_BY_APP_ID_V40_15_4);
+    let roots = filter_tree_by_app_id(acquire_tree_roots(None), app_id);
+    let nodes = flatten_preorder(roots);
+    record_tree_diff(&nodes);
+    nodes
+}
+
+fn app_id_token_matches(candidate: &str, app_id: &str) -> bool {
+    let c = candidate.trim();
+    let a = app_id.trim();
+    if c.is_empty() || a.is_empty() {
+        return false;
+    }
+    let c = c.to_ascii_lowercase();
+    let a = a.to_ascii_lowercase();
+    c == a || c.contains(&a) || a.contains(&c)
+}
+
+fn node_matches_app_id(node: &TreeNode, app_id: &str) -> bool {
+    app_id_token_matches(&node.name, app_id)
+        || app_id_token_matches(&node.dbus_dest, app_id)
+}
+
+fn filter_tree_by_app_id(nodes: Vec<TreeNode>, app_id: &str) -> Vec<TreeNode> {
+    let mut out = Vec::new();
+    for node in nodes {
+        if node_matches_app_id(&node, app_id) {
+            out.push(node);
+            continue;
+        }
+        let kids = filter_tree_by_app_id(node.children, app_id);
+        out.extend(kids);
+    }
+    out
+}
+
+/// Scan `/proc/<pid>/maps` for ATK vs atk-bridge. galculator / GTK 2/3
+/// maps `libatk-1.0.so.0`; pavucontrol / GTK 4 maps `libatk-bridge-2.0.so.0`.
+pub fn atk_version_probe(pid: u32) -> &'static [u8] {
+    let _ = std::hint::black_box(crate::inject::protocol::G1_AT_SPI_BRIDGE_FALLBACK_V40_15_4);
+    let path = format!("/proc/{pid}/maps");
+    let Ok(maps) = std::fs::read_to_string(path) else {
+        return b"libatk-bridge-2.0";
+    };
+    if maps.contains("libatk-1.0.so.0") || maps.contains("libatk-1.0.so") {
+        b"libatk-1.0"
+    } else if maps.contains("libatk-bridge-2.0.so.0") || maps.contains("libatk-bridge-2.0.so") {
+        b"libatk-bridge-2.0"
+    } else {
+        b"libatk-bridge-2.0"
+    }
+}
+
 /// v40.14.6: filter the already-published `AT_TREE_DUMP` subtree by
 /// `(role, name)`. Bounds come from the dump, so no second
 /// `Component.GetExtents` round-trip on the matched node — which is the
@@ -622,6 +698,37 @@ fn increment_real_tree_walk_attempts() {
     REAL_TREE_WALK_ATTEMPTS.with(|c| c.set(c.get() + 1));
 }
 
+fn real_scan_session_dbus_for_element_by_app_id(
+    window_id: u64,
+    role: &str,
+    name_query: &str,
+    app_id: &str,
+) -> Option<ElementBounds> {
+    let _ = std::hint::black_box(crate::inject::protocol::G1_AT_SPI_BRIDGE_FALLBACK_V40_15_4);
+    increment_real_scan_attempts();
+    #[cfg(feature = "dbus")]
+    {
+        let role = role.to_owned();
+        let name_query = name_query.to_owned();
+        let app_id = app_id.to_owned();
+        return match std::thread::spawn(move || {
+            real_bus::scan_session_dbus_for_element_by_app_id(
+                window_id, &role, &name_query, &app_id,
+            )
+        })
+        .join()
+        {
+            Ok(v) => v,
+            Err(_) => None,
+        };
+    }
+    #[cfg(not(feature = "dbus"))]
+    {
+        let _ = (window_id, role, name_query, app_id);
+        None
+    }
+}
+
 fn real_scan_session_dbus_for_element(
     window_id: u64,
     role: &str,
@@ -707,6 +814,50 @@ mod real_bus {
             self.nodes += 1;
             true
         }
+    }
+
+    pub(super) fn scan_session_dbus_for_element_by_app_id(
+        window_id: u64,
+        role: &str,
+        name_query: &str,
+        app_id: &str,
+    ) -> Option<ElementBounds> {
+        let conn = match connect_a11y_bus() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(error = %e, "atspi.scan_by_app_id connect failed");
+                return None;
+            }
+        };
+        for (bus, path) in get_applications_gtk(&conn) {
+            if !application_matches_app_id(&conn, &bus, &path, app_id) {
+                continue;
+            }
+            let mut first: Option<ElementBounds> = None;
+            match walk_scan(
+                &conn,
+                &bus,
+                &path,
+                0,
+                &mut WalkLimits::new(),
+                window_id,
+                role,
+                name_query,
+                None,
+                &mut first,
+            ) {
+                Ok(Some(hit)) => return Some(hit),
+                Ok(None) if first.is_some() => return first,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(error = %e, "atspi.scan_by_app_id walk failed");
+                    if first.is_some() {
+                        return first;
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub(super) fn scan_session_dbus_for_element(
@@ -1012,6 +1163,156 @@ mod real_bus {
         }
         if let Ok(words) = message.body().deserialize::<[u32; 2]>() {
             return words[0] & STATE_VISIBLE != 0;
+        }
+        false
+    }
+
+    fn get_applications_gtk(conn: &zbus::blocking::Connection) -> Vec<(String, String)> {
+        let mut apps = get_applications(conn);
+        if apps.is_empty() {
+            apps = get_children(conn, REGISTRY_DEST, ROOT_PATH);
+        }
+        apps.into_iter()
+            .filter(|(bus, path)| application_toolkit_is_gtk(conn, bus, path))
+            .collect()
+    }
+
+    fn get_applications(conn: &zbus::blocking::Connection) -> Vec<(String, String)> {
+        const IFACE: &str = "org.a11y.atspi.Registry";
+        const PATHS: [&str; 3] = [
+            "/org/a11y/atspi/registry",
+            ROOT_PATH,
+            "/org/a11y/atspi/accessible/root",
+        ];
+        for path in PATHS {
+            let Ok(message) =
+                conn.call_method(Some(REGISTRY_DEST), path, Some(IFACE), "GetApplications", &())
+            else {
+                continue;
+            };
+            if let Some(apps) = decode_applications(&message) {
+                if !apps.is_empty() {
+                    return apps;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn decode_applications(message: &zbus::message::Message) -> Option<Vec<(String, String)>> {
+        if let Some(v) = decode_children(message) {
+            return Some(v);
+        }
+        if let Ok(v) = message
+            .body()
+            .deserialize::<Vec<zbus::zvariant::OwnedObjectPath>>()
+        {
+            return Some(
+                v.into_iter()
+                    .map(|path| (REGISTRY_DEST.to_string(), path.to_string()))
+                    .collect(),
+            );
+        }
+        if let Ok(v) = message.body().deserialize::<Vec<String>>() {
+            return Some(
+                v.into_iter()
+                    .map(|bus| {
+                        if bus.starts_with('/') {
+                            (REGISTRY_DEST.to_string(), bus)
+                        } else {
+                            (bus, ROOT_PATH.to_string())
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        None
+    }
+
+    fn get_application_attributes(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+    ) -> HashMap<String, String> {
+        const APP: &str = "org.a11y.atspi.Application";
+        if let Ok(message) =
+            conn.call_method(Some(dest), path, Some(APP), "GetApplicationAttributes", &())
+        {
+            if let Ok(attrs) = message.body().deserialize::<HashMap<String, String>>() {
+                if !attrs.is_empty() {
+                    return attrs;
+                }
+            }
+        }
+        let mut attrs = get_attributes(conn, dest, path);
+        if let Some(toolkit) = get_toolkit_name(conn, dest, path) {
+            attrs.entry("toolkit".into()).or_insert(toolkit);
+        }
+        attrs
+    }
+
+    fn get_toolkit_name(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+    ) -> Option<String> {
+        let message = conn
+            .call_method(
+                Some(dest),
+                path,
+                Some(PROPERTIES),
+                "Get",
+                &("org.a11y.atspi.Application", "ToolkitName"),
+            )
+            .ok()?;
+        let v = message
+            .body()
+            .deserialize::<zbus::zvariant::OwnedValue>()
+            .ok()?;
+        String::try_from(v).ok()
+    }
+
+    fn application_toolkit_is_gtk(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+    ) -> bool {
+        let attrs = get_application_attributes(conn, dest, path);
+        for key in ["toolkit", "ToolkitName", "toolkit-name"] {
+            if let Some(v) = attrs.get(key) {
+                if v.eq_ignore_ascii_case("GTK") || v.to_ascii_lowercase().contains("gtk") {
+                    return true;
+                }
+            }
+        }
+        if let Some(v) = get_toolkit_name(conn, dest, path) {
+            return v.eq_ignore_ascii_case("GTK") || v.to_ascii_lowercase().contains("gtk");
+        }
+        // Keep unknown-toolkit apps so a strict miss does not drop galculator
+        // when GetApplicationAttributes is unimplemented on that bus name.
+        true
+    }
+
+    fn application_matches_app_id(
+        conn: &zbus::blocking::Connection,
+        dest: &str,
+        path: &str,
+        app_id: &str,
+    ) -> bool {
+        if super::app_id_token_matches(dest, app_id) {
+            return true;
+        }
+        let name = get_name(conn, dest, path);
+        if super::app_id_token_matches(&name, app_id) {
+            return true;
+        }
+        let attrs = get_application_attributes(conn, dest, path);
+        for key in ["id", "app-id", "app_id", "application", "wm-class", "name"] {
+            if let Some(v) = attrs.get(key) {
+                if super::app_id_token_matches(v, app_id) {
+                    return true;
+                }
+            }
         }
         false
     }
