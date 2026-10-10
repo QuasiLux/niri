@@ -80,6 +80,10 @@ pub(crate) static AT_ACTION_REQ_OPCODE_V40_15_3: &[u8] = b"AT_ACTION_REQ_OPCODE_
 #[used]
 pub(crate) static AT_ACTION_REQ_DISPATCHED_V40_15_3: &[u8] = b"AT_ACTION_REQ_DISPATCHED_V40_15_3\0";
 
+/// Live ident for `strings | grep FORCE_ICON_REDRAW_V40_15_5` (G2 icon redraw).
+#[used]
+pub(crate) static FORCE_ICON_REDRAW_V40_15_5: &[u8] = b"FORCE_ICON_REDRAW_V40_15_5\0";
+
 #[used]
 #[allow(dead_code)]
 static OPC_AT_TREE_REQ_IDENT: &str = "AT_TREE_REQ";
@@ -318,7 +322,7 @@ pub enum Reply {
     GrantAckOk,
     GrantAckDenied,
     AtElementReply { payload: String },
-    AtActionReply { ok: bool, error: Option<String> },
+    AtActionReply { ok: bool, error: Option<String>, force_redraw: bool },
     AtTreeReply { body: String },
     /// Union of `AT_ELEMENT_REPLY` (best match) + `AT_TREE_REPLY` subtree.
     TreeByAppId {
@@ -348,13 +352,19 @@ impl Reply {
             Reply::GrantAckOk => format!("{REP_GRANT_ACK} {REP_GRANT_ACK_OK_W}\n"),
             Reply::GrantAckDenied => format!("{REP_GRANT_ACK} {REP_GRANT_DENIED_W}\n"),
             Reply::AtElementReply { payload } => format!("{REP_AT_ELEMENT_REPLY} {payload}\n"),
-            Reply::AtActionReply { ok, error } => {
+            Reply::AtActionReply {
+                ok,
+                error,
+                force_redraw,
+            } => {
                 // Trap 45: live encoder call site (not token_file_path-only).
                 let _ = std::hint::black_box(AT_ACTION_REQ_OPCODE_V40_15_3);
-                match (ok, error) {
-                    (true, _) => format!("{REP_AT_ACTION_REPLY} OK\n"),
-                    (false, Some(code)) => format!("{REP_AT_ACTION_REPLY} ERR {code}\n"),
-                    (false, None) => format!("{REP_AT_ACTION_REPLY} ERR UNKNOWN\n"),
+                let _ = std::hint::black_box(FORCE_ICON_REDRAW_V40_15_5);
+                match (ok, error, force_redraw) {
+                    (true, _, true) => format!("{REP_AT_ACTION_REPLY} OK FORCE_REDRAW\n"),
+                    (true, _, false) => format!("{REP_AT_ACTION_REPLY} OK\n"),
+                    (false, Some(code), _) => format!("{REP_AT_ACTION_REPLY} ERR {code}\n"),
+                    (false, None, _) => format!("{REP_AT_ACTION_REPLY} ERR UNKNOWN\n"),
                 }
             }
             Reply::AtTreeReply { body } => format!("{REP_AT_TREE_REPLY} {body}"),
@@ -735,9 +745,26 @@ fn parse_at_action_req(text: &str) -> Result<Frame, FrameError> {
         .ok_or(FrameError::Malformed)?
         .parse()
         .map_err(|_| FrameError::Malformed)?;
-    let role = parts.next().ok_or(FrameError::Malformed)?;
-    let name = parts.next().ok_or(FrameError::Malformed)?;
-    let rest: Vec<&str> = parts.collect();
+    let mut rest: Vec<&str> = parts.collect();
+    // G2: AT-SPI role "toggle button" is two wire tokens; name may be
+    // "Mute audio". Existing one-token role/name frames are unchanged.
+    let role = if rest.len() >= 4 && rest[0] == "toggle" && rest[1] == "button" {
+        rest.remove(0);
+        rest.remove(0);
+        "toggle button".to_string()
+    } else {
+        if rest.is_empty() {
+            return Err(FrameError::Malformed);
+        }
+        rest.remove(0).to_string()
+    };
+    if rest.is_empty() {
+        return Err(FrameError::Malformed);
+    }
+    let mut name = rest.remove(0).to_string();
+    if role == "toggle button" && rest.len() >= 3 {
+        name = format!("{name} {}", rest.remove(0));
+    }
     let index_tok = rest.last().ok_or(FrameError::Malformed)?;
     if rest.len() > 2 {
         return Err(FrameError::Malformed);
@@ -745,8 +772,8 @@ fn parse_at_action_req(text: &str) -> Result<Frame, FrameError> {
     let index: i32 = index_tok.parse().map_err(|_| FrameError::Malformed)?;
     Ok(Frame::AtActionReq {
         wid,
-        role: role.to_string(),
-        name: name.to_string(),
+        role,
+        name,
         index,
     })
 }

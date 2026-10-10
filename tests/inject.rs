@@ -4681,3 +4681,197 @@ fn atk_version_probe_selects_libatk_for_gtk2_apps() {
         "atk_version_probe must select libatk-1.0 for GTK 2/3 maps"
     );
 }
+
+#[test]
+fn force_icon_redraw_after_action_req() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use niri::inject::atspi_action::{set_action_override, ActionProbe};
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_force_icon_redraw_override, set_scan_override,
+        set_tree_dump_override, TreeNode,
+    };
+    use niri::inject::protocol::set_apply_action_on_element_override;
+
+    reset_gap4_test_hooks();
+    static FLAG: AtomicBool = AtomicBool::new(false);
+    FLAG.store(false, Ordering::SeqCst);
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "toggle button".into(),
+            name: "Mute audio".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 34.0,
+            h: 34.0,
+            visible: true,
+            n_actions: 1,
+            action_name: "click".into(),
+            dbus_dest: ":1.1".into(),
+            dbus_path: "/org/a11y/atspi/accessible/1".into(),
+            children: vec![],
+            ..Default::default()
+        }]
+    }
+    fn do_action(_idx: i32) -> bool {
+        true
+    }
+    fn grab_focus_false() -> bool {
+        false
+    }
+
+    set_tree_dump_override(Some(dump));
+    set_scan_override(None);
+    set_apply_action_on_element_override(Some(do_action));
+    set_action_override(Some(ActionProbe {
+        names: vec!["click".into()],
+        do_action,
+        grab_focus: grab_focus_false,
+    }));
+    set_force_icon_redraw_override(Some(|_| {
+        FLAG.store(true, Ordering::SeqCst);
+        true
+    }));
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ACTION_REQ {KNOWN_WINDOW} toggle button Mute audio click 0\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    let flag = FLAG.load(Ordering::SeqCst);
+    reset_gap4_test_hooks();
+    set_apply_action_on_element_override(None);
+    set_action_override(None);
+    set_tree_dump_override(None);
+    set_scan_override(None);
+    set_force_icon_redraw_override(None);
+    assert!(
+        replies.contains("AT_ACTION_REPLY OK FORCE_REDRAW"),
+        "{replies:?}"
+    );
+    assert!(flag, "force_icon_redraw override must be invoked");
+}
+
+#[test]
+fn force_icon_redraw_skipped_for_non_toggle_role() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use niri::inject::atspi_action::{set_action_override, ActionProbe};
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_force_icon_redraw_override, set_scan_override,
+        set_tree_dump_override, TreeNode,
+    };
+    use niri::inject::protocol::set_apply_action_on_element_override;
+
+    reset_gap4_test_hooks();
+    static FLAG: AtomicBool = AtomicBool::new(false);
+    FLAG.store(false, Ordering::SeqCst);
+
+    fn dump(_path: Option<&str>) -> Vec<TreeNode> {
+        vec![TreeNode {
+            role: "button".into(),
+            name: "Equals".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 40.0,
+            h: 16.0,
+            visible: true,
+            n_actions: 1,
+            action_name: "click".into(),
+            dbus_dest: ":1.1".into(),
+            dbus_path: "/org/a11y/atspi/accessible/2".into(),
+            children: vec![],
+            ..Default::default()
+        }]
+    }
+    fn do_action(_idx: i32) -> bool {
+        true
+    }
+    fn grab_focus_false() -> bool {
+        false
+    }
+
+    set_tree_dump_override(Some(dump));
+    set_scan_override(None);
+    set_apply_action_on_element_override(Some(do_action));
+    set_action_override(Some(ActionProbe {
+        names: vec!["click".into()],
+        do_action,
+        grab_focus: grab_focus_false,
+    }));
+    set_force_icon_redraw_override(Some(|_| {
+        FLAG.store(true, Ordering::SeqCst);
+        true
+    }));
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("galculator");
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ACTION_REQ {KNOWN_WINDOW} button Equals click 0\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    let flag = FLAG.load(Ordering::SeqCst);
+    reset_gap4_test_hooks();
+    set_apply_action_on_element_override(None);
+    set_action_override(None);
+    set_tree_dump_override(None);
+    set_scan_override(None);
+    set_force_icon_redraw_override(None);
+    assert!(
+        replies.contains("AT_ACTION_REPLY OK"),
+        "{replies:?}"
+    );
+    assert!(
+        !replies.contains("FORCE_REDRAW"),
+        "non-toggle role must not request icon redraw: {replies:?}"
+    );
+    assert!(!flag, "force_icon_redraw override must not run for non-toggle");
+}
