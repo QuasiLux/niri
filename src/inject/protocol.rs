@@ -92,6 +92,11 @@ static OPC_AT_TREE_REQ_IDENT: &str = "AT_TREE_REQ";
 #[allow(dead_code)]
 static OPC_AT_TREE_BY_APP_ID_IDENT: &str = "AT_TREE_BY_APP_ID";
 
+/// v40.17 KEY modifiers. `#[used]` byte static plus `black_box` at the KEY
+/// parse and press sites so `strings | grep NIRI_KEY_MODIFIERS_V40_17` survives lld.
+#[used]
+pub(crate) static NIRI_KEY_MODIFIERS_V40_17: &[u8] = b"NIRI_KEY_MODIFIERS_V40_17\0";
+
 /// Trap 45: `#[used]` byte statics (not `&[&str]`) referenced at the live
 /// `Frame::TreeByAppId` wire-encoder arm via `std::hint::black_box`.
 #[used]
@@ -232,9 +237,13 @@ pub enum Frame {
         x: f64,
         y: f64,
     },
+    /// `KEY <name> [SHIFT|1|shifted|CTRL|SUPER|ALT …]`
+    /// or combinator `KEY ctrl+shift+t` (the non-modifier piece is the key name).
+    /// Bot id and window id stay on AUTH/BIND — they are not KEY fields (v40.17).
     Key {
         name: String,
         shift: bool,
+        mods: Vec<KeyMod>,
     },
     Scroll {
         dx: f64,
@@ -283,6 +292,40 @@ impl Frame {
         let _ = std::hint::black_box(SCAN_BY_APP_ID_V40_15_4);
         let _ = std::hint::black_box(G1_AT_SPI_BRIDGE_FALLBACK_V40_15_4);
         format!("{OPC_AT_TREE_BY_APP_ID} {app_id}\n").into_bytes()
+    }
+}
+
+/// Modifier token on a KEY frame, in encounter order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyMod {
+    Shift,
+    Ctrl,
+    Super,
+    Alt,
+}
+
+/// Flags consumed by the press path. Hold order is Shift_L, Control_L,
+/// Super_L, Alt_L; release is the reverse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeyMods {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub super_mod: bool,
+    pub alt: bool,
+}
+
+impl KeyMods {
+    pub fn from_list(mods: &[KeyMod]) -> Self {
+        let mut out = Self::default();
+        for m in mods {
+            match m {
+                KeyMod::Shift => out.shift = true,
+                KeyMod::Ctrl => out.ctrl = true,
+                KeyMod::Super => out.super_mod = true,
+                KeyMod::Alt => out.alt = true,
+            }
+        }
+        out
     }
 }
 
@@ -436,6 +479,11 @@ pub trait InjectHarness {
         let _ = shift;
         self.key_press(xkb_name)
     }
+    /// KEY hook with ctrl/super/alt holds (v40.17). Default keeps the shift path
+    /// so harnesses that only override `key_press_with_shift` do not drop case.
+    fn key_press_with_mods(&mut self, xkb_name: &str, mods: KeyMods) -> bool {
+        self.key_press_with_shift(xkb_name, mods.shift)
+    }
     /// Focus the agent seat's keyboard on `window_id`'s surface.
     /// Default no-op for stub harnesses. Production/e2e override.
     fn set_keyboard_focus(&mut self, _wid: u64) -> bool {
@@ -571,18 +619,7 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
         }
         OPC_BIND => parse_bind(parts).map(|id| (Frame::Bind(id), after)),
         OPC_CLICK => parse_two_f64(parts).map(|(x, y)| (Frame::Click { x, y }, after)),
-        OPC_KEY => {
-            let name = parts.next().ok_or(FrameError::Malformed)?;
-            let shift = match parts.next() {
-                None => false,
-                Some("SHIFT") | Some("1") | Some("shifted") => true,
-                Some(_) => return Err(FrameError::Malformed),
-            };
-            if parts.next().is_some() {
-                return Err(FrameError::Malformed);
-            }
-            Ok((Frame::Key { name: name.to_string(), shift }, after))
-        }
+        OPC_KEY => parse_key(parts).map(|frame| (frame, after)),
         OPC_SCROLL => parse_two_f64(parts).map(|(dx, dy)| (Frame::Scroll { dx, dy }, after)),
         OPC_GRANT_REQUEST => {
             let bot_id = parts.next().ok_or(FrameError::Malformed)?;
@@ -631,6 +668,88 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
         OPC_AT_TREE_BY_APP_ID => parse_at_tree_by_app_id(text).map(|frame| (frame, after)),
         _ => Err(FrameError::UnknownOpcode),
     }
+}
+
+fn classify_key_mod(tok: &str) -> Option<KeyMod> {
+    if tok == "1" {
+        return Some(KeyMod::Shift);
+    }
+    match tok.to_ascii_lowercase().as_str() {
+        "shift" | "shifted" => Some(KeyMod::Shift),
+        "ctrl" => Some(KeyMod::Ctrl),
+        "super" => Some(KeyMod::Super),
+        "alt" => Some(KeyMod::Alt),
+        _ => None,
+    }
+}
+
+fn push_key_mod(mods: &mut Vec<KeyMod>, m: KeyMod) {
+    if !mods.contains(&m) {
+        mods.push(m);
+    }
+}
+
+/// `KEY <name> [mod…]` or `KEY <mod>+<name>+<mod>`.
+/// A second non-modifier token is [`FrameError::Malformed`] (`KEY t foo`).
+fn parse_key<'a>(mut parts: impl Iterator<Item = &'a str>) -> Result<Frame, FrameError> {
+    let _ = std::hint::black_box(NIRI_KEY_MODIFIERS_V40_17);
+    let _ = std::hint::black_box(
+        ::core::primitive::str::from_utf8(b"NIRI_KEY_MODIFIERS_V40_17\0").unwrap(),
+    );
+    let first = parts.next().ok_or(FrameError::Malformed)?;
+    let mut mods = Vec::new();
+    let name = if first.contains('+') {
+        if parts.next().is_some() {
+            return Err(FrameError::Malformed);
+        }
+        parse_key_combinator(first, &mut mods)?
+    } else {
+        for tok in parts {
+            if tok.contains('+') {
+                for piece in tok.split('+') {
+                    if piece.is_empty() {
+                        return Err(FrameError::Malformed);
+                    }
+                    let Some(m) = classify_key_mod(piece) else {
+                        return Err(FrameError::Malformed);
+                    };
+                    push_key_mod(&mut mods, m);
+                }
+            } else {
+                let Some(m) = classify_key_mod(tok) else {
+                    return Err(FrameError::Malformed);
+                };
+                push_key_mod(&mut mods, m);
+            }
+        }
+        first.to_string()
+    };
+    if name.is_empty() {
+        return Err(FrameError::Malformed);
+    }
+    let flags = KeyMods::from_list(&mods);
+    Ok(Frame::Key {
+        name,
+        shift: flags.shift,
+        mods,
+    })
+}
+
+fn parse_key_combinator(token: &str, mods: &mut Vec<KeyMod>) -> Result<String, FrameError> {
+    let mut name: Option<String> = None;
+    for piece in token.split('+') {
+        if piece.is_empty() {
+            return Err(FrameError::Malformed);
+        }
+        if let Some(m) = classify_key_mod(piece) {
+            push_key_mod(mods, m);
+        } else if name.is_some() {
+            return Err(FrameError::Malformed);
+        } else {
+            name = Some(piece.to_string());
+        }
+    }
+    name.ok_or(FrameError::Malformed)
 }
 
 fn strip_cr(bytes: &[u8]) -> &[u8] {
@@ -1026,6 +1145,7 @@ mod tests {
             Frame::Key {
                 name: "XF86XK_AudioMute".into(),
                 shift: false,
+                mods: vec![],
             }
         );
         assert!(rest.is_empty());
