@@ -51,7 +51,7 @@ use crate::inject::grant_confirm::{
     PendingGrant, SeatKind,
 };
 use crate::inject::grants::GrantMap;
-use crate::inject::protocol::{InjectHarness, Reply};
+use crate::inject::protocol::{InjectHarness, KeyMods, Reply};
 use crate::inject::socket::handle_inject_client_with_close;
 use crate::inject::AppRoutes;
 use crate::input::agent_seat::AgentSeat;
@@ -68,7 +68,7 @@ use crate::input::agent_seat::AgentSeat;
 pub struct KeyDispatchReq {
     pub wid: Option<u64>,
     pub xkb_name: String,
-    pub shift: bool,
+    pub mods: KeyMods,
     pub reply: std::sync::mpsc::Sender<bool>,
 }
 
@@ -84,10 +84,10 @@ fn bind_worker_key_dispatch_tx(tx: Option<calloop::channel::Sender<KeyDispatchRe
 /// Post a KEY frame to the main loop and block for ACK.
 ///
 /// Returns `None` when this thread has no handoff sender (in-process tests).
-pub fn try_handoff_key_to_main(wid: Option<u64>, xkb_name: &str, shift: bool) -> Option<bool> {
+pub fn try_handoff_key_to_main(wid: Option<u64>, xkb_name: &str, mods: KeyMods) -> Option<bool> {
     WORKER_KEY_DISPATCH_TX.with(|slot| {
         let tx = slot.borrow();
-        tx.as_ref().map(|tx| post_key_dispatch(tx, wid, xkb_name, shift))
+        tx.as_ref().map(|tx| post_key_dispatch(tx, wid, xkb_name, mods))
     })
 }
 
@@ -96,7 +96,7 @@ pub fn post_key_dispatch(
     tx: &calloop::channel::Sender<KeyDispatchReq>,
     wid: Option<u64>,
     xkb_name: &str,
-    shift: bool,
+    mods: KeyMods,
 ) -> bool {
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
     let _ = std::hint::black_box(KEY_DELIVERY_V40_9_DISPATCH_IDENT);
@@ -104,7 +104,7 @@ pub fn post_key_dispatch(
     let req = KeyDispatchReq {
         wid,
         xkb_name: xkb_name.to_string(),
-        shift,
+        mods,
         reply: reply_tx,
     };
     if tx.send(req).is_err() {
@@ -535,6 +535,21 @@ pub(crate) fn inject_agent_key_press_shift<D: SeatHandler + 'static>(
     time: InputTime,
     shift: bool,
 ) -> bool {
+    inject_agent_key_press_mods(keyboard, state, xkb_name, time, shift, false, false, false)
+}
+
+/// Hold Shift_L / Control_L / Super_L / Alt_L (whichever are requested), then
+/// press+release the key, then release modifiers in reverse order.
+pub(crate) fn inject_agent_key_press_mods<D: SeatHandler + 'static>(
+    keyboard: &KeyboardHandle<D>,
+    state: &mut D,
+    xkb_name: &str,
+    time: InputTime,
+    shift: bool,
+    ctrl: bool,
+    super_mod: bool,
+    alt: bool,
+) -> bool {
     let Some(keysym) = lookup_inject_keysym(xkb_name) else {
         return false;
     };
@@ -545,25 +560,43 @@ pub(crate) fn inject_agent_key_press_shift<D: SeatHandler + 'static>(
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_10_SHIFT_MODIFIER);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_13_SHIFT_THROUGH);
-    let mut t = time.micros();
-    let shift_kc = if shift {
-        let Some(sk) = lookup_inject_keysym("Shift_L").and_then(|s| keyboard.keycode_for_keysym(s))
+    let _ = std::hint::black_box(crate::inject::protocol::NIRI_KEY_MODIFIERS_V40_17);
+    let _ = std::hint::black_box(
+        ::core::primitive::str::from_utf8(b"NIRI_KEY_MODIFIERS_V40_17\0").unwrap(),
+    );
+    let mut mod_names: Vec<&'static str> = Vec::with_capacity(4);
+    if shift {
+        mod_names.push("Shift_L");
+    }
+    if ctrl {
+        mod_names.push("Control_L");
+    }
+    if super_mod {
+        mod_names.push("Super_L");
+    }
+    if alt {
+        mod_names.push("Alt_L");
+    }
+    let mut held = Vec::with_capacity(mod_names.len());
+    for name in &mod_names {
+        let Some(sk) = lookup_inject_keysym(name).and_then(|s| keyboard.keycode_for_keysym(s))
         else {
             return false;
         };
+        held.push(sk);
+    }
+    let mut t = time.micros();
+    for sk in &held {
         keyboard.input(
             state,
-            sk,
+            *sk,
             KeyState::Pressed,
             SERIAL_COUNTER.next_serial(),
             InputTime::from_micros(t),
             |_d, _mods, _handle| FilterResult::<()>::Forward,
         );
         t = t.saturating_add(RELEASE_DELAY_MICROS);
-        Some(sk)
-    } else {
-        None
-    };
+    }
     let time = InputTime::from_micros(t);
     let release_time = InputTime::from_micros(t.saturating_add(RELEASE_DELAY_MICROS));
     let serial = SERIAL_COUNTER.next_serial();
@@ -584,15 +617,17 @@ pub(crate) fn inject_agent_key_press_shift<D: SeatHandler + 'static>(
         release_time,
         |_d, _mods, _handle| FilterResult::<()>::Forward,
     );
-    if let Some(sk) = shift_kc {
+    let mut release_t = t.saturating_add(2 * RELEASE_DELAY_MICROS);
+    for sk in held.into_iter().rev() {
         keyboard.input(
             state,
             sk,
             KeyState::Released,
             SERIAL_COUNTER.next_serial(),
-            InputTime::from_micros(t.saturating_add(2 * RELEASE_DELAY_MICROS)),
+            InputTime::from_micros(release_t),
             |_d, _mods, _handle| FilterResult::<()>::Forward,
         );
+        release_t = release_t.saturating_add(RELEASE_DELAY_MICROS);
     }
     true
 }
@@ -873,23 +908,36 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     }
 
     fn key_press_with_shift(&mut self, xkb_name: &str, shift: bool) -> bool {
+        self.key_press_with_mods(
+            xkb_name,
+            KeyMods {
+                shift,
+                ..KeyMods::default()
+            },
+        )
+    }
+
+    fn key_press_with_mods(&mut self, xkb_name: &str, mods: KeyMods) -> bool {
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
         let _ = std::hint::black_box(KEY_DELIVERY_V40_9_DISPATCH_IDENT);
-        self.state.surface_target.lock().unwrap().last_shift = Some(shift);
+        self.state.surface_target.lock().unwrap().last_shift = Some(mods.shift);
         if let Some(tx) = self.state.key_dispatch_tx.as_ref() {
             // Production worker: post to the main compositor loop and await ACK.
-            return post_key_dispatch(tx, self.state.pending_key_wid, xkb_name, shift);
+            return post_key_dispatch(tx, self.state.pending_key_wid, xkb_name, mods);
         }
         // tests/inject.rs + src/inject_e2e.rs: no main-loop receiver, so keep
         // the agent-seat path (e2e asserts key_count=1, not alacritty).
         let keyboard = self.state.agent_seat.keyboard.clone();
         let time = self.now_ms();
-        if !inject_agent_key_press_shift(
+        if !inject_agent_key_press_mods(
             &keyboard,
             self.state,
             xkb_name,
             InputTime::from_millis(time),
-            shift,
+            mods.shift,
+            mods.ctrl,
+            mods.super_mod,
+            mods.alt,
         ) {
             return false;
         }
