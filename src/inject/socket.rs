@@ -29,10 +29,10 @@ use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use super::protocol::{
-    parse_frame, validate_token, ClickOutcome, Frame, FrameError, InjectHarness, Reply, SeatKind,
-    TokenError, ERR_BAD_TOKEN, ERR_BAD_WINDOW, ERR_GRANT_DENIED, ERR_GRANT_NOT_PENDING, ERR_IO,
-    ERR_LOCKED, ERR_NOT_GRANTED, ERR_NO_TOKEN_FILE, ERR_OCCLUDED, ERR_OUTPUTS_OFF, ERR_STALE_TOKEN,
-    ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN, OPC_AUTH,
+    parse_frame, validate_token, ClickOutcome, Frame, FrameError, InjectHarness, KeyMods, Reply,
+    SeatKind, TokenError, ERR_BAD_TOKEN, ERR_BAD_WINDOW, ERR_GRANT_DENIED, ERR_GRANT_NOT_PENDING,
+    ERR_IO, ERR_LOCKED, ERR_NOT_GRANTED, ERR_NO_TOKEN_FILE, ERR_OCCLUDED, ERR_OUTPUTS_OFF,
+    ERR_STALE_TOKEN, ERR_TOO_BIG, ERR_UNKNOWN_OPC, MAX_FRAME_LEN, OPC_AUTH,
 };
 
 /// Path suffix under the runtime dir. Kept as a string so the release ELF
@@ -1203,7 +1203,7 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
             pointer_click(harness, focus, Point::from((x, y)));
             write_reply(write, &Reply::DispatchOk).await?;
         }
-        Frame::Key { name, shift } => {
+        Frame::Key { name, mods, .. } => {
             // architecture-delta (v40.9): do not apply KEY on this worker
             // thread. Post KeyDispatchReq over the calloop channel and wait
             // for the main-loop ACK. Tests have no sender (thread-local None)
@@ -1221,10 +1221,11 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
             );
             let _ = std::hint::black_box(KEY_DELIVERY_V40_6_SOCKET_IDENT);
             let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_10_SHIFT_MODIFIER);
-            let ok = crate::inject::dispatch::try_handoff_key_to_main(Some(wid), &name, shift)
+            let key_mods = KeyMods::from_list(&mods);
+            let ok = crate::inject::dispatch::try_handoff_key_to_main(Some(wid), &name, key_mods)
                 .unwrap_or_else(|| {
                     let _ = harness.set_keyboard_focus(wid);
-                    harness.key_press_with_shift(&name, shift)
+                    harness.key_press_with_mods(&name, key_mods)
                 });
             if ok {
                 write_reply(write, &Reply::DispatchOk).await?;
