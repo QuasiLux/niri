@@ -3270,6 +3270,7 @@ fn key_t_unshifted_parses_and_renders_lowercase() {
         niri::inject::Frame::Key {
             name: "T".into(),
             shift: false,
+            mods: vec![],
         }
     );
     assert!(rest.is_empty());
@@ -3287,6 +3288,7 @@ fn key_t_shifted_parses_and_renders_uppercase() {
         niri::inject::Frame::Key {
             name: "T".into(),
             shift: true,
+            mods: vec![niri::inject::protocol::KeyMod::Shift],
         }
     );
     assert!(rest.is_empty());
@@ -3304,6 +3306,7 @@ fn key_1_unshifted_parses_and_renders_digit() {
         niri::inject::Frame::Key {
             name: "1".into(),
             shift: false,
+            mods: vec![],
         }
     );
     assert!(rest.is_empty());
@@ -3321,6 +3324,7 @@ fn key_exclam_shifted_parses_and_renders_bang() {
         niri::inject::Frame::Key {
             name: "exclam".into(),
             shift: true,
+            mods: vec![niri::inject::protocol::KeyMod::Shift],
         }
     );
     assert!(rest.is_empty());
@@ -3407,6 +3411,73 @@ fn key_t_shifted_protocol_records_shift_true() {
     }
 }
 
+
+/// v40.17: KEY stays `KEY <name> [mods…]`. Bot and window are AUTH/BIND, not
+/// KEY fields (t_e2cc7f26). `KEY c ctrl` is the wire cua-driver must emit.
+#[test]
+fn key_c_ctrl_parses_ctrl_modifier() {
+    let (frame, rest) = niri::inject::protocol::parse_frame(b"KEY c ctrl\n").unwrap();
+    assert_eq!(
+        frame,
+        niri::inject::Frame::Key {
+            name: "c".into(),
+            shift: false,
+            mods: vec![niri::inject::protocol::KeyMod::Ctrl],
+        }
+    );
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn key_space_super_parses_super_modifier() {
+    let (frame, rest) = niri::inject::protocol::parse_frame(b"KEY space super\n").unwrap();
+    assert_eq!(
+        frame,
+        niri::inject::Frame::Key {
+            name: "space".into(),
+            shift: false,
+            mods: vec![niri::inject::protocol::KeyMod::Super],
+        }
+    );
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn key_ctrl_shift_t_combinator_parses_name_and_mods() {
+    let (frame, rest) = niri::inject::protocol::parse_frame(b"KEY ctrl+shift+t\n").unwrap();
+    assert_eq!(
+        frame,
+        niri::inject::Frame::Key {
+            name: "t".into(),
+            shift: true,
+            mods: vec![
+                niri::inject::protocol::KeyMod::Ctrl,
+                niri::inject::protocol::KeyMod::Shift,
+            ],
+        }
+    );
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn key_c_parses_no_modifiers() {
+    let (frame, rest) = niri::inject::protocol::parse_frame(b"KEY c\n").unwrap();
+    assert_eq!(
+        frame,
+        niri::inject::Frame::Key {
+            name: "c".into(),
+            shift: false,
+            mods: vec![],
+        }
+    );
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn key_t_foo_is_malformed() {
+    let err = niri::inject::protocol::parse_frame(b"KEY t foo\n").unwrap_err();
+    assert_eq!(err, niri::inject::FrameError::Malformed);
+}
 
 #[test]
 fn atspi_bridge_real_connects_to_session_dbus() {
