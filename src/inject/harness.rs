@@ -11,7 +11,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::SERIAL_COUNTER;
 
 use crate::inject::grant_confirm::{ClickOutcome, GrantResolution, GrantSurfaceSource, SeatKind};
-use crate::inject::protocol::InjectHarness;
+use crate::inject::protocol::{InjectHarness, KeyMods};
 use crate::inject::AppRoutes;
 use crate::input::agent_seat::AgentSeat;
 use crate::niri::{Niri, State};
@@ -276,16 +276,30 @@ impl InjectHarness for NiriInjectHarness<'_> {
     }
 
     fn key_press_with_shift(&mut self, xkb_name: &str, shift: bool) -> bool {
+        self.key_press_with_mods(
+            xkb_name,
+            KeyMods {
+                shift,
+                ..KeyMods::default()
+            },
+        )
+    }
+
+    fn key_press_with_mods(&mut self, xkb_name: &str, mods: KeyMods) -> bool {
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING);
         let _ = std::hint::black_box(KEY_DELIVERY_V40_7_HARNESS_IDENT);
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_11_SUSTAINED_DELIVERY);
+        let _ = std::hint::black_box(crate::inject::protocol::NIRI_KEY_MODIFIERS_V40_17);
         let keyboard = self.state.niri.seat.get_keyboard().unwrap().clone();
-        crate::inject::dispatch::inject_agent_key_press_shift(
+        crate::inject::dispatch::inject_agent_key_press_mods(
             &keyboard,
             self.agent_state(),
             xkb_name,
             InputTime::now(),
-            shift,
+            mods.shift,
+            mods.ctrl,
+            mods.super_mod,
+            mods.alt,
         )
     }
 

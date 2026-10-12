@@ -840,15 +840,16 @@ impl State {
         let crate::inject::dispatch::KeyDispatchReq {
             wid,
             xkb_name,
-            shift,
+            mods,
             reply,
         } = req;
         let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_10_SHIFT_MODIFIER);
+        let _ = std::hint::black_box(crate::inject::protocol::NIRI_KEY_MODIFIERS_V40_17);
         let mut harness = crate::inject::NiriInjectHarness::new(self);
         if let Some(wid) = wid {
             let _ = harness.set_keyboard_focus(wid);
         }
-        let ok = harness.key_press_with_shift(&xkb_name, shift);
+        let ok = harness.key_press_with_mods(&xkb_name, mods);
         let _ = reply.send(ok);
     }
 
