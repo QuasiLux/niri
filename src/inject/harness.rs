@@ -324,6 +324,11 @@ impl InjectHarness for NiriInjectHarness<'_> {
             (to_x, to_y),
         )
     }
+
+    fn layer_hit_test(&mut self, x: i32, y: i32) -> crate::input::layer_hit_test::LayerHitReply {
+        let _ = std::hint::black_box(crate::inject::protocol::LAYER_HIT_TEST_V40_18);
+        crate::input::layer_hit_test::hit_test_niri(&self.state.niri, x, y)
+    }
 }
 
 #[cfg(test)]
