@@ -70,6 +70,7 @@ pub mod spatial_movement_grab;
 pub mod swipe_tracker;
 pub mod touch_overview_grab;
 pub mod agent_seat;
+pub mod layer_hit_test;
 
 use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
 
