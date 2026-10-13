@@ -442,6 +442,8 @@ pub struct Niri {
     /// v40.9 KEY handoff sender. The matching `calloop::channel::Channel`
     /// is inserted into `event_loop` in `Niri::new` (not stored here).
     pub key_dispatch_tx: Option<calloop::channel::Sender<crate::inject::dispatch::KeyDispatchReq>>,
+    /// v40.18 layer hit-test handoff sender. Channel lives on `event_loop`.
+    pub layer_hit_tx: Option<calloop::channel::Sender<crate::inject::dispatch::LayerHitDispatchReq>>,
     pub grant_map: crate::inject::GrantMap,
     pub grant_confirm: crate::inject::GrantConfirmState,
     pub app_catalog: crate::inject::app_catalog::AppCatalogMarker,
@@ -819,6 +821,17 @@ impl State {
         }
         let ok = harness.key_press_with_mods(&xkb_name, mods);
         let _ = reply.send(ok);
+    }
+
+    /// v40.18: screen-space layer-shell hit-test on the main loop. The inject
+    /// worker cannot see `niri::State` or smithay layer maps.
+    pub fn dispatch_layer_hit_request(
+        &mut self,
+        req: crate::inject::dispatch::LayerHitDispatchReq,
+    ) {
+        let _ = std::hint::black_box(crate::inject::protocol::LAYER_HIT_TEST_V40_18);
+        let hit = crate::input::layer_hit_test::hit_test_niri(&self.niri, req.x, req.y);
+        let _ = req.reply.send(hit);
     }
 
     pub fn refresh_and_flush_clients(&mut self) {
@@ -2800,6 +2813,7 @@ impl Niri {
         let mut agent_seat = None;
         let mut inject_server = None;
         let mut key_dispatch_tx = None;
+        let mut layer_hit_tx = None;
         if crate::inject::inject_spawn_enabled() {
             let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
                 .map(PathBuf::from)
@@ -2829,6 +2843,18 @@ impl Niri {
                                 })
                                 .unwrap();
                             key_dispatch_tx = Some(key_tx.clone());
+                            let (layer_tx, layer_rx) = calloop::channel::channel::<
+                                crate::inject::dispatch::LayerHitDispatchReq,
+                            >();
+                            event_loop
+                                .insert_source(layer_rx, |event, _, state| match event {
+                                    calloop::channel::Event::Msg(req) => {
+                                        state.dispatch_layer_hit_request(req)
+                                    }
+                                    calloop::channel::Event::Closed => (),
+                                })
+                                .unwrap();
+                            layer_hit_tx = Some(layer_tx.clone());
                             let token_file = crate::inject::token_file_path();
                             let _ = server.reload_tokens(&token_file);
                             apply_inject_socket_ownership(&inject_socket_path, gid);
@@ -2888,6 +2914,7 @@ impl Niri {
                                             // the IPC Request::Layers handler reads.
                                             let grant_confirm_surface = state.niri.grant_confirm.surface_arc();
                                             let key_tx = key_tx.clone();
+                                            let layer_tx = layer_tx.clone();
                                             thread::spawn(move || {
                                                 let _ = crate::inject::dispatch::dispatch_inject_connection(
                                                     stream,
@@ -2901,6 +2928,7 @@ impl Niri {
                                                     grant_confirm_surface,
                                                     Some(key_tx),
                                                     app_id_map,
+                                                    Some(layer_tx),
                                                 );
                                             });
                                         }
@@ -3077,6 +3105,7 @@ impl Niri {
             agent_seat,
             inject_server,
             key_dispatch_tx,
+            layer_hit_tx,
             grant_map: crate::inject::GrantMap::new(),
             grant_confirm: crate::inject::GrantConfirmState::new(),
             app_catalog: crate::inject::app_catalog::AppCatalogMarker,
