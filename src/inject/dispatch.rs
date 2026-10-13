@@ -72,6 +72,15 @@ pub struct KeyDispatchReq {
     pub reply: std::sync::mpsc::Sender<bool>,
 }
 
+/// Per-LAYER_HIT_TEST request posted from a worker thread onto the main
+/// compositor loop. The worker has no `niri::State`; layer maps live there.
+/// Reply channel is `std::sync::mpsc`, same rendezvous as [`KeyDispatchReq`].
+pub struct LayerHitDispatchReq {
+    pub x: i32,
+    pub y: i32,
+    pub reply: std::sync::mpsc::Sender<crate::input::layer_hit_test::LayerHitReply>,
+}
+
 thread_local! {
     static WORKER_KEY_DISPATCH_TX: RefCell<Option<calloop::channel::Sender<KeyDispatchReq>>> =
         RefCell::new(None);
@@ -111,6 +120,28 @@ pub fn post_key_dispatch(
         return false;
     }
     reply_rx.recv().unwrap_or(false)
+}
+
+/// Send `LayerHitDispatchReq` and wait for the main-loop hit-test reply.
+/// A dropped receiver is a miss, not a hang (same as KEY's `unwrap_or(false)`).
+pub fn post_layer_hit_dispatch(
+    tx: &calloop::channel::Sender<LayerHitDispatchReq>,
+    x: i32,
+    y: i32,
+) -> crate::input::layer_hit_test::LayerHitReply {
+    let _ = std::hint::black_box(crate::inject::protocol::LAYER_HIT_TEST_V40_18);
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let req = LayerHitDispatchReq {
+        x,
+        y,
+        reply: reply_tx,
+    };
+    if tx.send(req).is_err() {
+        return crate::input::layer_hit_test::LayerHitReply::miss();
+    }
+    reply_rx
+        .recv()
+        .unwrap_or_else(|_| crate::input::layer_hit_test::LayerHitReply::miss())
 }
 
 #[used]
@@ -158,6 +189,10 @@ pub struct DispatchState {
     pub pending_key_wid: Option<u64>,
     /// v40.14.3: window_id → live toplevel app_id, captured at worker spawn.
     pub app_id_map: Arc<Mutex<HashMap<u64, String>>>,
+    /// v40.18: main-loop layer hit-test sender. `None` in tests that do not
+    /// install a handoff; production `dispatch_inject_connection` sets it.
+    /// Without this, `layer_hit_test` would use the trait default miss.
+    pub layer_hit_tx: Option<calloop::channel::Sender<LayerHitDispatchReq>>,
 }
 
 #[derive(Default)]
@@ -234,6 +269,7 @@ impl DispatchState {
             key_dispatch_tx: None,
             pending_key_wid: None,
             app_id_map: Arc::new(Mutex::new(HashMap::new())),
+            layer_hit_tx: None,
         }
     }
 
@@ -970,6 +1006,14 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
             (to_x, to_y),
         )
     }
+
+    fn layer_hit_test(&mut self, x: i32, y: i32) -> crate::input::layer_hit_test::LayerHitReply {
+        let _ = std::hint::black_box(crate::inject::protocol::LAYER_HIT_TEST_V40_18);
+        if let Some(tx) = self.state.layer_hit_tx.as_ref() {
+            return post_layer_hit_dispatch(tx, x, y);
+        }
+        crate::input::layer_hit_test::LayerHitReply::miss()
+    }
 }
 
 /// Block on a future on this thread's event loop (same pattern as
@@ -1007,6 +1051,7 @@ pub fn dispatch_inject_connection(
     grant_confirm_surface: Arc<Mutex<crate::inject::grant_confirm::GrantConfirmSurface>>,
     key_dispatch_tx: Option<calloop::channel::Sender<KeyDispatchReq>>,
     app_id_map: Arc<Mutex<HashMap<u64, String>>>,
+    layer_hit_tx: Option<calloop::channel::Sender<LayerHitDispatchReq>>,
 ) -> anyhow::Result<()> {
     let mut state = DispatchState::new(
         is_locked,
@@ -1021,6 +1066,7 @@ pub fn dispatch_inject_connection(
     // post without a new InjectHarness trait method (protocol.rs is frozen).
     state.key_dispatch_tx = key_dispatch_tx.clone();
     bind_worker_key_dispatch_tx(key_dispatch_tx);
+    state.layer_hit_tx = layer_hit_tx;
     state.set_app_id_map(app_id_map);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
     state.set_grant_confirm_surface(grant_confirm_surface);

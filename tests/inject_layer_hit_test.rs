@@ -119,3 +119,67 @@ fn layer_hit_test_req_parses_negative_coords() {
     .to_bytes();
     assert_eq!(miss, b"LAYER_HIT_TEST_REPLY 0\n");
 }
+
+#[test]
+fn dispatch_harness_layer_hit_test_hands_off_instead_of_default_miss() {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use niri::inject::calloop;
+    use niri::inject::dispatch::{DispatchHarness, DispatchState, LayerHitDispatchReq};
+    use niri::inject::protocol::InjectHarness;
+    use niri::inject::PendingGrant;
+    use niri::input::layer_hit_test::LayerHitReply;
+    use niri::inject::smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+
+    let (tx, rx) = calloop::channel::channel::<LayerHitDispatchReq>();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let _pump = std::thread::spawn(move || {
+        let mut event_loop = calloop::EventLoop::<()>::try_new().expect("loop");
+        event_loop
+            .handle()
+            .insert_source(rx, |event, _, _| {
+                if let calloop::channel::Event::Msg(req) = event {
+                    let _ = req.reply.send(LayerHitReply {
+                        found: true,
+                        app_id: "handoff-proof".into(),
+                        role: "panel".into(),
+                        name: "quickshell:panel".into(),
+                        bounds: (req.x, req.y, 8, 8),
+                    });
+                }
+            })
+            .expect("insert layer-hit source");
+        let _ = ready_tx.send(());
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            event_loop
+                .dispatch(Some(Duration::from_millis(20)), &mut ())
+                .expect("dispatch");
+        }
+    });
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("pump ready");
+
+    let mut state = DispatchState::new(
+        false,
+        false,
+        PathBuf::from("/dev/null"),
+        Arc::new(Mutex::new(HashMap::<u64, WlSurface>::new())),
+        Arc::new(Mutex::new(HashMap::<(String, u64), ()>::new())),
+        Arc::new(Mutex::new(None::<PendingGrant>)),
+    );
+    state.layer_hit_tx = Some(tx);
+    let mut harness = DispatchHarness::new(&mut state);
+    let hit = InjectHarness::layer_hit_test(&mut harness, 12, 34);
+    assert!(
+        hit.found,
+        "worker path must not return the trait-default miss"
+    );
+    assert_eq!(hit.app_id, "handoff-proof");
+    assert_eq!(hit.role, "panel");
+    assert_eq!(hit.bounds, (12, 34, 8, 8));
+}
