@@ -1076,6 +1076,22 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 }
                 ClientPhase::Dispatch { focus, wid }
             }
+            (ClientPhase::Dispatch { focus, wid }, Frame::LayerHitTestReq { x, y }) => {
+                let _ = std::hint::black_box(crate::inject::protocol::LAYER_HIT_TEST_V40_18);
+                let hit = harness.layer_hit_test(x, y);
+                write_reply(
+                    &mut write,
+                    &Reply::LayerHitTestReply {
+                        found: hit.found,
+                        app_id: hit.app_id,
+                        role: hit.role,
+                        name: hit.name,
+                        bounds: hit.bounds,
+                    },
+                )
+                .await?;
+                ClientPhase::Dispatch { focus, wid }
+            }
             (ClientPhase::Dispatch { focus, wid }, frame) => {
                 if let Some(true) = dispatch_frame(harness, &mut write, &focus, wid, frame).await? {
                     return Ok(());

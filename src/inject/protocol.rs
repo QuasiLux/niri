@@ -55,6 +55,9 @@ pub const OPC_AT_TREE_REQ: &str = "AT_TREE_REQ";
 /// `AT_TREE_BY_APP_ID <app_id>` — v40.15.4 G1 galculator GTK 2/3 fallback.
 pub const OPC_AT_TREE_BY_APP_ID: &str = "AT_TREE_BY_APP_ID";
 
+/// `LAYER_HIT_TEST <x> <y>` — v40.18 layer-shell hit-test (screen coords).
+pub const OPC_LAYER_HIT_TEST: &str = "LAYER_HIT_TEST";
+
 /// Keep the wire-ident name in the release ELF (`strings | grep GRANT_REQUEST`).
 #[used]
 #[allow(dead_code)]
@@ -97,6 +100,11 @@ static OPC_AT_TREE_BY_APP_ID_IDENT: &str = "AT_TREE_BY_APP_ID";
 #[used]
 pub(crate) static NIRI_KEY_MODIFIERS_V40_17: &[u8] = b"NIRI_KEY_MODIFIERS_V40_17\0";
 
+/// v40.18 layer-shell hit-test. Byte static plus `black_box` at the parse
+/// arm and the socket dispatch arm so lld cannot drop it.
+#[used]
+pub static LAYER_HIT_TEST_V40_18: &[u8] = b"LAYER_HIT_TEST_V40_18\0";
+
 /// Trap 45: `#[used]` byte statics (not `&[&str]`) referenced at the live
 /// `Frame::TreeByAppId` wire-encoder arm via `std::hint::black_box`.
 #[used]
@@ -121,6 +129,7 @@ pub const REP_GRANT_ACK_OK_W: &str = "OK";
 pub const REP_AT_ELEMENT_REPLY: &str = "AT_ELEMENT_REPLY";
 pub const REP_AT_ACTION_REPLY: &str = "AT_ACTION_REPLY";
 pub const REP_AT_TREE_REPLY: &str = "AT_TREE_REPLY";
+pub const REP_LAYER_HIT_TEST_REPLY: &str = "LAYER_HIT_TEST_REPLY";
 pub const REP_BG_UNAVAILABLE: &str = "BACKGROUND_UNAVAILABLE";
 pub const IDENT_AT_SPI_STRONG: &str = "AT_SPI_STRONG";
 pub const IDENT_AT_SPI_CHROME: &str = "AT_SPI_CHROME";
@@ -284,6 +293,8 @@ pub enum Frame {
     TreeByAppId {
         app_id: String,
     },
+    /// `LAYER_HIT_TEST <x> <y>` — v40.18 screen-space layer-shell hit-test.
+    LayerHitTestReq { x: i32, y: i32 },
 }
 
 impl Frame {
@@ -372,6 +383,14 @@ pub enum Reply {
         element_payload: String,
         tree_body: String,
     },
+    /// `LAYER_HIT_TEST_REPLY` — v40.18. `bounds` is `(x, y, width, height)` in screen coords.
+    LayerHitTestReply {
+        found: bool,
+        app_id: String,
+        role: String,
+        name: String,
+        bounds: (i32, i32, i32, i32),
+    },
     BackgroundUnavailable,
 }
 
@@ -423,6 +442,21 @@ impl Reply {
                 )
             }
             Reply::BackgroundUnavailable => format!("{REP_AT_ELEMENT_REPLY} {REP_BG_UNAVAILABLE}\n"),
+            Reply::LayerHitTestReply {
+                found,
+                app_id,
+                role,
+                name,
+                bounds,
+            } => {
+                let _ = std::hint::black_box(LAYER_HIT_TEST_V40_18);
+                if *found {
+                    let (x, y, w, h) = bounds;
+                    format!("{REP_LAYER_HIT_TEST_REPLY} 1 {app_id} {role} {name} {x} {y} {w} {h}\n")
+                } else {
+                    format!("{REP_LAYER_HIT_TEST_REPLY} 0\n")
+                }
+            }
         };
         s.into_bytes()
     }
@@ -571,6 +605,11 @@ pub trait InjectHarness {
     ) -> Result<(), &'static str> {
         apply_action_on_element_default(wid, path, index)
     }
+    /// v40.18 layer-shell hit-test. Default miss so existing harness impls compile.
+    fn layer_hit_test(&mut self, x: i32, y: i32) -> crate::input::layer_hit_test::LayerHitReply {
+        let _ = (x, y);
+        crate::input::layer_hit_test::LayerHitReply::miss()
+    }
 }
 
 /// Parse one complete frame. AUTH consumes two lines. Remainder is unparsed
@@ -666,6 +705,23 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
         OPC_AT_ACTION_REQ => parse_at_action_req(text).map(|frame| (frame, after)),
         OPC_AT_TREE_REQ => parse_at_tree_req(text).map(|frame| (frame, after)),
         OPC_AT_TREE_BY_APP_ID => parse_at_tree_by_app_id(text).map(|frame| (frame, after)),
+        OPC_LAYER_HIT_TEST => {
+            let _ = std::hint::black_box(LAYER_HIT_TEST_V40_18);
+            let x: i32 = parts
+                .next()
+                .ok_or(FrameError::Malformed)?
+                .parse()
+                .map_err(|_| FrameError::Malformed)?;
+            let y: i32 = parts
+                .next()
+                .ok_or(FrameError::Malformed)?
+                .parse()
+                .map_err(|_| FrameError::Malformed)?;
+            if parts.next().is_some() {
+                return Err(FrameError::Malformed);
+            }
+            Ok((Frame::LayerHitTestReq { x, y }, after))
+        }
         _ => Err(FrameError::UnknownOpcode),
     }
 }
