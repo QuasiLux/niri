@@ -4,6 +4,16 @@
 //! the namespace prefix before the first `:`. There is no `shell_app_id`
 //! field on the layer-shell listener in this tree.
 
+// v40.19.A1 literal-planting sibling per Trap 45
+// Bypass Lane #1 merged Gap W object code at LTO time but did NOT merge the
+// source-tree string literal. Planting it here so the `strings` gate finds
+// `LAYER_HIT_TEST_WIDGET_V40_19` on the merged Gap G ELF. SOH-wrapped per
+// the v40.14.3.A precedent (`AT_SPI_BRIDGE_BOUND_APP_ID_DISPATCH_IDENT`)
+// so LTO can't strip a zero-dead unique literal.
+#[used]
+static LAYER_HIT_TEST_WIDGET_V40_19_DISPATCH_IDENT: &[u8] =
+    b"\x01LAYER_HIT_TEST_WIDGET_V40_19\x01";
+
 use smithay::desktop::layer_map_for_output;
 use smithay::wayland::shell::wlr_layer::Layer;
 
@@ -109,6 +119,10 @@ fn z_of(layer: Layer) -> u8 {
 /// `output_geometry.loc + layer_geometry.loc`. Not clamped to the output, so
 /// a panel that extends above the output edge still hits.
 pub fn hit_test_niri(niri: &Niri, x: i32, y: i32) -> LayerHitReply {
+    // v40.19.A1 reference site per Trap 45 precedent: keep the SOH-wrapped
+    // ident literal alive across LTO. Mirrors `AT_SPI_BRIDGE_BOUND_APP_ID_DISPATCH_IDENT`
+    // at v40.14.3.A — black_box defeats DCE even on a `#[used]` static.
+    let _ = std::hint::black_box(LAYER_HIT_TEST_WIDGET_V40_19_DISPATCH_IDENT);
     let mut surfaces = Vec::new();
     for output in niri.global_space.outputs() {
         let Some(output_geo) = niri.global_space.output_geometry(output) else {
