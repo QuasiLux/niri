@@ -22,7 +22,7 @@ use crate::handlers::XDG_ACTIVATION_TOKEN_TIMEOUT;
 use crate::layout::{ActivateWindow, AddWindowTarget, LayoutElement as _};
 use crate::niri::{CastTarget, ClientState, LockState, State};
 use crate::utils::transaction::Transaction;
-use crate::utils::{is_mapped, send_scale_transform};
+use crate::utils::{is_mapped, send_scale_transform, with_toplevel_role};
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped};
 
 impl CompositorHandler for State {
@@ -210,6 +210,22 @@ impl CompositorHandler for State {
                     } else {
                         AddWindowTarget::Auto
                     };
+                    // v40.19 — fresh-window grant auto-grant path (Gap G):
+                    // the FIRST `new_surface` for this toplevel just
+                    // committed (we are inside `commit`). Pre-create Auto
+                    // grant rows for any bot already granted a parent
+                    // toplevel of the same `app_id`. The fresh window is
+                    // now born with a grant entry, so cua-bot can BIND it
+                    // without the manual-click wait. Row-11 cross-bot
+                    // BIND defense is preserved (other bots still require
+                    // a manual click on the bar — `on_new_window` only
+                    // matches bots already granted the parent toplevel).
+                    // Capture `new_wid` + `new_app_id` BEFORE
+                    // `layout.add_window` consumes `mapped`.
+                    let new_wid = mapped.id().get();
+                    let new_app_id = with_toplevel_role(mapped.toplevel(), |role| {
+                        role.app_id.clone().unwrap_or_default()
+                    });
                     let output = self.niri.layout.add_window(
                         mapped,
                         target,
@@ -220,6 +236,17 @@ impl CompositorHandler for State {
                         activate,
                     );
                     let output = output.cloned();
+                    if !new_app_id.is_empty() {
+                        let pre_count = self.niri.grant_map.on_new_window(new_wid, &new_app_id);
+                        if pre_count > 0 {
+                            let _ = std::hint::black_box(
+                                crate::inject::GRANT_FRESH_WINDOW_AUTO_V40_19,
+                            );
+                            trace!(
+                                "v40.19 fresh-window grant auto-grant: wid={new_wid} app_id={new_app_id} pre_created={pre_count}"
+                            );
+                        }
+                    }
 
                     // The window state cannot contain Fullscreen and Maximized at once. Therefore,
                     // if the window ended up fullscreen, then we only know that it is also
