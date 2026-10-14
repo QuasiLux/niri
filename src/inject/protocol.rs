@@ -546,6 +546,20 @@ pub trait InjectHarness {
         let _ = (bot_id, window_id);
         false
     }
+    /// v40.19 — insert a persistent `Interactive` grant for
+    /// `(bot_id, window_id)`. Default is a no-op (stub harnesses do
+    /// not own a real grant map; production overrides push through
+    /// `GrantMap::apply_grant`).
+    fn apply_grant(&self, bot_id: &str, window_id: u64) {
+        let _ = (bot_id, window_id);
+    }
+    /// v40.19 — same as [`Self::apply_grant`] but with `app_id` recorded
+    /// so future fresh toplevels of the same `app_id` can be
+    /// pre-granted. Default: 2-arg shim that drops `app_id`.
+    fn apply_grant_with_app(&self, bot_id: &str, window_id: u64, app_id: &str) {
+        let _ = app_id;
+        self.apply_grant(bot_id, window_id);
+    }
     /// True when a pending grant exists for `bot_id` (queued, not yet in the map).
     /// Default: stub harnesses never have a pending grant.
     fn grant_pending(&self, bot_id: &str) -> bool {

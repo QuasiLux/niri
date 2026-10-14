@@ -137,21 +137,42 @@ pub struct PointerClick {
     pub seat: SeatKind,
 }
 
-/// Host that can insert a `(bot_id, window_id)` grant. [`GrantMap::apply_grant`]
-/// is the only insert path.
+/// Host that can insert a `(bot_id, window_id)` grant.
+///
+/// [`GrantMap::apply_grant_with_app`] is the v40.19 path the seat-side
+/// click handler uses (the click row carries `app_id`, which `on_new_window`
+/// needs to find parent grants). [`GrantMap::apply_grant`] is the
+/// backward-compat 2-arg path (test stub / Row 8 harness `grant_present`
+/// override); it does NOT record `app_id` so Auto promotion from a manual
+/// click on the bar does not occur.
 pub trait GrantClickHost {
+    /// Insert `(bot_id, window_id) → Interactive`. Promotes any existing
+    /// `Auto` entry to `Interactive`. Does NOT record `app_id` (caller
+    /// does not know it). Backward-compat 2-arg path.
     fn apply_grant(&self, bot_id: &str, window_id: u64);
+    /// Insert `(bot_id, window_id) → Interactive` and record the
+    /// toplevel `app_id` so future fresh toplevels of the same `app_id`
+    /// can be pre-granted. Promotes any existing `Auto` entry.
+    /// v40.19 — `GrantConfirmState::finish_click` (with the bar row's
+    /// `app_id`) is the production caller.
+    fn apply_grant_with_app(&self, bot_id: &str, window_id: u64, app_id: &str);
 }
 
 impl GrantClickHost for GrantMap {
     fn apply_grant(&self, bot_id: &str, window_id: u64) {
         GrantMap::apply_grant(self, bot_id.to_string(), window_id);
     }
+    fn apply_grant_with_app(&self, bot_id: &str, window_id: u64, app_id: &str) {
+        GrantMap::apply_grant_with_app(self, bot_id, window_id, app_id);
+    }
 }
 
 impl GrantClickHost for Arc<Mutex<HashMap<(String, u64), ()>>> {
     fn apply_grant(&self, bot_id: &str, window_id: u64) {
         GrantMap::from_arc(Arc::clone(self)).apply_grant(bot_id.to_string(), window_id);
+    }
+    fn apply_grant_with_app(&self, bot_id: &str, window_id: u64, app_id: &str) {
+        GrantMap::from_arc(Arc::clone(self)).apply_grant_with_app(bot_id, window_id, app_id);
     }
 }
 
@@ -372,7 +393,7 @@ impl GrantConfirmState {
         };
 
         let seat_active = seat_active_for_click(event.seat, runtime_active);
-        self.finish_click(state, &bot_id, row.wid, event.seat, row.slot, seat_active)
+        self.finish_click(state, &bot_id, row.wid, &row.app_id, event.seat, row.slot, seat_active)
     }
 
     /// Resolved-slot path used by [`crate::inject::protocol::InjectHarness::apply_grant_confirm_click`].
@@ -413,7 +434,7 @@ impl GrantConfirmState {
             GrantResolution::Denied => GrantSlot::Deny,
         };
         let seat_active = seat_active_for_click(seat, runtime_active);
-        self.finish_click(state, &bot_id, window_id, seat, slot, seat_active)
+        self.finish_click(state, &bot_id, window_id, app_id, seat, slot, seat_active)
     }
 
     fn finish_click(
@@ -421,6 +442,7 @@ impl GrantConfirmState {
         state: &impl GrantClickHost,
         bot_id: &str,
         wid: u64,
+        app_id: &str,
         seat: SeatKind,
         slot: GrantSlot,
         seat_active: bool,
@@ -437,7 +459,8 @@ impl GrantConfirmState {
         }
         match slot {
             GrantSlot::Grant => {
-                state.apply_grant(bot_id, wid);
+                state.apply_grant_with_app(bot_id, wid, app_id);
+                let _ = std::hint::black_box(crate::inject::GRANT_FRESH_WINDOW_AUTO_V40_19);
                 self.record_resolution(bot_id, GrantResolution::Granted);
                 self.take(bot_id);
                 // Row 37+: register the layer-shell overlay for `wid` on
