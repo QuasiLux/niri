@@ -1108,6 +1108,19 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 .await?;
                 ClientPhase::Dispatch { focus, wid }
             }
+            (ClientPhase::Dispatch { focus, wid }, Frame::WindowFocusReq { wid: target }) => {
+                let _ = std::hint::black_box(crate::inject::protocol::WINDOW_FOCUS_REQ_V40_24);
+                let reply = harness.focus_window(target);
+                write_reply(
+                    &mut write,
+                    &Reply::WindowFocusReply {
+                        ok: reply.ok,
+                        reason: reply.reason,
+                    },
+                )
+                .await?;
+                ClientPhase::Dispatch { focus, wid }
+            }
             (ClientPhase::Dispatch { focus, wid }, frame) => {
                 if let Some(true) = dispatch_frame(harness, &mut write, &focus, wid, frame).await? {
                     return Ok(());
