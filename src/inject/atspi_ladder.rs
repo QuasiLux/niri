@@ -188,6 +188,15 @@ pub fn dump_tree_by_app_id(app_id: &str) -> Vec<TreeNode> {
     nodes
 }
 
+/// v40.21: app subtree with `children` intact (not flattened). Same override
+/// and real-dump path as [`dump_tree_by_app_id`]. Empty `app_id` is empty.
+pub fn widget_tree_roots(app_id: &str) -> Vec<TreeNode> {
+    if app_id.trim().is_empty() {
+        return Vec::new();
+    }
+    filter_tree_by_app_id(acquire_tree_roots(None), app_id)
+}
+
 fn app_id_token_matches(candidate: &str, app_id: &str) -> bool {
     let c = candidate.trim();
     let a = app_id.trim();
