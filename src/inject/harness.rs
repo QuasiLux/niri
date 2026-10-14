@@ -342,6 +342,11 @@ impl InjectHarness for NiriInjectHarness<'_> {
         let _ = std::hint::black_box(crate::inject::protocol::LAYER_HIT_TEST_V40_18);
         crate::input::layer_hit_test::hit_test_niri(&self.state.niri, x, y)
     }
+
+    fn focus_window(&mut self, wid: u64) -> crate::input::focus_window::FocusWindowReply {
+        let _ = std::hint::black_box(crate::inject::protocol::WINDOW_FOCUS_REQ_V40_24);
+        crate::input::focus_window::focus_window_niri(self.state, wid)
+    }
 }
 
 #[cfg(test)]

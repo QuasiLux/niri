@@ -67,6 +67,7 @@ pub mod spatial_movement_grab;
 pub mod swipe_tracker;
 pub mod touch_overview_grab;
 pub mod agent_seat;
+pub mod focus_window;
 pub mod layer_hit_test;
 pub mod layer_widget_tree;
 
