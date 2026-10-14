@@ -58,6 +58,11 @@ pub const OPC_AT_TREE_BY_APP_ID: &str = "AT_TREE_BY_APP_ID";
 /// `LAYER_HIT_TEST <x> <y>` — v40.18 layer-shell hit-test (screen coords).
 pub const OPC_LAYER_HIT_TEST: &str = "LAYER_HIT_TEST";
 
+/// `WINDOW_FOCUS_REQ <wid>` — v40.24 server-side handler for
+/// `niri msg action focus-window --id <wid>`. cua-driver side is
+/// `t_v40_24_cua_focus_window`; the wire contract MUST stay in sync.
+pub const OPC_WINDOW_FOCUS_REQ: &str = "WINDOW_FOCUS_REQ";
+
 /// Keep the wire-ident name in the release ELF (`strings | grep GRANT_REQUEST`).
 #[used]
 #[allow(dead_code)]
@@ -118,6 +123,12 @@ pub static LAYER_WIDGET_TREE_V40_21: &[u8] = b"LAYER_WIDGET_TREE_V40_21\0";
 #[used]
 pub static LAYER_WIDGET_TREE_NIRI_V40_20: &[u8] = b"LAYER_WIDGET_TREE_NIRI_V40_20\0";
 
+/// v40.24 `WINDOW_FOCUS_REQ` opcode. Byte static plus `black_box` at the
+/// parse arm, the reply encoder, and the socket dispatch arm so lld
+/// cannot drop it. Mirror of the v40.18 / v40.21 literal pattern.
+#[used]
+pub static WINDOW_FOCUS_REQ_V40_24: &[u8] = b"WINDOW_FOCUS_REQ_V40_24\0";
+
 /// Trap 45: `#[used]` byte statics (not `&[&str]`) referenced at the live
 /// `Frame::TreeByAppId` wire-encoder arm via `std::hint::black_box`.
 #[used]
@@ -146,6 +157,9 @@ pub const REP_LAYER_HIT_TEST_REPLY: &str = "LAYER_HIT_TEST_REPLY";
 
 /// v40.21 reply. Miss: `LAYER_WIDGET_TREE_REPLY 0`. Hit: header plus widget lines.
 pub const REP_LAYER_WIDGET_TREE_REPLY: &str = "LAYER_WIDGET_TREE_REPLY";
+
+/// v40.24 reply. Hit: `WINDOW_FOCUS_REPLY 1`. Miss: `WINDOW_FOCUS_REPLY 0 <reason>`.
+pub const REP_WINDOW_FOCUS_REPLY: &str = "WINDOW_FOCUS_REPLY";
 pub const REP_BG_UNAVAILABLE: &str = "BACKGROUND_UNAVAILABLE";
 pub const IDENT_AT_SPI_STRONG: &str = "AT_SPI_STRONG";
 pub const IDENT_AT_SPI_CHROME: &str = "AT_SPI_CHROME";
@@ -314,6 +328,11 @@ pub enum Frame {
     /// `LAYER_WIDGET_TREE <x> <y>` — v40.21 widget tree under the layer hit.
     /// Same BIND preamble as [`Frame::LayerHitTestReq`]. Does not change that opcode.
     LayerWidgetTreeReq { x: i32, y: i32 },
+    /// `WINDOW_FOCUS_REQ <wid>` — v40.24 thin wrapper around
+    /// `niri msg action focus-window --id <wid>`. Does not require
+    /// BIND (mirrors the layer-shell opcodes that also run after AUTH).
+    /// `wid == 0` is rejected as `invalid wid` before the layout walk.
+    WindowFocusReq { wid: u64 },
 }
 
 impl Frame {
@@ -418,6 +437,11 @@ pub enum Reply {
         layer: String,
         widgets: Vec<crate::input::layer_widget_tree::LayerWidget>,
     },
+    /// `WINDOW_FOCUS_REPLY` — v40.24. `ok = true` serializes
+    /// `WINDOW_FOCUS_REPLY 1`; `ok = false` serializes
+    /// `WINDOW_FOCUS_REPLY 0 <reason>` (one line, parity with the rest
+    /// of the inject wire).
+    WindowFocusReply { ok: bool, reason: String },
     BackgroundUnavailable,
 }
 
@@ -511,6 +535,14 @@ impl Reply {
                     s
                 } else {
                     format!("{REP_LAYER_WIDGET_TREE_REPLY} 0\n")
+                }
+            }
+            Reply::WindowFocusReply { ok, reason } => {
+                let _ = std::hint::black_box(WINDOW_FOCUS_REQ_V40_24);
+                if *ok {
+                    format!("{REP_WINDOW_FOCUS_REPLY} 1\n")
+                } else {
+                    format!("{REP_WINDOW_FOCUS_REPLY} 0 {reason}\n")
                 }
             }
         };
@@ -698,6 +730,15 @@ pub trait InjectHarness {
         let nodes = roots.iter().map(widget_node_from_tree).collect::<Vec<_>>();
         crate::input::layer_widget_tree::widget_tree_from_hit(&hit, &nodes, x, y)
     }
+    /// v40.24 — focus a window by `wid`. Thin wrapper around the existing
+    /// `niri msg action focus-window --id <wid>` action. Default denies so
+    /// stub harnesses stay compile-clean; `wid == 0` returns
+    /// `invalid wid` before any layout walk.
+    fn focus_window(&mut self, wid: u64) -> crate::input::focus_window::FocusWindowReply {
+        let _ = std::hint::black_box(WINDOW_FOCUS_REQ_V40_24);
+        let _ = wid;
+        crate::input::focus_window::FocusWindowReply::fail("no such window")
+    }
 }
 
 fn widget_node_from_tree(
@@ -838,6 +879,18 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
                 return Err(FrameError::Malformed);
             }
             Ok((Frame::LayerWidgetTreeReq { x, y }, after))
+        }
+        OPC_WINDOW_FOCUS_REQ => {
+            let _ = std::hint::black_box(WINDOW_FOCUS_REQ_V40_24);
+            let wid: u64 = parts
+                .next()
+                .ok_or(FrameError::Malformed)?
+                .parse()
+                .map_err(|_| FrameError::Malformed)?;
+            if parts.next().is_some() {
+                return Err(FrameError::Malformed);
+            }
+            Ok((Frame::WindowFocusReq { wid }, after))
         }
         _ => Err(FrameError::UnknownOpcode),
     }
