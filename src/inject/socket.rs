@@ -1094,6 +1094,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
             }
             (ClientPhase::Dispatch { focus, wid }, Frame::LayerWidgetTreeReq { x, y }) => {
                 let _ = std::hint::black_box(crate::inject::protocol::LAYER_WIDGET_TREE_V40_21);
+                let _ = std::hint::black_box(crate::inject::protocol::LAYER_WIDGET_TREE_NIRI_V40_20);
                 let tree = harness.layer_widget_tree(x, y);
                 write_reply(
                     &mut write,
