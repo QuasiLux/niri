@@ -4946,3 +4946,105 @@ fn force_icon_redraw_skipped_for_non_toggle_role() {
     );
     assert!(!flag, "force_icon_redraw override must not run for non-toggle");
 }
+
+// ===========================================================================
+// v40.19 — fresh-window grant auto-grant path (Gap G):
+// a freshly spawned toplevel is born with a grant entry on the FIRST
+// `new_surface` event for any bot already granted the parent `app_id`.
+// The grant flips `Auto → Interactive` on the first manual user click on
+// the bar. Row-11 cross-bot BIND defense is preserved: a fresh window
+// spawned for an UNGRANTED parent app_id requires the manual click.
+// ===========================================================================
+
+/// v40.19 — cua-bot already granted `quickshell` (parent toplevel). A
+/// fresh `quickshell:Workspaces` toplevel is born with an `Auto` grant
+/// for cua-bot — BIND OK without manual click.
+#[test]
+fn live_grant_v40_19_fresh_window_auto_bind_by_granted_bot() {
+    let grants = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashMap::<(String, u64), ()>::new(),
+    ));
+    let grant_map = niri::inject::GrantMap::from_arc(grants.clone());
+
+    // Pre-existing parent grant: cua-bot granted quickshell (parent_wid=1).
+    grant_map.apply_grant_with_app("cua-bot", 1, "quickshell");
+    assert!(grant_map.has_grant("cua-bot", 1));
+
+    // Fresh toplevel of the same `quickshell` app_id arrives.
+    let pre = grant_map.on_new_window(2, "quickshell");
+    assert_eq!(pre, 1, "v40.19: one Auto row pre-created for cua-bot");
+
+    // cua-bot can BIND the fresh window without manual click.
+    assert!(grant_map.has_grant("cua-bot", 2));
+    assert!(
+        grant_map.is_auto_grant("cua-bot", 2),
+        "v40.19: fresh-window grant for cua-bot must be Auto (pre-grant)"
+    );
+    let _ = std::hint::black_box(
+        niri::inject::GRANT_FRESH_WINDOW_AUTO_V40_19,
+    );
+
+    // Other bots (Row-11 cross-bot defense) still require a manual click.
+    assert!(!grant_map.has_grant("other-bot", 2));
+}
+
+/// v40.19 — first manual click on the bar for the fresh window promotes
+/// `Auto → Interactive`. cua-bot retains BIND rights; the manual-click
+/// path is unchanged.
+#[test]
+fn live_grant_v40_19_fresh_window_interactive_after_click() {
+    let grants = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashMap::<(String, u64), ()>::new(),
+    ));
+    let grant_map = niri::inject::GrantMap::from_arc(grants.clone());
+
+    grant_map.apply_grant_with_app("cua-bot", 1, "quickshell");
+    grant_map.on_new_window(2, "quickshell");
+    assert!(grant_map.is_auto_grant("cua-bot", 2));
+
+    // First manual click on the bar for the fresh window.
+    let prev = grant_map.apply_grant_with_app("cua-bot", 2, "quickshell");
+    assert_eq!(
+        prev,
+        niri::inject::GrantKind::Auto,
+        "v40.19: previous kind for cua-bot on fresh window was Auto"
+    );
+
+    assert!(grant_map.has_grant("cua-bot", 2));
+    assert!(
+        !grant_map.is_auto_grant("cua-bot", 2),
+        "v40.19: post-click grant for cua-bot must be Interactive (no longer Auto)"
+    );
+    let _ = std::hint::black_box(
+        niri::inject::GRANT_FRESH_WINDOW_AUTO_V40_19,
+    );
+
+    // Row-11 baseline unchanged: other bots still require a manual click.
+    assert!(!grant_map.has_grant("other-bot", 2));
+}
+
+/// v40.19 — a fresh window spawned for an UNGRANTED parent app_id
+/// (e.g. `nevergranted-app`) requires the manual click (Row-11 baseline
+/// unchanged). `on_new_window` returns 0.
+#[test]
+fn live_grant_v40_19_fresh_window_no_grant_baseline_unchanged() {
+    let grants = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashMap::<(String, u64), ()>::new(),
+    ));
+    let grant_map = niri::inject::GrantMap::from_arc(grants.clone());
+
+    // cua-bot granted quickshell (parent), but the new window is for a
+    // DIFFERENT app_id that nobody has been granted.
+    grant_map.apply_grant_with_app("cua-bot", 1, "quickshell");
+    let pre = grant_map.on_new_window(2, "nevergranted-app");
+    assert_eq!(
+        pre, 0,
+        "v40.19: no Auto row pre-created when no bot has been granted the parent app_id"
+    );
+
+    // cua-bot can NOT BIND the fresh window without a manual click.
+    assert!(
+        !grant_map.has_grant("cua-bot", 2),
+        "v40.19: Row-11 baseline preserved — fresh window for an ungranted parent app_id requires manual click"
+    );
+}
