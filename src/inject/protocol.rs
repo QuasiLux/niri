@@ -113,6 +113,11 @@ pub const OPC_LAYER_WIDGET_TREE: &str = "LAYER_WIDGET_TREE";
 #[used]
 pub static LAYER_WIDGET_TREE_V40_21: &[u8] = b"LAYER_WIDGET_TREE_V40_21\0";
 
+/// Install-card strings gate (`strings | grep LAYER_WIDGET_TREE_NIRI_V40_20`).
+/// Same live sites as [`LAYER_WIDGET_TREE_V40_21`].
+#[used]
+pub static LAYER_WIDGET_TREE_NIRI_V40_20: &[u8] = b"LAYER_WIDGET_TREE_NIRI_V40_20\0";
+
 /// Trap 45: `#[used]` byte statics (not `&[&str]`) referenced at the live
 /// `Frame::TreeByAppId` wire-encoder arm via `std::hint::black_box`.
 #[used]
@@ -486,6 +491,7 @@ impl Reply {
                 widgets,
             } => {
                 let _ = std::hint::black_box(LAYER_WIDGET_TREE_V40_21);
+                let _ = std::hint::black_box(LAYER_WIDGET_TREE_NIRI_V40_20);
                 if *found {
                     let mut s = format!(
                         "{REP_LAYER_WIDGET_TREE_REPLY} 1 {app_id} {layer} {}\n",
@@ -683,6 +689,7 @@ pub trait InjectHarness {
         y: i32,
     ) -> crate::input::layer_widget_tree::LayerWidgetTreeReply {
         let _ = std::hint::black_box(LAYER_WIDGET_TREE_V40_21);
+        let _ = std::hint::black_box(LAYER_WIDGET_TREE_NIRI_V40_20);
         let hit = self.layer_hit_test(x, y);
         if !hit.found {
             return crate::input::layer_widget_tree::LayerWidgetTreeReply::miss();
@@ -816,6 +823,7 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
         }
         OPC_LAYER_WIDGET_TREE => {
             let _ = std::hint::black_box(LAYER_WIDGET_TREE_V40_21);
+            let _ = std::hint::black_box(LAYER_WIDGET_TREE_NIRI_V40_20);
             let x: i32 = parts
                 .next()
                 .ok_or(FrameError::Malformed)?
