@@ -105,6 +105,14 @@ pub(crate) static NIRI_KEY_MODIFIERS_V40_17: &[u8] = b"NIRI_KEY_MODIFIERS_V40_17
 #[used]
 pub static LAYER_HIT_TEST_V40_18: &[u8] = b"LAYER_HIT_TEST_V40_18\0";
 
+/// `LAYER_WIDGET_TREE <x> <y>` — v40.21 widget tree under the layer hit.
+pub const OPC_LAYER_WIDGET_TREE: &str = "LAYER_WIDGET_TREE";
+
+/// v40.21 widget-tree opcode. Byte static plus `black_box` at the parse arm,
+/// the reply encoder, and the socket dispatch arm so lld cannot drop it.
+#[used]
+pub static LAYER_WIDGET_TREE_V40_21: &[u8] = b"LAYER_WIDGET_TREE_V40_21\0";
+
 /// Trap 45: `#[used]` byte statics (not `&[&str]`) referenced at the live
 /// `Frame::TreeByAppId` wire-encoder arm via `std::hint::black_box`.
 #[used]
@@ -130,6 +138,9 @@ pub const REP_AT_ELEMENT_REPLY: &str = "AT_ELEMENT_REPLY";
 pub const REP_AT_ACTION_REPLY: &str = "AT_ACTION_REPLY";
 pub const REP_AT_TREE_REPLY: &str = "AT_TREE_REPLY";
 pub const REP_LAYER_HIT_TEST_REPLY: &str = "LAYER_HIT_TEST_REPLY";
+
+/// v40.21 reply. Miss: `LAYER_WIDGET_TREE_REPLY 0`. Hit: header plus widget lines.
+pub const REP_LAYER_WIDGET_TREE_REPLY: &str = "LAYER_WIDGET_TREE_REPLY";
 pub const REP_BG_UNAVAILABLE: &str = "BACKGROUND_UNAVAILABLE";
 pub const IDENT_AT_SPI_STRONG: &str = "AT_SPI_STRONG";
 pub const IDENT_AT_SPI_CHROME: &str = "AT_SPI_CHROME";
@@ -295,6 +306,9 @@ pub enum Frame {
     },
     /// `LAYER_HIT_TEST <x> <y>` — v40.18 screen-space layer-shell hit-test.
     LayerHitTestReq { x: i32, y: i32 },
+    /// `LAYER_WIDGET_TREE <x> <y>` — v40.21 widget tree under the layer hit.
+    /// Same BIND preamble as [`Frame::LayerHitTestReq`]. Does not change that opcode.
+    LayerWidgetTreeReq { x: i32, y: i32 },
 }
 
 impl Frame {
@@ -391,6 +405,14 @@ pub enum Reply {
         name: String,
         bounds: (i32, i32, i32, i32),
     },
+    /// `LAYER_WIDGET_TREE_REPLY` — v40.21. `layer` is the v40.18 hit name
+    /// (full namespace). Widget `bounds` are `(x, y, width, height)`.
+    LayerWidgetTreeReply {
+        found: bool,
+        app_id: String,
+        layer: String,
+        widgets: Vec<crate::input::layer_widget_tree::LayerWidget>,
+    },
     BackgroundUnavailable,
 }
 
@@ -455,6 +477,34 @@ impl Reply {
                     format!("{REP_LAYER_HIT_TEST_REPLY} 1 {app_id} {role} {name} {x} {y} {w} {h}\n")
                 } else {
                     format!("{REP_LAYER_HIT_TEST_REPLY} 0\n")
+                }
+            }
+            Reply::LayerWidgetTreeReply {
+                found,
+                app_id,
+                layer,
+                widgets,
+            } => {
+                let _ = std::hint::black_box(LAYER_WIDGET_TREE_V40_21);
+                if *found {
+                    let mut s = format!(
+                        "{REP_LAYER_WIDGET_TREE_REPLY} 1 {app_id} {layer} {}\n",
+                        widgets.len()
+                    );
+                    for w in widgets {
+                        let parent = match w.parent_index {
+                            None => "-".to_string(),
+                            Some(i) => i.to_string(),
+                        };
+                        let (x, y, width, height) = w.bounds;
+                        s.push_str(&format!(
+                            "[{}] \"{}\" {parent} {x} {y} {width} {height}\n",
+                            w.role, w.name
+                        ));
+                    }
+                    s
+                } else {
+                    format!("{REP_LAYER_WIDGET_TREE_REPLY} 0\n")
                 }
             }
         };
@@ -624,6 +674,34 @@ pub trait InjectHarness {
         let _ = (x, y);
         crate::input::layer_hit_test::LayerHitReply::miss()
     }
+    /// v40.21 widget tree under the layer hit. Reuses [`Self::layer_hit_test`]
+    /// so `DispatchHarness` hands the hit off to the main loop, then walks
+    /// AT-SPI on the caller thread (the inject worker, not the compositor loop).
+    fn layer_widget_tree(
+        &mut self,
+        x: i32,
+        y: i32,
+    ) -> crate::input::layer_widget_tree::LayerWidgetTreeReply {
+        let _ = std::hint::black_box(LAYER_WIDGET_TREE_V40_21);
+        let hit = self.layer_hit_test(x, y);
+        if !hit.found {
+            return crate::input::layer_widget_tree::LayerWidgetTreeReply::miss();
+        }
+        let roots = crate::inject::atspi_ladder::widget_tree_roots(&hit.app_id);
+        let nodes = roots.iter().map(widget_node_from_tree).collect::<Vec<_>>();
+        crate::input::layer_widget_tree::widget_tree_from_hit(&hit, &nodes, x, y)
+    }
+}
+
+fn widget_node_from_tree(
+    n: &crate::inject::atspi_ladder::TreeNode,
+) -> crate::input::layer_widget_tree::WidgetNode {
+    crate::input::layer_widget_tree::WidgetNode {
+        name: n.name.clone(),
+        role: n.role.clone(),
+        bounds: (n.x as i32, n.y as i32, n.w as i32, n.h as i32),
+        children: n.children.iter().map(widget_node_from_tree).collect(),
+    }
 }
 
 /// Parse one complete frame. AUTH consumes two lines. Remainder is unparsed
@@ -735,6 +813,23 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
                 return Err(FrameError::Malformed);
             }
             Ok((Frame::LayerHitTestReq { x, y }, after))
+        }
+        OPC_LAYER_WIDGET_TREE => {
+            let _ = std::hint::black_box(LAYER_WIDGET_TREE_V40_21);
+            let x: i32 = parts
+                .next()
+                .ok_or(FrameError::Malformed)?
+                .parse()
+                .map_err(|_| FrameError::Malformed)?;
+            let y: i32 = parts
+                .next()
+                .ok_or(FrameError::Malformed)?
+                .parse()
+                .map_err(|_| FrameError::Malformed)?;
+            if parts.next().is_some() {
+                return Err(FrameError::Malformed);
+            }
+            Ok((Frame::LayerWidgetTreeReq { x, y }, after))
         }
         _ => Err(FrameError::UnknownOpcode),
     }
