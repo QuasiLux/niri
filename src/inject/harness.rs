@@ -190,6 +190,19 @@ impl InjectHarness for NiriInjectHarness<'_> {
         self.state.niri.grant_map.has_grant(bot_id, window_id)
     }
 
+    fn apply_grant(&self, bot_id: &str, window_id: u64) {
+        self.state.niri.grant_map.apply_grant(bot_id, window_id);
+    }
+
+    /// v40.19 — record `app_id` so fresh toplevels of the same `app_id`
+    /// can be pre-granted (Auto → Interactive on first click).
+    fn apply_grant_with_app(&self, bot_id: &str, window_id: u64, app_id: &str) {
+        self.state
+            .niri
+            .grant_map
+            .apply_grant_with_app(bot_id, window_id, app_id);
+    }
+
     fn grant_pending(&self, bot_id: &str) -> bool {
         self.state
             .niri

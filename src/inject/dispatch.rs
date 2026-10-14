@@ -484,6 +484,11 @@ impl GrantClickHost for DispatchState {
     fn apply_grant(&self, bot_id: &str, window_id: u64) {
         GrantMap::from_arc(Arc::clone(&self.grants)).apply_grant(bot_id.to_string(), window_id);
     }
+
+    fn apply_grant_with_app(&self, bot_id: &str, window_id: u64, app_id: &str) {
+        GrantMap::from_arc(Arc::clone(&self.grants))
+            .apply_grant_with_app(bot_id, window_id, app_id);
+    }
 }
 
 /// Linux `BTN_LEFT` from `linux/input-event-codes.h`.

@@ -35,7 +35,7 @@ pub use grant_confirm::{
     GRANT_CONFIRM_OVERLAY_LAYER_SHELL_REGISTERED, GRANT_CONFIRM_OVERLAY_PAINT_LEFT_GREEN_RIGHT_RED,
     GRANT_ROW_H, GRANT_SLOT_W,
 };
-pub use grants::GrantMap;
+pub use grants::{GrantEntry, GrantKind, GrantMap};
 pub use harness::NiriInjectHarness;
 pub use protocol::{
     token_file_path, validate_token, Frame, FrameError, InjectHarness, Reply, ERR_GRANT_DENIED,
@@ -149,6 +149,22 @@ pub static GRANT_CONFIRM_IPC_LAYERS_PLANE_IDENTS: &[&str] = &[
 /// assert the `Request::Layers` field mapping without adding `niri-ipc`
 /// to `[dev-dependencies]` (Cargo.toml is frozen on this card).
 pub use niri_ipc::{Layer, LayerSurface, LayerSurfaceKeyboardInteractivity};
+
+/// v40.19 — fresh-window grant auto-grant path: the compositor subscribes
+/// to `wl_compositor.new_surface` and pre-creates a grant entry on FIRST
+/// `new_window` event for any bot already granted the parent `app_id`.
+/// The grant is `Auto` until the first manual user click on the bar,
+/// which promotes it to `Interactive` (Row-11 persistent grant). This
+/// closes Gap G from the v5 Mac-parity audit (`freshly spawned windows
+/// stay NOT_GRANTED while qlux_grant_confirm stays Exclusive and
+/// invisible`) without regressing the Row-11 cross-bot BIND defense.
+pub const GRANT_FRESH_WINDOW_AUTO_V40_19: &str =
+    "GRANT_FRESH_WINDOW_AUTO_V40_19";
+
+#[used]
+pub static GRANT_FRESH_WINDOW_AUTO_V40_19_PLANE_IDENTS: &[&str] = &[
+    GRANT_FRESH_WINDOW_AUTO_V40_19,
+];
 
 /// v40.6 KEY delivery: agent-seat keyboard focus on the bound WlSurface.
 pub const KEY_DELIVERY_V40_6_SURFACE_ACTIVATION: &str =
