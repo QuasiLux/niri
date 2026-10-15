@@ -81,6 +81,16 @@ pub struct LayerHitDispatchReq {
     pub reply: std::sync::mpsc::Sender<crate::input::layer_hit_test::LayerHitReply>,
 }
 
+/// v40.25: per-WINDOW_FOCUS_REQ request posted from a worker thread onto
+/// the main compositor loop. `state.focus_window(&window)` mutates
+/// `keyboard_focus` and queues a redraw; only the compositor loop may call
+/// it. Worker thread hands off via `FocusDispatchReq` (same rendezvous
+/// pattern as `LayerHitDispatchReq`).
+pub struct FocusDispatchReq {
+    pub wid: u64,
+    pub reply: std::sync::mpsc::Sender<crate::input::focus_window::FocusWindowReply>,
+}
+
 thread_local! {
     static WORKER_KEY_DISPATCH_TX: RefCell<Option<calloop::channel::Sender<KeyDispatchReq>>> =
         RefCell::new(None);
@@ -144,6 +154,30 @@ pub fn post_layer_hit_dispatch(
         .unwrap_or_else(|_| crate::input::layer_hit_test::LayerHitReply::miss())
 }
 
+/// v40.25: send `FocusDispatchReq` and wait for the main-loop
+/// `focus_window_niri` reply. The compositor side runs the real layout
+/// focus action (mutates keyboard_focus, warps cursor, queues redraw).
+/// A dropped receiver or no-such-window both fall back to "no such window"
+/// (matches the pre-v40.25 wire contract for the failure path).
+pub fn post_focus_dispatch(
+    tx: &calloop::channel::Sender<FocusDispatchReq>,
+    wid: u64,
+) -> crate::input::focus_window::FocusWindowReply {
+    let _ = std::hint::black_box(crate::inject::protocol::WINDOW_FOCUS_DISPATCHED_V40_25);
+    let _ = std::hint::black_box(crate::inject::protocol::WINDOW_FOCUS_REQ_V40_24);
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let req = FocusDispatchReq {
+        wid,
+        reply: reply_tx,
+    };
+    if tx.send(req).is_err() {
+        return crate::input::focus_window::FocusWindowReply::fail("no such window");
+    }
+    reply_rx
+        .recv()
+        .unwrap_or_else(|_| crate::input::focus_window::FocusWindowReply::fail("no such window"))
+}
+
 #[used]
 static KEY_DELIVERY_V40_9_DISPATCH_IDENT: &[u8] =
     b"\x01KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF\x01";
@@ -193,6 +227,11 @@ pub struct DispatchState {
     /// install a handoff; production `dispatch_inject_connection` sets it.
     /// Without this, `layer_hit_test` would use the trait default miss.
     pub layer_hit_tx: Option<calloop::channel::Sender<LayerHitDispatchReq>>,
+    /// v40.25: main-loop WINDOW_FOCUS_REQ sender. `None` in tests; production
+    /// `dispatch_inject_connection` sets it. Without this, `focus_window`
+    /// would use the trait default "no such window" (the LTO-survivable stub
+    /// the cua-driver raw-socket test caught).
+    pub focus_window_tx: Option<calloop::channel::Sender<FocusDispatchReq>>,
 }
 
 #[derive(Default)]
@@ -270,6 +309,7 @@ impl DispatchState {
             pending_key_wid: None,
             app_id_map: Arc::new(Mutex::new(HashMap::new())),
             layer_hit_tx: None,
+            focus_window_tx: None,
         }
     }
 
@@ -1019,6 +1059,28 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         }
         crate::input::layer_hit_test::LayerHitReply::miss()
     }
+
+    /// v40.25: real `focus_window` impl on the production worker harness.
+    /// Posts a `FocusDispatchReq` onto the main compositor loop, which
+    /// calls `state.focus_window(&window)` (the existing layout action).
+    /// Without this override, the trait default at `protocol.rs::focus_window`
+    /// returned "no such window" for every WINDOW_FOCUS_REQ — the LTO-
+    /// survivable stub the cua-driver raw-socket test caught.
+    fn focus_window(&mut self, wid: u64) -> crate::input::focus_window::FocusWindowReply {
+        let _ = std::hint::black_box(crate::inject::protocol::WINDOW_FOCUS_DISPATCHED_V40_25);
+        let _ = std::hint::black_box(crate::inject::protocol::WINDOW_FOCUS_REQ_V40_24);
+        // `wid == 0` is the sentinel for "no selection" — return
+        // `invalid wid` without crossing the worker→main boundary (same
+        // prelude as `focus_window_niri` in src/input/focus_window.rs).
+        if wid == 0 {
+            return crate::input::focus_window::FocusWindowReply::fail("invalid wid");
+        }
+        if let Some(tx) = self.state.focus_window_tx.as_ref() {
+            return post_focus_dispatch(tx, wid);
+        }
+        // Test harness without a handoff: stay compile-clean.
+        crate::input::focus_window::FocusWindowReply::fail("no such window")
+    }
 }
 
 /// Block on a future on this thread's event loop (same pattern as
@@ -1057,6 +1119,8 @@ pub fn dispatch_inject_connection(
     key_dispatch_tx: Option<calloop::channel::Sender<KeyDispatchReq>>,
     app_id_map: Arc<Mutex<HashMap<u64, String>>>,
     layer_hit_tx: Option<calloop::channel::Sender<LayerHitDispatchReq>>,
+    // v40.25: main-loop WINDOW_FOCUS_REQ handoff sender. `None` in tests.
+    focus_window_tx: Option<calloop::channel::Sender<FocusDispatchReq>>,
 ) -> anyhow::Result<()> {
     let mut state = DispatchState::new(
         is_locked,
@@ -1072,6 +1136,7 @@ pub fn dispatch_inject_connection(
     state.key_dispatch_tx = key_dispatch_tx.clone();
     bind_worker_key_dispatch_tx(key_dispatch_tx);
     state.layer_hit_tx = layer_hit_tx;
+    state.focus_window_tx = focus_window_tx;
     state.set_app_id_map(app_id_map);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
     state.set_grant_confirm_surface(grant_confirm_surface);

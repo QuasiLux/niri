@@ -129,6 +129,14 @@ pub static LAYER_WIDGET_TREE_NIRI_V40_20: &[u8] = b"LAYER_WIDGET_TREE_NIRI_V40_2
 #[used]
 pub static WINDOW_FOCUS_REQ_V40_24: &[u8] = b"WINDOW_FOCUS_REQ_V40_24\0";
 
+/// v40.25 `WINDOW_FOCUS_DISPATCHED` ident. Pins the live `DispatchHarness::
+/// focus_window` override (worker→main handoff) into the release ELF so
+/// `strings | grep WINDOW_FOCUS_DISPATCHED_V40_25` returns ≥1 even after
+/// LTO. Mirrors the v40.18 / v40.21 `LAYER_HIT_TEST_V40_18` /
+/// `LAYER_WIDGET_TREE_V40_21` literal pattern.
+#[used]
+pub static WINDOW_FOCUS_DISPATCHED_V40_25: &[u8] = b"WINDOW_FOCUS_DISPATCHED_V40_25\0";
+
 /// Trap 45: `#[used]` byte statics (not `&[&str]`) referenced at the live
 /// `Frame::TreeByAppId` wire-encoder arm via `std::hint::black_box`.
 #[used]
