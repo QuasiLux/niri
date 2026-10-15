@@ -96,7 +96,10 @@ mod tests {
     #[test]
     fn ident_is_strings_gated() {
         let bytes = WINDOW_FOCUS_V40_24_DISPATCH_IDENT;
-        assert!(bytes.windows(25).any(|w| w == b"WINDOW_FOCUS_REQ_V40_24"));
+        // SOH-framed literal is 2 + 23 + 2 = 27 bytes; the substring
+        // 23-byte `WINDOW_FOCUS_REQ_V40_24` must appear somewhere
+        // inside (matches the v40.25 test convention).
+        assert!(bytes.windows(23).any(|w| w == b"WINDOW_FOCUS_REQ_V40_24"));
     }
 
     #[test]
