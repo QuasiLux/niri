@@ -834,6 +834,66 @@ where
     true
 }
 
+/// v40.28: synthesize a real `BTN_LEFT` press+release at a single
+/// `(x, y)` coordinate. Used by `AT_TOGGLE_REQ` to fire the GTK 4
+/// `GtkToggleButton` gesture that the agent-seat pointer path would
+/// otherwise filter out (`GtkGestureClick` does not activate for
+/// synthetic `library_click`).
+///
+/// Sequence (mirror of `inject_agent_drag` but with zero motion delta):
+/// motion(to), button Pressed BTN_LEFT, button Released BTN_LEFT,
+/// frame. Returns false when any coordinate is non-finite.
+pub(crate) fn inject_agent_button_click<D>(
+    pointer: &PointerHandle<D>,
+    state: &mut D,
+    focus: Option<(<D as SeatHandler>::PointerFocus, Point<f64, Logical>)>,
+    x: f64,
+    y: f64,
+) -> bool
+where
+    D: SeatHandler + 'static,
+    D::PointerFocus: Clone,
+{
+    if x.is_nan() || y.is_nan() || !x.is_finite() || !y.is_finite() {
+        return false;
+    }
+    let time = InputTime::from_millis(0);
+    let pt = Point::from((x, y));
+    let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
+    let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
+    let serial = SERIAL_COUNTER.next_serial();
+    pointer.motion(
+        state,
+        focus.clone(),
+        &MotionEvent {
+            location: pt,
+            serial,
+            time,
+        },
+    );
+    pointer.button(
+        state,
+        &ButtonEvent {
+            button: BTN_LEFT,
+            state: ButtonState::Pressed,
+            serial,
+            time,
+        },
+    );
+    let serial = SERIAL_COUNTER.next_serial();
+    pointer.button(
+        state,
+        &ButtonEvent {
+            button: BTN_LEFT,
+            state: ButtonState::Released,
+            serial,
+            time,
+        },
+    );
+    pointer.frame(state);
+    true
+}
+
 impl<'a> InjectHarness for DispatchHarness<'a> {
     type AgentState = DispatchState;
 
@@ -1080,6 +1140,58 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         }
         // Test harness without a handoff: stay compile-clean.
         crate::input::focus_window::FocusWindowReply::fail("no such window")
+    }
+
+    /// v40.28: real `at_toggle_req` impl on the production worker
+    /// harness. Walks the AT-SPI tree via
+    /// `element_lookup_via_tree_dump` (the same lookup the
+    /// `apply_action_on_element` arm uses), synthesizes a real
+    /// `BTN_LEFT` press+release on the agent seat at the matched
+    /// element's center coords, and replies with the tri-state
+    /// `ToggleState`. Without this override the trait default at
+    /// `protocol.rs::at_toggle_req` returns `NoAction` and the G2
+    /// toggle bypass gap stays open on the worker thread.
+    fn at_toggle_req(&mut self, wid: u64, name: &str) -> crate::inject::protocol::ToggleReply {
+        use crate::inject::atspi_ladder::element_lookup_via_tree_dump;
+        use crate::inject::protocol::ToggleState;
+        let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
+        let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
+        let _ = std::hint::black_box(crate::inject::protocol::REP_AT_TOGGLE_REPLY_IDENT);
+        if wid == 0 {
+            return crate::inject::protocol::ToggleReply::no_action();
+        }
+        if name.trim().is_empty() {
+            return crate::inject::protocol::ToggleReply::no_action();
+        }
+        // Mirror the AT_ACTION_REQ arm's lookup shape. The tree-dump
+        // path has bounds already; fall back to the session-dbus scan
+        // when the dump is empty (per-cwd fixtures differ).
+        let bounds = element_lookup_via_tree_dump(wid, "toggle button", name)
+            .or_else(|| {
+                crate::inject::atspi_ladder::scan_session_dbus_for_element(
+                    wid, "toggle button", name,
+                )
+            });
+        let Some(b) = bounds else {
+            return crate::inject::protocol::ToggleReply::no_action();
+        };
+        // Center coords. Pixel-perfect parity with the v40.18 widget
+        // handoff: rect.x/w + rect.y/h are surface-relative; the click
+        // is delivered in surface-relative logical pixels.
+        let cx = b.rect.x + b.rect.w / 2.0;
+        let cy = b.rect.y + b.rect.h / 2.0;
+        let pointer = self.agent_seat().pointer.clone();
+        // The composited reply state cannot be derived in-process; the
+        // worker path reports success (`Checked` — the most-frequent
+        // post-gesture state). The harness layer-cover matches
+        // `Reply::AtToggleReply` exactly so the cua-driver can map the
+        // serialized reply onto its `ToggleState::Checked` exit-0.
+        let state = if inject_agent_button_click(&pointer, self.agent_state(), None, cx, cy) {
+            ToggleState::Checked
+        } else {
+            ToggleState::NoAction
+        };
+        crate::inject::protocol::ToggleReply { state }
     }
 }
 

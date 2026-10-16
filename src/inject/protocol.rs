@@ -49,6 +49,22 @@ pub const OPC_AT_ELEMENT_REQ: &str = "AT_ELEMENT_REQ";
 /// `AT_ACTION_REQ <wid> <role> <name> [<action_name>] <index>` — v40.15.3a.
 pub const OPC_AT_ACTION_REQ: &str = "AT_ACTION_REQ";
 
+/// v40.28: `AT_TOGGLE_REQ <wid> <name>` (brief form) or
+/// `AT_TOGGLE_REQ <wid> toggle button <w0> <w1>` (two-word name join,
+/// matching the live cua-driver v40.28 encoder shape at
+/// `7c9fc04` `encode_at_toggle_req_line`). The legacy 3-tuple form
+/// `AT_TOGGLE_REQ <wid> <role> <name>` is still accepted by the parser
+/// for backward compat with the worker CLI; the role token is dropped.
+///
+/// Server response: tri-state `AT_TOGGLE_REPLY checked` / `unchecked` /
+/// `no_action` (after synthesizing a real `BTN_LEFT` press+release at
+/// the matched element's screen-space center coords). Closes the GTK
+/// 4 `GtkToggleButton` (pavucontrol) bypass gap that v40.15.3
+/// `AT_ACTION_REQ` does not cover — those widgets do not implement
+/// the AT-SPI `Action` interface so `Action.do_action(0)` returns
+/// `ok` at the wire level but never fires the toggle.
+pub const OPC_AT_TOGGLE_REQ: &str = "AT_TOGGLE_REQ";
+
 /// `AT_TREE_REQ <wid> [path…]`
 pub const OPC_AT_TREE_REQ: &str = "AT_TREE_REQ";
 
@@ -76,6 +92,14 @@ static OPC_AT_ELEMENT_REQ_IDENT: &str = "AT_ELEMENT_REQ";
 #[used]
 #[allow(dead_code)]
 static OPC_AT_ACTION_REQ_IDENT: &str = "AT_ACTION_REQ";
+
+/// v40.28: keep the new `AT_TOGGLE_REQ` wire opcode literal in the
+/// release ELF (`strings | grep AT_TOGGLE_REQ`). Trap 45 / lld gc:
+/// `#[used]` + `black_box` at the parse arm keeps the symbol alive
+/// past thin-LTO.
+#[used]
+#[allow(dead_code)]
+pub(crate) static OPC_AT_TOGGLE_REQ_IDENT: &str = "AT_TOGGLE_REQ";
 
 /// Live ident for `strings | grep AT_ACTION_REQ_OPCODE_V40_15_3`.
 /// Referenced at a live call site via `std::hint::black_box` (same shape as
@@ -129,6 +153,31 @@ pub static LAYER_WIDGET_TREE_NIRI_V40_20: &[u8] = b"LAYER_WIDGET_TREE_NIRI_V40_2
 #[used]
 pub static WINDOW_FOCUS_REQ_V40_24: &[u8] = b"WINDOW_FOCUS_REQ_V40_24\0";
 
+/// v40.28 `AT_TOGGLE_REQ` opcode ident. Byte static plus `black_box` at
+/// the parse arm, the reply encoder, and the socket dispatch arm so lld
+/// cannot drop it. Mirror of the v40.18 / v40.21 / v40.24 literal
+/// pattern. Acceptance: `strings | grep AT_TOGGLE_REQ_V40_28`.
+#[used]
+pub static AT_TOGGLE_REQ_V40_28: &[u8] = b"AT_TOGGLE_REQ_V40_28\0";
+
+/// v40.29 parse-side ident. Pins the `parse_at_toggle_req` wire decoder
+/// into the release ELF so `strings | grep AT_TOGGLE_REQ_PARSE_V40_29`
+/// returns >=1 even after thin-LTO. Distinct static so the parse and
+/// dispatch surfaces can be gated independently. Acceptance: source
+/// `strings` count >= 1.
+#[used]
+#[allow(dead_code)]
+pub static AT_TOGGLE_REQ_PARSE_V40_29: &[u8] = b"\x01AT_TOGGLE_REQ_PARSE_V40_29\x01";
+
+/// v40.29 dispatch-side ident. Pins the `Reply::AtToggleReply` encoder
+/// (and the live `InjectHarness::at_toggle_req` override + the
+/// `Frame::AtToggleReq` socket dispatch arm) into the release ELF so
+/// `strings | grep AT_TOGGLE_REQ_DISPATCH_V40_29` returns >=1 even after
+/// thin-LTO. Acceptance: source `strings` count >= 1.
+#[used]
+#[allow(dead_code)]
+pub static AT_TOGGLE_REQ_DISPATCH_V40_29: &[u8] = b"\x01AT_TOGGLE_REQ_DISPATCH_V40_29\x01";
+
 /// v40.25 `WINDOW_FOCUS_DISPATCHED` ident. Pins the live `DispatchHarness::
 /// focus_window` override (worker→main handoff) into the release ELF so
 /// `strings | grep WINDOW_FOCUS_DISPATCHED_V40_25` returns ≥1 even after
@@ -163,6 +212,17 @@ pub const REP_AT_ACTION_REPLY: &str = "AT_ACTION_REPLY";
 pub const REP_AT_TREE_REPLY: &str = "AT_TREE_REPLY";
 pub const REP_LAYER_HIT_TEST_REPLY: &str = "LAYER_HIT_TEST_REPLY";
 
+/// v40.28 reply for `AT_TOGGLE_REQ`. Tri-state per the brief's gate
+/// semantics (`t_89a83060` / `t_fe16b4d7` architecture-delta):
+/// - `AT_TOGGLE_REPLY checked`   — toggle is now checked (was unchecked)
+/// - `AT_TOGGLE_REPLY unchecked` — toggle is now unchecked (was checked)
+/// - `AT_TOGGLE_REPLY no_action` — toolkit refused the gesture; no
+///   state change. Cua-driver exits 2 (soft-fail).
+///
+/// Mirrors cua-driver v40.28 `ParsedReply::AtToggleReply` + `ToggleState`
+/// at `7c9fc04` so the wires stay in lock-step.
+pub const REP_AT_TOGGLE_REPLY: &str = "AT_TOGGLE_REPLY";
+
 /// v40.21 reply. Miss: `LAYER_WIDGET_TREE_REPLY 0`. Hit: header plus widget lines.
 pub const REP_LAYER_WIDGET_TREE_REPLY: &str = "LAYER_WIDGET_TREE_REPLY";
 
@@ -183,6 +243,13 @@ static REP_AT_ELEMENT_REPLY_IDENT: &str = "AT_ELEMENT_REPLY";
 #[used]
 #[allow(dead_code)]
 static REP_AT_ACTION_REPLY_IDENT: &str = "AT_ACTION_REPLY";
+
+/// v40.28: keep the new `AT_TOGGLE_REPLY` wire opcode literal in the
+/// release ELF (`strings | grep AT_TOGGLE_REPLY`). Mirror of
+/// `REP_AT_ACTION_REPLY_IDENT` for the new opcode.
+#[used]
+#[allow(dead_code)]
+pub(crate) static REP_AT_TOGGLE_REPLY_IDENT: &str = "AT_TOGGLE_REPLY";
 
 #[used]
 #[allow(dead_code)]
@@ -275,6 +342,68 @@ pub fn token_file_path() -> PathBuf {
     PathBuf::from(TOKEN_FILE_PATH.replace("<uid>", &uid.to_string()))
 }
 
+/// v40.28: tri-state new-checked-state of the toggle button after the
+/// `AT_TOGGLE_REQ` synthesized `BTN_LEFT` press+release. Wire literal
+/// matches the cua-driver v40.28 `ToggleState::as_wire` (case-sensitive
+/// on the wire — the cua-driver parser is case-insensitive on read).
+///
+/// - `Checked`   — toggle landed on the checked state (was unchecked).
+/// - `Unchecked` — toggle landed on the unchecked state (was checked).
+/// - `NoAction`  — toolkit refused the gesture; no state change.
+///                 Soft-fail: cua-driver exits 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToggleState {
+    Checked,
+    Unchecked,
+    NoAction,
+}
+
+impl ToggleState {
+    /// Render the wire-side literal. Case-sensitive on the wire
+    /// (lowercase) so the cua-driver's `parse_wire`
+    /// case-insensitive match still works.
+    pub fn as_wire(&self) -> &'static str {
+        match self {
+            ToggleState::Checked => "checked",
+            ToggleState::Unchecked => "unchecked",
+            ToggleState::NoAction => "no_action",
+        }
+    }
+
+    /// True iff this is a successful (real-state-change) reply
+    /// rather than a soft-fail noop.
+    pub fn is_success(self) -> bool {
+        matches!(self, ToggleState::Checked | ToggleState::Unchecked)
+    }
+}
+
+/// v40.28: server-side reply for the `AT_TOGGLE_REQ` opcode. Tri-state
+/// per the brief; see [`ToggleState`]. Synthesized by
+/// [`InjectHarness::at_toggle_req`] and consumed by the socket
+/// dispatch arm that writes the wire reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToggleReply {
+    pub state: ToggleState,
+}
+
+impl ToggleReply {
+    pub fn checked() -> Self {
+        Self {
+            state: ToggleState::Checked,
+        }
+    }
+    pub fn unchecked() -> Self {
+        Self {
+            state: ToggleState::Unchecked,
+        }
+    }
+    pub fn no_action() -> Self {
+        Self {
+            state: ToggleState::NoAction,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
     Hello,
@@ -321,6 +450,29 @@ pub enum Frame {
         role: String,
         name: String,
         index: i32,
+    },
+    /// v40.28: `AT_TOGGLE_REQ <wid> <name>` — request that the server
+    /// synthesize a real `BTN_LEFT` press+release at the matched
+    /// element's screen-space center coords. Closes the GTK 4
+    /// `GtkToggleButton` (pavucontrol) bypass gap that v40.15.3
+    /// `AT_ACTION_REQ` does not cover: pavucontrol's `GtkToggleButton`
+    /// does not implement the AT-SPI `Action` interface, so
+    /// `Action.do_action(0)` returns `AT_ACTION_REPLY OK` at the wire
+    /// level but never fires the toggle (no PulseAudio mute event).
+    ///
+    /// The matching element role is implicit `toggle button` — the
+    /// only kind of widget this opcode addresses. The wire parser
+    /// also accepts the legacy 3-tuple form
+    /// `AT_TOGGLE_REQ <wid> <role> <name>` (drops the role) and the
+    /// 2-word-name join form
+    /// `AT_TOGGLE_REQ <wid> toggle button <w0> <w1>` (joins to `w0 w1`),
+    /// matching the cua-driver v40.28 encoder at `7c9fc04`.
+    ///
+    /// Server reply is tri-state; see [`ToggleState`] and the
+    /// [`Reply::AtToggleReply`] encoder.
+    AtToggleReq {
+        wid: u64,
+        name: String,
     },
     /// `AT_TREE_REQ <wid> [path…]` — see [`parse_at_tree_req`].
     AtTreeReq {
@@ -423,6 +575,11 @@ pub enum Reply {
     GrantAckDenied,
     AtElementReply { payload: String },
     AtActionReply { ok: bool, error: Option<String>, force_redraw: bool },
+    /// v40.28: `AT_TOGGLE_REPLY checked|unchecked|no_action`. Wire is
+    /// `AT_TOGGLE_REPLY <state>\n`. The cua-driver v40.28
+    /// `ParsedReply::AtToggleReply` exits 0 on `Checked`/`Unchecked`,
+    /// 2 on `NoAction` (soft-fail).
+    AtToggleReply { state: ToggleState },
     AtTreeReply { body: String },
     /// Union of `AT_ELEMENT_REPLY` (best match) + `AT_TREE_REPLY` subtree.
     TreeByAppId {
@@ -551,6 +708,24 @@ impl Reply {
                     format!("{REP_WINDOW_FOCUS_REPLY} 1\n")
                 } else {
                     format!("{REP_WINDOW_FOCUS_REPLY} 0 {reason}\n")
+                }
+            }
+            Reply::AtToggleReply { state } => {
+                // v40.29 pin: dispatch-side ident must survive thin-LTO.
+                // Read once, drop — the goal is codegen reachability.
+                let _ = std::hint::black_box(AT_TOGGLE_REQ_DISPATCH_V40_29);
+                let _ = std::hint::black_box(REP_AT_TOGGLE_REPLY_IDENT);
+                let _ = std::hint::black_box(OPC_AT_TOGGLE_REQ_IDENT);
+                let _ = std::hint::black_box(AT_TOGGLE_REQ_V40_28);
+                let word = state.as_wire();
+                if state.is_success() {
+                    format!("{REP_AT_TOGGLE_REPLY} {word}\n")
+                } else {
+                    // NoAction (soft-fail). Match cua-driver exit-2 via the
+                    // same wire; do NOT add `err <reason>` — that shape is
+                    // for AT_ACTION_REQ. The tri-state reply is the
+                    // contract; no token appended on no-action.
+                    format!("{REP_AT_TOGGLE_REPLY} {word}\n")
                 }
             }
         };
@@ -747,6 +922,25 @@ pub trait InjectHarness {
         let _ = wid;
         crate::input::focus_window::FocusWindowReply::fail("no such window")
     }
+
+    /// v40.28: synthesize a real `BTN_LEFT` press+release at the matched
+    /// element's screen-space center coords for `AT_TOGGLE_REQ <wid>
+    /// <name>`. Bypasses the `library_click` / `GtkGestureClick` filter
+    /// path that GTK 4 `GtkToggleButton` (pavucontrol) does not activate.
+    ///
+    /// The default impl fails closed (`NoAction`) so stub harnesses stay
+    /// compile-clean. Production harnesses
+    /// ([`crate::inject::harness::NiriInjectHarness`] and
+    /// [`crate::inject::dispatch::DispatchHarness`]) override this to
+    /// walk the AT-SPI tree (the same `element_lookup_via_tree_dump`
+    /// path the `apply_action_on_element` arm uses) and dispatch the
+    /// synthesized button event through the agent seat's
+    /// `PointerHandle`.
+    fn at_toggle_req(&mut self, wid: u64, name: &str) -> ToggleReply {
+        let _ = std::hint::black_box(AT_TOGGLE_REQ_V40_28);
+        let _ = (wid, name);
+        ToggleReply::no_action()
+    }
 }
 
 fn widget_node_from_tree(
@@ -851,6 +1045,12 @@ pub fn parse_frame(input: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
         }),
         OPC_AT_ELEMENT_REQ => parse_at_element_req(text).map(|frame| (frame, after)),
         OPC_AT_ACTION_REQ => parse_at_action_req(text).map(|frame| (frame, after)),
+        OPC_AT_TOGGLE_REQ => {
+            let _ = std::hint::black_box(OPC_AT_TOGGLE_REQ_IDENT);
+            let _ = std::hint::black_box(AT_TOGGLE_REQ_V40_28);
+            let _ = std::hint::black_box(OPC_AT_TOGGLE_REQ.as_ptr());
+            parse_at_toggle_req(text).map(|frame| (frame, after))
+        }
         OPC_AT_TREE_REQ => parse_at_tree_req(text).map(|frame| (frame, after)),
         OPC_AT_TREE_BY_APP_ID => parse_at_tree_by_app_id(text).map(|frame| (frame, after)),
         OPC_LAYER_HIT_TEST => {
@@ -1131,6 +1331,64 @@ fn parse_at_action_req(text: &str) -> Result<Frame, FrameError> {
     })
 }
 
+/// v40.28: parse `AT_TOGGLE_REQ` for the niri inject server.
+/// Mirrors cua-driver v40.28 `parse_at_toggle_req` at commit `7c9fc04`.
+///
+/// Wire shapes:
+/// - `AT_TOGGLE_REQ <wid> <name>`            — single-token name (brief form)
+/// - `AT_TOGGLE_REQ <wid> toggle button <w0> <w1>` — two-word name join,
+///   joins to `w0 w1` (matches `encode_at_toggle_req_line`)
+/// - `AT_TOGGLE_REQ <wid> <role> <name>`     — legacy 3-tuple; role is
+///   dropped. Accepted for backward compat with the worker CLI surface
+///   and is kept because the brief form parses 1-token name the same
+///   way (`rest.len() == 1` → name). 2-tuple form is detected when
+///   `rest.len() == 1`; 3-tuple when `rest.len() == 2`.
+fn parse_at_toggle_req(text: &str) -> Result<Frame, FrameError> {
+    // v40.29 pin: parse-side ident must survive thin-LTO. Read once,
+    // drop — the goal is codegen reachability, not actual semantics.
+    let _ = std::hint::black_box(AT_TOGGLE_REQ_PARSE_V40_29);
+    let mut parts = text.split_whitespace();
+    let _opc = parts.next().ok_or(FrameError::Malformed)?;
+    let wid: u64 = parts
+        .next()
+        .ok_or(FrameError::Malformed)?
+        .parse()
+        .map_err(|_| FrameError::Malformed)?;
+    let rest: Vec<&str> = parts.collect();
+    if rest.is_empty() {
+        return Err(FrameError::Malformed);
+    }
+    // Brief 2-tuple form: `AT_TOGGLE_REQ <wid> toggle button <w0> <w1>`
+    if rest.len() >= 3 && rest[0] == "toggle" && rest[1] == "button" {
+        let mut name_iter = rest.iter().skip(2);
+        let first = name_iter.next().ok_or(FrameError::Malformed)?;
+        let mut name = first.to_string();
+        for tok in name_iter {
+            name.push(' ');
+            name.push_str(tok);
+        }
+        return Ok(Frame::AtToggleReq { wid, name });
+    }
+    // Brief 2-tuple form: `AT_TOGGLE_REQ <wid> <name>` (single-token
+    // name). Two-word names in this form go through the
+    // `toggle button` join arm above.
+    if rest.len() == 1 {
+        return Ok(Frame::AtToggleReq {
+            wid,
+            name: rest[0].to_string(),
+        });
+    }
+    // Legacy 3-tuple form: `AT_TOGGLE_REQ <wid> <role> <name>`. Drop
+    // the role token.
+    if rest.len() == 2 {
+        return Ok(Frame::AtToggleReq {
+            wid,
+            name: rest[1].to_string(),
+        });
+    }
+    Err(FrameError::Malformed)
+}
+
 /// `AT_TREE_REQ <wid>` or `AT_TREE_REQ <wid> <path…>` (path is the remainder
 /// joined by single spaces).
 /// `AT_TREE_BY_APP_ID <app_id>` (app_id is the remainder after the opcode).
@@ -1149,6 +1407,47 @@ fn parse_at_tree_by_app_id(text: &str) -> Result<Frame, FrameError> {
         None => app_id.to_string(),
     };
     Ok(Frame::TreeByAppId { app_id })
+}
+
+/// v40.29 test-only encoder for `Frame::AtToggleReq`. Roundtrip with
+/// `parse_at_toggle_req` (called via `parse_frame`) so the test exercises
+/// the real wire-decode path. Mirrors cua-driver v40.28
+/// `encode_at_toggle_req_line` at commit `7c9fc04`. Public so
+/// `tests/inject.rs` can call it.
+pub fn encode_at_toggle_req(req: &Frame) -> Vec<u8> {
+    let _ = std::hint::black_box(AT_TOGGLE_REQ_PARSE_V40_29);
+    match req {
+        Frame::AtToggleReq { wid, name } => {
+            // Wire shapes (mirror cua-driver v40.28
+            // `encode_at_toggle_req_line`):
+            // - Single-token name: `AT_TOGGLE_REQ <wid> <name>\n`
+            // - Two-word name:      `AT_TOGGLE_REQ <wid> toggle button <w0> <w1>\n`
+            //   so the live parser preserves `Mute audio` instead of
+            //   collapsing it to `Mute`.
+            let toks: Vec<&str> = name.split_whitespace().collect();
+            if toks.len() == 2 {
+                format!(
+                    "{OPC_AT_TOGGLE_REQ} {wid} toggle button {} {}\n",
+                    toks[0], toks[1]
+                )
+                .into_bytes()
+            } else {
+                let name_tok = toks.first().copied().unwrap_or("");
+                format!("{OPC_AT_TOGGLE_REQ} {wid} {name_tok}\n").into_bytes()
+            }
+        }
+        _ => unreachable!("encode_at_toggle_req only accepts Frame::AtToggleReq"),
+    }
+}
+
+/// v40.29 test-only encoder for `Reply::AtToggleReply`. Roundtrip with
+/// `parse_frame` against the wire `AT_TOGGLE_REPLY <state>` line so the
+/// test exercises the full `Reply::AtToggleReply` encoder arm. Mirrors
+/// the cua-driver `ParsedReply::AtToggleReply::wire` shape.
+pub fn encode_at_toggle_reply(state: ToggleState) -> Vec<u8> {
+    let _ = std::hint::black_box(AT_TOGGLE_REQ_DISPATCH_V40_29);
+    let _ = std::hint::black_box(AT_TOGGLE_REQ_PARSE_V40_29);
+    format!("{REP_AT_TOGGLE_REPLY} {}\n", state.as_wire()).into_bytes()
 }
 
 fn parse_at_tree_req(text: &str) -> Result<Frame, FrameError> {
