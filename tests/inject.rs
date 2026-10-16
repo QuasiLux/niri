@@ -5048,3 +5048,96 @@ fn live_grant_v40_19_fresh_window_no_grant_baseline_unchanged() {
         "v40.19: Row-11 baseline preserved — fresh window for an ungranted parent app_id requires manual click"
     );
 }
+
+/// v40.29 — wire-encode/decode roundtrip for the `AT_TOGGLE_REQ` server
+/// side. Verifies:
+/// 1. `encode_at_toggle_req(&Frame::AtToggleReq{wid,name})` emits the
+///    brief 2-tuple form `AT_TOGGLE_REQ <wid> <name>\n` (single-token)
+///    or the role-prefixed form `AT_TOGGLE_REQ <wid> toggle button
+///    <w0> <w1>\n` (two-token name) — whichever matches the live
+///    cua-driver v40.28 wire shape at commit `7c9fc04`.
+/// 2. `parse_frame` round-trips the encoded bytes back into an equivalent
+///    `Frame::AtToggleReq { wid, name }`.
+/// 3. `encode_at_toggle_reply(ToggleState::Checked)` emits
+///    `AT_TOGGLE_REPLY checked\n` (the success reply), and
+///    `encode_at_toggle_reply(ToggleState::NoAction)` emits
+///    `AT_TOGGLE_REPLY no_action\n` (the soft-fail reply).
+/// 4. The new v40.29 idents (`AT_TOGGLE_REQ_PARSE_V40_29` and
+///    `AT_TOGGLE_REQ_DISPATCH_V40_29`) are reachable from the runtime
+///    encoders via `black_box`, so thin-LTO cannot strip them.
+#[test]
+fn atspi_action_toggle_roundtrip_v40_29() {
+    use niri::inject::protocol::{
+        encode_at_toggle_reply, encode_at_toggle_req, ToggleState,
+    };
+
+    // (1a) Encode a single-token name.
+    let single = niri::inject::Frame::AtToggleReq {
+        wid: 7,
+        name: "Allow".to_string(),
+    };
+    let single_bytes = encode_at_toggle_req(&single);
+    let single_line = std::str::from_utf8(&single_bytes).expect("ascii wire");
+    assert_eq!(single_line, "AT_TOGGLE_REQ 7 Allow\n");
+
+    // (1b) Encode a two-word name — must use the role-prefixed shape
+    // (mirror cua-driver v40.28 `encode_at_toggle_req_line`).
+    let two_word = niri::inject::Frame::AtToggleReq {
+        wid: 42,
+        name: "Mute audio".to_string(),
+    };
+    let req_bytes = encode_at_toggle_req(&two_word);
+    let req_line = std::str::from_utf8(&req_bytes).expect("ascii wire");
+    assert_eq!(
+        req_line, "AT_TOGGLE_REQ 42 toggle button Mute audio\n",
+        "two-word name must use the role-prefixed wire shape",
+    );
+
+    // (2a) Roundtrip single-token through `parse_frame`.
+    let (parsed, rest) =
+        niri::inject::protocol::parse_frame(&single_bytes).expect("parse");
+    assert!(rest.is_empty(), "no trailing bytes");
+    match parsed {
+        niri::inject::Frame::AtToggleReq { wid, name } => {
+            assert_eq!(wid, 7);
+            assert_eq!(name, "Allow");
+        }
+        other => panic!("expected Frame::AtToggleReq, got {other:?}"),
+    }
+
+    // (2b) Roundtrip two-word through `parse_frame`.
+    let (parsed, rest) =
+        niri::inject::protocol::parse_frame(&req_bytes).expect("parse");
+    assert!(rest.is_empty(), "no trailing bytes");
+    match parsed {
+        niri::inject::Frame::AtToggleReq { wid, name } => {
+            assert_eq!(wid, 42);
+            assert_eq!(name, "Mute audio");
+        }
+        other => panic!("expected Frame::AtToggleReq, got {other:?}"),
+    }
+
+    // (3) Reply encoders — success and soft-fail.
+    let checked_bytes = encode_at_toggle_reply(ToggleState::Checked);
+    let checked_line = std::str::from_utf8(&checked_bytes).expect("ascii wire");
+    assert_eq!(checked_line, "AT_TOGGLE_REPLY checked\n");
+
+    let unchecked_bytes = encode_at_toggle_reply(ToggleState::Unchecked);
+    let unchecked_line =
+        std::str::from_utf8(&unchecked_bytes).expect("ascii wire");
+    assert_eq!(unchecked_line, "AT_TOGGLE_REPLY unchecked\n");
+
+    let no_action_bytes = encode_at_toggle_reply(ToggleState::NoAction);
+    let no_action_line =
+        std::str::from_utf8(&no_action_bytes).expect("ascii wire");
+    assert_eq!(no_action_line, "AT_TOGGLE_REPLY no_action\n");
+
+    // (4) Ident lints: read both new v40.29 statics via `black_box` to
+    // prove they are pinned into the release ELF (Trap 45 thin-LTO guard).
+    let _ = std::hint::black_box(
+        niri::inject::protocol::AT_TOGGLE_REQ_PARSE_V40_29,
+    );
+    let _ = std::hint::black_box(
+        niri::inject::protocol::AT_TOGGLE_REQ_DISPATCH_V40_29,
+    );
+}

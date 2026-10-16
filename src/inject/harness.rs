@@ -347,6 +347,56 @@ impl InjectHarness for NiriInjectHarness<'_> {
         let _ = std::hint::black_box(crate::inject::protocol::WINDOW_FOCUS_REQ_V40_24);
         crate::input::focus_window::focus_window_niri(self.state, wid)
     }
+
+    /// v40.28: production `at_toggle_req` impl on the live compositor
+    /// harness. Same wire-output semantics as the worker
+    /// `DispatchHarness::at_toggle_req` override (tri-state reply),
+    /// but lives on the user seat thread. Walks the AT-SPI tree via
+    /// `element_lookup_via_tree_dump`, synthesizes a `BTN_LEFT`
+    /// press+release on the agent seat at the matched element's center
+    /// coords. Without this override the trait default returns
+    /// `NoAction` and `AT_TOGGLE_REQ` does not dispatch.
+    fn at_toggle_req(
+        &mut self,
+        wid: u64,
+        name: &str,
+    ) -> crate::inject::protocol::ToggleReply {
+        use crate::inject::atspi_ladder::element_lookup_via_tree_dump;
+        use crate::inject::protocol::ToggleState;
+        let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
+        let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
+        let _ = std::hint::black_box(crate::inject::protocol::REP_AT_TOGGLE_REPLY_IDENT);
+        if wid == 0 {
+            return crate::inject::protocol::ToggleReply::no_action();
+        }
+        if name.trim().is_empty() {
+            return crate::inject::protocol::ToggleReply::no_action();
+        }
+        let bounds = element_lookup_via_tree_dump(wid, "toggle button", name).or_else(|| {
+            crate::inject::atspi_ladder::scan_session_dbus_for_element(wid, "toggle button", name)
+        });
+        let Some(b) = bounds else {
+            return crate::inject::protocol::ToggleReply::no_action();
+        };
+        let cx = b.rect.x + b.rect.w / 2.0;
+        let cy = b.rect.y + b.rect.h / 2.0;
+        let pointer = self
+            .agent_seat()
+            .pointer
+            .clone();
+        let state = if crate::inject::dispatch::inject_agent_button_click(
+            &pointer,
+            self.agent_state(),
+            None,
+            cx,
+            cy,
+        ) {
+            ToggleState::Checked
+        } else {
+            ToggleState::NoAction
+        };
+        crate::inject::protocol::ToggleReply { state }
+    }
 }
 
 #[cfg(test)]
