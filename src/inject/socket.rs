@@ -1121,6 +1121,34 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 .await?;
                 ClientPhase::Dispatch { focus, wid }
             }
+            (
+                ClientPhase::Dispatch { focus, wid },
+                Frame::AtToggleReq { wid: req_wid, name },
+            ) => {
+                // v40.28 — `AT_TOGGLE_REQ <wid> <name>` server handler.
+                // Synthesizes a real `BTN_LEFT` press+release at the
+                // matched element's center coords via the agent seat
+                // (same shape as `AT_ACTION_REQ` walks the AT-SPI tree).
+                // Reply is tri-state: `AT_TOGGLE_REPLY checked |
+                // unchecked | no_action` per the cua-driver v40.28
+                // wire contract.
+                let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
+                let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
+                let _ = std::hint::black_box(crate::inject::protocol::REP_AT_TOGGLE_REPLY_IDENT);
+                let reply = harness.at_toggle_req(req_wid, &name);
+                tracing::debug!(
+                    window_id = req_wid,
+                    name = %name,
+                    ?reply,
+                    "atspi.toggle_req"
+                );
+                write_reply(
+                    &mut write,
+                    &Reply::AtToggleReply { state: reply.state },
+                )
+                .await?;
+                ClientPhase::Dispatch { focus, wid }
+            }
             (ClientPhase::Dispatch { focus, wid }, frame) => {
                 if let Some(true) = dispatch_frame(harness, &mut write, &focus, wid, frame).await? {
                     return Ok(());
