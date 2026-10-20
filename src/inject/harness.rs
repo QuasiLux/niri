@@ -370,9 +370,10 @@ impl InjectHarness for NiriInjectHarness<'_> {
     /// The agent seat has no `wl_seat` global, so `known_pointers` is
     /// empty and a press there never reaches a client.
     ///
-    /// Does not hardcode `ToggleState::Checked`. A successful click is
-    /// a dispatched gesture, not an observed GTK checked-bit — reply
-    /// `Unchecked` meaning "a real action fired" (`is_success()`).
+    /// Does not hardcode `ToggleState::Checked`. Click dispatched is not an
+    /// observed GTK checked-bit. `None` from `observe_toggle_checked` means
+    /// unobserved, and the wire reply is `no_action` on purpose (honesty over
+    /// convenience).
     fn at_toggle_req(
         &mut self,
         wid: u64,
@@ -419,11 +420,15 @@ impl InjectHarness for NiriInjectHarness<'_> {
         if !clicked {
             return crate::inject::protocol::ToggleReply::no_action();
         }
-        // Best-effort: the click was dispatched. AT-SPI `do_action("toggle")`
-        // does not read back the widget, and there is no in-process GTK 4
-        // `GtkToggleButton` checked-bit here. `Unchecked` means "a real
-        // action fired" (`is_success()`), not a measured unchecked widget.
-        crate::inject::protocol::ToggleReply::unchecked()
+        // Click dispatched is not an observed GTK checked-bit. None means
+        // unobserved and the wire reply is `no_action` on purpose (honesty
+        // over convenience). Do not return `unchecked()` as a stand-in for
+        // success.
+        match crate::inject::atspi_ladder::observe_toggle_checked(&b.dbus_dest, &b.dbus_path) {
+            Some(true) => crate::inject::protocol::ToggleReply::checked(),
+            Some(false) => crate::inject::protocol::ToggleReply::unchecked(),
+            None => crate::inject::protocol::ToggleReply::no_action(),
+        }
     }
 }
 

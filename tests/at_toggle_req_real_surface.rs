@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use niri::inject::atspi_action::{set_action_override, ActionProbe, ToggleOutcome};
-use niri::inject::atspi_ladder::{set_scan_override, ElementBounds};
+use niri::inject::atspi_ladder::{set_observe_toggle_override, set_scan_override, ElementBounds};
 use niri::inject::dispatch::{
     inject_agent_button_click, toggle_state_from_outcome, DispatchFocus, DispatchHarness,
     DispatchState,
@@ -360,6 +360,8 @@ impl InjectHarness for RealSurfaceHarness<'_> {
     /// Mirrors `NiriInjectHarness::at_toggle_req`: `Some((window surface, pt))`
     /// into `inject_agent_button_click`. `PointerFocus = RealFocus` wraps the
     /// requested window's `WlSurface`; `DispatchFocus` cannot be passed here.
+    /// After a successful click the reply is `observe_toggle_checked` on the
+    /// bounds dest/path, not `unchecked()` merely because `clicked` is true.
     fn at_toggle_req(&mut self, wid: u64, name: &str) -> ToggleReply {
         if wid == 0 || name.trim().is_empty() {
             return ToggleReply::no_action();
@@ -394,10 +396,16 @@ impl InjectHarness for RealSurfaceHarness<'_> {
             cx,
             cy,
         );
-        if clicked {
-            ToggleReply::unchecked()
-        } else {
-            ToggleReply::no_action()
+        if !clicked {
+            return ToggleReply::no_action();
+        }
+        // Click dispatched is not an observed GTK checked-bit. None means
+        // unobserved and the wire reply is `no_action` on purpose (honesty
+        // over convenience).
+        match niri::inject::atspi_ladder::observe_toggle_checked(&b.dbus_dest, &b.dbus_path) {
+            Some(true) => ToggleReply::checked(),
+            Some(false) => ToggleReply::unchecked(),
+            None => ToggleReply::no_action(),
         }
     }
 }
@@ -422,6 +430,21 @@ fn with_scan_override<R>(f: impl FnOnce() -> R) -> R {
     out
 }
 
+fn observe_checked(_dest: &str, _path: &str) -> Option<bool> {
+    Some(true)
+}
+
+fn observe_unchecked(_dest: &str, _path: &str) -> Option<bool> {
+    Some(false)
+}
+
+fn with_observe_override<R>(f: fn(&str, &str) -> Option<bool>, body: impl FnOnce() -> R) -> R {
+    set_observe_toggle_override(Some(f));
+    let out = body();
+    set_observe_toggle_override(None);
+    out
+}
+
 #[test]
 fn toggled_focus_is_the_real_window_surface_not_a_stub() {
     assert_production_pointer_focus_is_wl_surface();
@@ -431,7 +454,8 @@ fn toggled_focus_is_the_real_window_surface_not_a_stub() {
         let expected = state.windows.get(&KNOWN_WID).unwrap().clone();
         let mut harness = RealSurfaceHarness { state: &mut state };
         let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
-        assert_ne!(reply, ToggleReply::no_action());
+        // Empty dbus dest: the click ran, the checked-bit is unobserved.
+        assert_eq!(reply, ToggleReply::no_action());
         let got = harness
             .state
             .last_focus_surface
@@ -466,7 +490,8 @@ fn at_toggle_dispatches_at_element_center() {
         let mut state = RealSurfaceState::new();
         let mut harness = RealSurfaceHarness { state: &mut state };
         let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
-        assert_ne!(reply, ToggleReply::no_action());
+        // Empty dbus dest: the click ran, the checked-bit is unobserved.
+        assert_eq!(reply, ToggleReply::no_action());
         let rec = harness.state.record.lock().unwrap();
         let loc = rec.last_motion.expect("motion must fire");
         assert_eq!(loc, Point::from((cx, cy)), "motion location is element center");
@@ -561,10 +586,10 @@ fn grab_fail() -> bool {
 #[test]
 fn toggle_outcome_maps_to_toggle_state_without_inventing_checked() {
     use ToggleOutcome::*;
-    assert_eq!(toggle_state_from_outcome(Flipped), ToggleState::Unchecked);
+    assert_eq!(toggle_state_from_outcome(Flipped), ToggleState::NoAction);
     assert_eq!(
         toggle_state_from_outcome(GrabFocusFallbackUsed),
-        ToggleState::Unchecked
+        ToggleState::NoAction
     );
     assert_eq!(
         toggle_state_from_outcome(PointerClickFallback),
@@ -583,7 +608,7 @@ fn toggle_outcome_maps_to_toggle_state_without_inventing_checked() {
     }));
     assert_eq!(
         toggle_state_from_outcome(niri::inject::atspi_action::toggle_matched_node("d", "/p")),
-        ToggleState::Unchecked
+        ToggleState::NoAction
     );
 
     DO_ACTION_CALLS.with(|c| *c.borrow_mut() = 0);
@@ -594,7 +619,7 @@ fn toggle_outcome_maps_to_toggle_state_without_inventing_checked() {
     }));
     assert_eq!(
         toggle_state_from_outcome(niri::inject::atspi_action::toggle_matched_node("d", "/p")),
-        ToggleState::Unchecked
+        ToggleState::NoAction
     );
 
     set_action_override(Some(ActionProbe {
@@ -612,4 +637,47 @@ fn toggle_outcome_maps_to_toggle_state_without_inventing_checked() {
         toggle_state_from_outcome(niri::inject::atspi_action::toggle_matched_node("", "")),
         ToggleState::NoAction
     );
+}
+
+#[test]
+fn reply_is_the_observation_not_the_click() {
+    reset_real_surface_buttons();
+    with_scan_override(|| {
+        with_observe_override(observe_checked, || {
+            let mut state = RealSurfaceState::new();
+            let mut harness = RealSurfaceHarness { state: &mut state };
+            let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
+            assert_eq!(reply, ToggleReply::checked());
+            assert!(
+                real_surface_buttons() > 0,
+                "checked reply still requires the real-surface click"
+            );
+        });
+        reset_real_surface_buttons();
+        with_observe_override(observe_unchecked, || {
+            let mut state = RealSurfaceState::new();
+            let mut harness = RealSurfaceHarness { state: &mut state };
+            let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
+            assert_eq!(reply, ToggleReply::unchecked());
+            assert!(
+                real_surface_buttons() > 0,
+                "unchecked reply still requires the real-surface click"
+            );
+        });
+        reset_real_surface_buttons();
+        set_observe_toggle_override(None);
+        let bounds = fixture_bounds(KNOWN_WID, "toggle button", TOGGLE_NAME).expect("fixture");
+        assert!(
+            bounds.dbus_dest.is_empty() && bounds.dbus_path.is_empty(),
+            "fixture dest/path stay empty so a live GetState must not run"
+        );
+        let mut state = RealSurfaceState::new();
+        let mut harness = RealSurfaceHarness { state: &mut state };
+        let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
+        assert_eq!(reply, ToggleReply::no_action());
+        assert!(
+            real_surface_buttons() > 0,
+            "successful click with empty dest is unobserved, not unchecked"
+        );
+    });
 }

@@ -1711,3 +1711,114 @@ pub fn force_icon_redraw(dest: &str, obj_path: &str) -> bool {
     }
     true
 }
+
+/// `ATSPI_STATE_CHECKED` (value 4) and `ATSPI_STATE_INDETERMINATE` (value 35)
+/// from an AT-SPI `StateSet` (`Accessible.GetState` words).
+///
+/// State value N is bit `N % 32` of word `N / 32`, the same layout as
+/// `STATE_VISIBLE` (value 30 = bit 30 of word 0). CHECKED is bit 4 of word 0.
+/// INDETERMINATE is bit 3 of word 1.
+///
+/// Empty words, or a set INDETERMINATE bit, are unobserved (`None`). A clear
+/// CHECKED bit with INDETERMINATE clear is `Some(false)`: the state was read.
+pub fn toggle_checked_from_state_words(words: &[u32]) -> Option<bool> {
+    if words.is_empty() {
+        return None;
+    }
+    // Word 1 present and ATSPI_STATE_INDETERMINATE (value 35, bit 3).
+    if words.len() > 1 && (words[1] & (1u32 << 3)) != 0 {
+        return None;
+    }
+    if (words[0] & (1u32 << 4)) != 0 {
+        Some(true)
+    } else {
+        Some(false)
+    }
+}
+
+thread_local! {
+    static OBSERVE_TOGGLE_OVERRIDE: std::cell::RefCell<Option<fn(&str, &str) -> Option<bool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test hook for [`observe_toggle_checked`]. `None` clears it.
+pub fn set_observe_toggle_override(f: Option<fn(&str, &str) -> Option<bool>>) {
+    OBSERVE_TOGGLE_OVERRIDE.with(|slot| *slot.borrow_mut() = f);
+}
+
+/// Observed CHECKED bit for `(dest, path)`.
+///
+/// The override, when set, is the whole result. An empty dest or path is
+/// unobserved. With the `dbus` feature this spawns a thread (same shape as
+/// `live_toggle`), calls `connect_a11y_bus`, and `Accessible.GetState`,
+/// then [`toggle_checked_from_state_words`]. Connect, call, or deserialize
+/// failure is `None`. Failure is not unchecked.
+pub fn observe_toggle_checked(dest: &str, path: &str) -> Option<bool> {
+    if let Some(hook) = OBSERVE_TOGGLE_OVERRIDE.with(|slot| *slot.borrow()) {
+        return hook(dest, path);
+    }
+    if dest.is_empty() || path.is_empty() {
+        return None;
+    }
+    observe_toggle_checked_live(dest, path)
+}
+
+#[cfg(feature = "dbus")]
+fn observe_toggle_checked_live(dest: &str, path: &str) -> Option<bool> {
+    let dest = dest.to_owned();
+    let path = path.to_owned();
+    match std::thread::spawn(move || observe_toggle_checked_on_a11y_bus(&dest, &path)).join() {
+        Ok(observed) => observed,
+        Err(_) => None,
+    }
+}
+
+/// `GetState` deserialize shapes match `real_bus::get_visible`: `Vec<u32>`
+/// first, then `[u32; 2]`. Either failure, or a failed connect/call, is
+/// unobserved — not a clear CHECKED bit.
+#[cfg(feature = "dbus")]
+fn observe_toggle_checked_on_a11y_bus(dest: &str, path: &str) -> Option<bool> {
+    let conn = match connect_a11y_bus() {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
+    let Ok(message) = conn.call_method(Some(dest), path, Some(ACCESSIBLE), "GetState", &())
+    else {
+        return None;
+    };
+    if let Ok(words) = message.body().deserialize::<Vec<u32>>() {
+        return toggle_checked_from_state_words(&words);
+    }
+    if let Ok(words) = message.body().deserialize::<[u32; 2]>() {
+        return toggle_checked_from_state_words(&words);
+    }
+    None
+}
+
+#[cfg(not(feature = "dbus"))]
+fn observe_toggle_checked_live(_dest: &str, _path: &str) -> Option<bool> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::toggle_checked_from_state_words;
+
+    #[test]
+    fn toggle_checked_from_state_words_pins_bit_mapping() {
+        assert_eq!(toggle_checked_from_state_words(&[]), None);
+
+        // ATSPI_STATE_CHECKED (value 4) is bit 4 of word 0.
+        assert_eq!(toggle_checked_from_state_words(&[1u32 << 4]), Some(true));
+        assert_eq!(toggle_checked_from_state_words(&[1u32 << 4, 0]), Some(true));
+
+        // State was read, CHECKED clear, INDETERMINATE clear.
+        assert_eq!(toggle_checked_from_state_words(&[0]), Some(false));
+        assert_eq!(toggle_checked_from_state_words(&[0, 0]), Some(false));
+
+        // ATSPI_STATE_INDETERMINATE (value 35) is bit 3 of word 1.
+        assert_eq!(toggle_checked_from_state_words(&[0, 1u32 << 3]), None);
+        assert_eq!(toggle_checked_from_state_words(&[1u32 << 4, 1u32 << 3]), None);
+    }
+}
