@@ -2087,7 +2087,7 @@ fn atspi_strong_gnome_calculator_button_7() {
         "{replies:?}"
     );
     assert_eq!(click, Some(BridgeClick { x: 30.0, y: 28.0 }));
-    assert_eq!(last_motion, Some(Point::from((30.0, 28.0))));
+    assert_eq!(last_motion, None);
 }
 
 #[test]
@@ -2156,7 +2156,7 @@ fn atspi_chrome_zen_search_textbox() {
         "{replies:?}"
     );
     assert_eq!(click, Some(BridgeClick { x: 58.0, y: 14.0 }));
-    assert_eq!(last_motion, Some(Point::from((58.0, 14.0))));
+    assert_eq!(last_motion, None);
 }
 
 #[test]

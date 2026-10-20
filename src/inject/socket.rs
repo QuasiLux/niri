@@ -808,7 +808,13 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 let _ = std::hint::black_box(
                                     crate::inject::ELEMENT_AX_LOOKUP_V40_14_6,
                                 );
-                                pointer_click(harness, &focus, Point::from((cx, cy)));
+                                let screen_coords = bounds.rect.x == 0.0 && bounds.rect.y == 0.0;
+                                let _ = crate::inject::dispatch::try_handoff_element_click(
+                                    window_id,
+                                    cx,
+                                    cy,
+                                    screen_coords,
+                                );
                             }
                             let mut payload = format!(
                                 "{} {} {} {} {} {} {}",
@@ -873,7 +879,13 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 let _ = std::hint::black_box(
                                     crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
                                 );
-                                pointer_click(harness, &focus, Point::from((cx, cy)));
+                                let screen_coords = bounds.rect.x == 0.0 && bounds.rect.y == 0.0;
+                                let _ = crate::inject::dispatch::try_handoff_element_click(
+                                    window_id,
+                                    cx,
+                                    cy,
+                                    screen_coords,
+                                );
                             }
                             let mut payload = format!(
                                 "{} {} {} {} {} {} {}",
@@ -940,7 +952,13 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                                 let _ = std::hint::black_box(
                                     crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,
                                 );
-                                pointer_click(harness, &focus, Point::from((cx, cy)));
+                                let screen_coords = bounds.rect.x == 0.0 && bounds.rect.y == 0.0;
+                                let _ = crate::inject::dispatch::try_handoff_element_click(
+                                    window_id,
+                                    cx,
+                                    cy,
+                                    screen_coords,
+                                );
                             }
                             let mut payload = format!(
                                 "{} {} {} {} {} {} {}",
