@@ -88,6 +88,20 @@ impl<'a> NiriInjectHarness<'a> {
         })
     }
 
+    /// Scroll `wid`'s tiling column into the viewport and snap the view
+    /// offset so a same-call `window_hit_geom` sees the on-output origin.
+    /// Does not use `activate_window` (free-scroll preserves the view).
+    fn scroll_wid_column_into_view(&mut self, wid: u64) -> bool {
+        let id = MappedId::from_raw(wid);
+        let Some(window) = self.state.niri.find_window_by_id(id) else {
+            return false;
+        };
+        self.state
+            .niri
+            .layout
+            .scroll_window_column_into_view(&window)
+    }
+
     /// User-seat `BTN_LEFT` at the AT-SPI center.
     ///
     /// `screen_coords` is true when the rect origin was (0, 0) and
@@ -124,11 +138,38 @@ impl<'a> NiriInjectHarness<'a> {
             let Some(geom) = self.window_hit_geom(wid) else {
                 return false;
             };
-            geom.window_top_left_global + Point::from((cx, cy))
+            let mut global = geom.window_top_left_global + Point::from((cx, cy));
+            // Off-output miss is `click_contents_under_none`: the window-relative
+            // center was added to a column the viewport is not showing. Scroll
+            // that column (not preserve-view) and recompute. Do not click a
+            // different window. Do not fall back to (0, 0).
+            if self.state.niri.contents_under(global).surface.is_none()
+                && self.state.niri.output_under(global).is_none()
+            {
+                if !self.scroll_wid_column_into_view(wid) {
+                    return false;
+                }
+                let Some(geom) = self.window_hit_geom(wid) else {
+                    return false;
+                };
+                global = geom.window_top_left_global + Point::from((cx, cy));
+            }
+            global
         };
-        let Some(focus) = self.state.niri.contents_under(global).surface else {
+        let hit = self.state.niri.contents_under(global);
+        let Some(focus) = hit.surface.clone() else {
             return false;
         };
+        if !screen_coords {
+            let id = MappedId::from_raw(wid);
+            let Some(target) = self.state.niri.find_window_by_id(id) else {
+                return false;
+            };
+            match &hit.window {
+                Some((hit_window, _)) if hit_window == &target => {}
+                _ => return false,
+            }
+        }
         let Some(pointer) = self.state.niri.seat.get_pointer() else {
             return false;
         };
@@ -481,6 +522,11 @@ impl InjectHarness for NiriInjectHarness<'_> {
         if name.trim().is_empty() {
             return crate::inject::protocol::ToggleReply::no_action();
         }
+        // Scroll before the AT-SPI bounds are consumed. A window-relative
+        // center added to an off-viewport origin is `click_contents_under_none`.
+        // The lookup below is the re-read: do not click a rect captured
+        // against the stale origin.
+        let _ = self.scroll_wid_column_into_view(wid);
         let bounds = element_lookup_via_tree_dump(wid, "toggle button", name).or_else(|| {
             crate::inject::atspi_ladder::scan_session_dbus_for_element(wid, "toggle button", name)
         });
