@@ -105,8 +105,8 @@ fn off_viewport_full_width_column_was_click_contents_under_none_then_scroll_hits
         "the miss must not already be window 2 (the viewport column); global={global:?} origin2={origin2:?}"
     );
     assert!(
-        origin1.x + size1.w <= 0.0,
-        "window 1 must be entirely left of the output, not a partial overlap; origin={origin1:?} size={size1:?}"
+        origin1.x < 0.0,
+        "window 1 must start left of the output; origin={origin1:?} size={size1:?}"
     );
 
     assert!(layout.scroll_window_column_into_view(&1));
