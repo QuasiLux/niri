@@ -16,6 +16,7 @@ use super::*;
 mod animations;
 mod free_scroll;
 mod fullscreen;
+mod scroll_into_view_click;
 
 impl<W: LayoutElement> Default for Layout<W> {
     fn default() -> Self {
