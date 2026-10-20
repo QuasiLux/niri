@@ -108,6 +108,13 @@ fn off_viewport_full_width_column_was_click_contents_under_none_then_scroll_hits
         origin1.x < 0.0,
         "window 1 must start left of the output; origin={origin1:?} size={size1:?}"
     );
+    // `window_under` is clipped to the output, same miss as `contents_under`
+    // when the point is not on any output. That is `click_contents_under_none`.
+    let output = layout.active_output().unwrap().clone();
+    assert!(
+        layout.window_under(&output, global).is_none(),
+        "off-output center must not resolve a surface before the scroll; global={global:?}"
+    );
 
     assert!(layout.scroll_window_column_into_view(&1));
     // No CompleteAnimations: the helper must snap view_offset.current() itself.
@@ -126,5 +133,16 @@ fn off_viewport_full_width_column_was_click_contents_under_none_then_scroll_hits
     assert!(
         !contains(origin2, size2, global),
         "must not click the viewport window; origin2={origin2:?} size={size2:?} global={global:?}"
+    );
+    // The user-seat click is dispatched to this hit, not to window 2 and not
+    // to a `(0, 0)` fallback. `click_atspi_center_on_user_seat` refuses a
+    // `contents_under` window that is not `wid`.
+    let hit_id = layout
+        .window_under(&output, global)
+        .map(|(win, _)| *win.id());
+    assert_eq!(
+        hit_id,
+        Some(1),
+        "after scroll the click must hit window 1's surface; global={global:?}"
     );
 }
