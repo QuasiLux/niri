@@ -847,6 +847,39 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.interactive_resize = None;
     }
 
+    /// Scroll `window`'s column into the viewport the way [`Self::activate_column`]
+    /// does, even when that column is already active.
+    ///
+    /// [`Self::activate_column`] returns immediately when `idx` is already
+    /// active. Free-scroll focus ([`Self::activate_column_preserve_view`])
+    /// leaves the column active and the viewport elsewhere — the v40.37
+    /// `click_contents_under_none` miss. This must not call
+    /// `activate_column_preserve_view`.
+    ///
+    /// Snaps the view-offset animation to its target before returning.
+    /// `view_pos()` uses `view_offset.current()`, and a just-started animation
+    /// still reports `from` until time passes, so a same-call `window_hit_geom`
+    /// would still see the off-viewport origin.
+    pub fn scroll_column_into_view_for_window(&mut self, window: &W::Id) -> bool {
+        let Some(idx) = self.columns.iter().position(|col| col.contains(window)) else {
+            return false;
+        };
+        if self.active_column_idx != idx {
+            self.activate_column(idx);
+        } else {
+            self.animate_view_offset_to_column(None, idx, Some(idx));
+        }
+        self.finish_view_offset_now();
+        true
+    }
+
+    fn finish_view_offset_now(&mut self) {
+        if let ViewOffset::Animation(anim) = &self.view_offset {
+            let to = anim.to();
+            self.view_offset = ViewOffset::Static(to);
+        }
+    }
+
     fn activate_column_with_anim_config(&mut self, idx: usize, config: niri_config::Animation) {
         if self.active_column_idx == idx
             // During a DnD scroll, animate even when activating the same window, for DnD hold.
