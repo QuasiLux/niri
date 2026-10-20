@@ -100,13 +100,73 @@ pub struct AtToggleDispatchReq {
     pub reply: std::sync::mpsc::Sender<crate::inject::protocol::ToggleReply>,
 }
 
+/// v40.35: AT_ELEMENT_REQ pointer fallback posted from the worker onto the
+/// main loop. Not a wire opcode. The worker must not click `DispatchFocus`.
+pub struct AtElementClickDispatchReq {
+    pub wid: u64,
+    pub x: f64,
+    pub y: f64,
+    /// True when the AT-SPI rect origin was (0, 0), so `extents_with_fallback`
+    /// stored Screen coords rather than Window coords.
+    pub screen_coords: bool,
+    pub reply: std::sync::mpsc::Sender<bool>,
+}
+
 thread_local! {
     static WORKER_KEY_DISPATCH_TX: RefCell<Option<calloop::channel::Sender<KeyDispatchReq>>> =
         RefCell::new(None);
+    static WORKER_ELEMENT_CLICK_TX: RefCell<
+        Option<calloop::channel::Sender<AtElementClickDispatchReq>>,
+    > = RefCell::new(None);
 }
 
 fn bind_worker_key_dispatch_tx(tx: Option<calloop::channel::Sender<KeyDispatchReq>>) {
     WORKER_KEY_DISPATCH_TX.with(|slot| *slot.borrow_mut() = tx);
+}
+
+fn bind_worker_element_click_tx(
+    tx: Option<calloop::channel::Sender<AtElementClickDispatchReq>>,
+) {
+    WORKER_ELEMENT_CLICK_TX.with(|slot| *slot.borrow_mut() = tx);
+}
+
+/// Post an AT_ELEMENT pointer fallback to the main loop and wait.
+///
+/// Returns `None` when this thread has no handoff sender (in-process tests).
+/// Callers must not click `DispatchFocus` in that case.
+pub fn try_handoff_element_click(
+    wid: u64,
+    x: f64,
+    y: f64,
+    screen_coords: bool,
+) -> Option<bool> {
+    WORKER_ELEMENT_CLICK_TX.with(|slot| {
+        let tx = slot.borrow();
+        tx.as_ref()
+            .map(|tx| post_element_click_dispatch(tx, wid, x, y, screen_coords))
+    })
+}
+
+fn post_element_click_dispatch(
+    tx: &calloop::channel::Sender<AtElementClickDispatchReq>,
+    wid: u64,
+    x: f64,
+    y: f64,
+    screen_coords: bool,
+) -> bool {
+    let _ = std::hint::black_box(POINTER_FRAME_SPLIT_V40_35_IDENT);
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let req = AtElementClickDispatchReq {
+        wid,
+        x,
+        y,
+        screen_coords,
+        reply: reply_tx,
+    };
+    if tx.send(req).is_err() {
+        return false;
+    }
+    reply_rx.recv().unwrap_or(false)
 }
 
 /// Post a KEY frame to the main loop and block for ACK.
@@ -247,6 +307,11 @@ static AT_SPI_BRIDGE_BOUND_APP_ID_DISPATCH_IDENT: &[u8] =
 static AT_TOGGLE_REAL_SURFACE_V40_33_IDENT: &[u8] =
     b"\x01AT_TOGGLE_REQ_REAL_SURFACE_V40_33\x01";
 
+/// v40.35: frame-split user-seat click. `black_box` at the live
+/// `inject_agent_button_click` call site so thin-LTO keeps the literal.
+#[used]
+static POINTER_FRAME_SPLIT_V40_35_IDENT: &[u8] = b"\x01POINTER_FRAME_SPLIT_V40_35\x01";
+
 /// Niri-shaped fields the v4.6 harness reads via `self.state.niri`.
 /// On the worker thread we don't have `niri::State`; we hold only the
 /// snapshot the dispatch loop needs.
@@ -293,6 +358,11 @@ pub struct DispatchState {
     /// `dispatch_inject_connection` sets it. Without this the worker must
     /// not click `DispatchFocus` (that pointer target's `button` is empty).
     pub at_toggle_tx: Option<calloop::channel::Sender<AtToggleDispatchReq>>,
+    /// v40.35: main-loop AT_ELEMENT pointer-fallback sender. `None` in tests.
+    /// `dispatch_inject_connection` sets it and binds the thread-local copy
+    /// that `socket.rs` posts through. Without this the worker must not
+    /// click `DispatchFocus`.
+    pub element_click_tx: Option<calloop::channel::Sender<AtElementClickDispatchReq>>,
 }
 
 #[derive(Default)]
@@ -372,6 +442,7 @@ impl DispatchState {
             layer_hit_tx: None,
             focus_window_tx: None,
             at_toggle_tx: None,
+            element_click_tx: None,
         }
     }
 
@@ -902,9 +973,12 @@ where
 /// otherwise filter out (`GtkGestureClick` does not activate for
 /// synthetic `library_click`).
 ///
-/// Sequence (mirror of `inject_agent_drag` but with zero motion delta):
-/// motion(to), button Pressed BTN_LEFT, button Released BTN_LEFT,
-/// frame. Returns false when any coordinate is non-finite.
+/// v40.35: motion, press, and release are separate `wl_pointer.frame`s.
+/// `(x, y)` is `MotionEvent.location` in global compositor space. `focus`'s
+/// point is the surface origin from `contents_under` (the same pair
+/// `move_cursor` passes). The client sees `location - origin`.
+/// Release is `RELEASE_DELAY_MICROS` after press. Returns false when any
+/// coordinate is non-finite.
 pub fn inject_agent_button_click<D>(
     pointer: &PointerHandle<D>,
     state: &mut D,
@@ -919,37 +993,45 @@ where
     if x.is_nan() || y.is_nan() || !x.is_finite() || !y.is_finite() {
         return false;
     }
-    let time = InputTime::from_millis(0);
+    let press_time = InputTime::now();
+    let release_time =
+        InputTime::from_micros(press_time.micros().saturating_add(RELEASE_DELAY_MICROS));
     let pt = Point::from((x, y));
+    let _ = std::hint::black_box(POINTER_FRAME_SPLIT_V40_35_IDENT);
     let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
     let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
-    let serial = SERIAL_COUNTER.next_serial();
+    let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);
+    let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT);
+    let motion_serial = SERIAL_COUNTER.next_serial();
     pointer.motion(
         state,
         focus.clone(),
         &MotionEvent {
             location: pt,
-            serial,
-            time,
+            serial: motion_serial,
+            time: press_time,
         },
     );
+    pointer.frame(state);
+    let press_serial = SERIAL_COUNTER.next_serial();
     pointer.button(
         state,
         &ButtonEvent {
             button: BTN_LEFT,
             state: ButtonState::Pressed,
-            serial,
-            time,
+            serial: press_serial,
+            time: press_time,
         },
     );
-    let serial = SERIAL_COUNTER.next_serial();
+    pointer.frame(state);
+    let release_serial = SERIAL_COUNTER.next_serial();
     pointer.button(
         state,
         &ButtonEvent {
             button: BTN_LEFT,
             state: ButtonState::Released,
-            serial,
-            time,
+            serial: release_serial,
+            time: release_time,
         },
     );
     pointer.frame(state);
@@ -1288,6 +1370,8 @@ pub fn dispatch_inject_connection(
     focus_window_tx: Option<calloop::channel::Sender<FocusDispatchReq>>,
     // v40.33: main-loop AT_TOGGLE_REQ handoff sender. `None` in tests.
     at_toggle_tx: Option<calloop::channel::Sender<AtToggleDispatchReq>>,
+    // v40.35: main-loop AT_ELEMENT pointer-fallback sender. `None` in tests.
+    element_click_tx: Option<calloop::channel::Sender<AtElementClickDispatchReq>>,
 ) -> anyhow::Result<()> {
     let mut state = DispatchState::new(
         is_locked,
@@ -1305,6 +1389,8 @@ pub fn dispatch_inject_connection(
     state.layer_hit_tx = layer_hit_tx;
     state.focus_window_tx = focus_window_tx;
     state.at_toggle_tx = at_toggle_tx;
+    state.element_click_tx = element_click_tx.clone();
+    bind_worker_element_click_tx(element_click_tx);
     state.set_app_id_map(app_id_map);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
     let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);

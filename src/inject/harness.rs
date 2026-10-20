@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use smithay::backend::input::InputTime;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Point, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 
 use crate::inject::grant_confirm::{ClickOutcome, GrantResolution, GrantSurfaceSource, SeatKind};
 use crate::inject::protocol::{InjectHarness, KeyMods};
@@ -16,6 +16,7 @@ use crate::inject::AppRoutes;
 use crate::input::agent_seat::AgentSeat;
 use crate::niri::{Niri, State};
 use crate::utils::with_toplevel_role;
+use crate::layout::LayoutElement;
 use crate::window::mapped::MappedId;
 
 /// Production inject harness. Construct around compositor [`State`] once a
@@ -57,6 +58,94 @@ impl<'a> NiriInjectHarness<'a> {
         confirm.build_surface(&self.state.niri);
         true
     }
+
+    /// Window visual top-left and its output origin, both in global space.
+    /// Arithmetic matches `Layout::interactive_move_begin`.
+    fn window_hit_geom(&self, wid: u64) -> Option<WindowHitGeom> {
+        let id = MappedId::from_raw(wid);
+        let niri = &self.state.niri;
+        let (_, mapped) = niri.layout.windows().find(|(_, m)| m.id() == id)?;
+        let window_handle = LayoutElement::id(mapped).clone();
+        let (mon, ws, ws_geo) = niri.layout.monitors().find_map(|mon| {
+            mon.workspaces_with_render_geo()
+                .find(|(ws, _)| ws.has_window(&window_handle))
+                .map(|(ws, geo)| (mon, ws, geo))
+        })?;
+        let zoom = mon.overview_zoom();
+        let (tile, tile_offset, _) = ws.tiles_with_render_positions().find(|(tile, _, _)| {
+            LayoutElement::id(tile.window()) == &window_handle
+        })?;
+        let tile_pos = ws_geo.loc + tile_offset.upscale(zoom);
+        let window_top_left_in_output = tile_pos + tile.window_loc().upscale(zoom);
+        let output_global = niri
+            .global_space
+            .output_geometry(mon.output())?
+            .loc
+            .to_f64();
+        Some(WindowHitGeom {
+            output_global,
+            window_top_left_global: output_global + window_top_left_in_output,
+        })
+    }
+
+    /// User-seat `BTN_LEFT` at the AT-SPI center.
+    ///
+    /// `screen_coords` is true when the rect origin was (0, 0) and
+    /// `extents_with_fallback` stored Screen coords. Otherwise `(cx, cy)` is
+    /// window-relative and is added to the window's global top-left.
+    /// `loc` is the `contents_under` surface origin. A miss does not fall
+    /// back to `(0, 0)`.
+    pub fn click_atspi_center_on_user_seat(
+        &mut self,
+        wid: u64,
+        cx: f64,
+        cy: f64,
+        screen_coords: bool,
+    ) -> bool {
+        if !cx.is_finite() || !cy.is_finite() {
+            return false;
+        }
+        let global = if screen_coords {
+            let direct = Point::from((cx, cy));
+            if self.state.niri.contents_under(direct).surface.is_some() {
+                direct
+            } else {
+                let Some(geom) = self.window_hit_geom(wid) else {
+                    return false;
+                };
+                let shifted = geom.output_global + Point::from((cx, cy));
+                if self.state.niri.contents_under(shifted).surface.is_some() {
+                    shifted
+                } else {
+                    return false;
+                }
+            }
+        } else {
+            let Some(geom) = self.window_hit_geom(wid) else {
+                return false;
+            };
+            geom.window_top_left_global + Point::from((cx, cy))
+        };
+        let Some(focus) = self.state.niri.contents_under(global).surface else {
+            return false;
+        };
+        let Some(pointer) = self.state.niri.seat.get_pointer() else {
+            return false;
+        };
+        let pointer = pointer.clone();
+        crate::inject::dispatch::inject_agent_button_click(
+            &pointer,
+            self.agent_state(),
+            Some(focus),
+            global.x,
+            global.y,
+        )
+    }
+}
+
+struct WindowHitGeom {
+    output_global: Point<f64, Logical>,
+    window_top_left_global: Point<f64, Logical>,
 }
 
 impl GrantSurfaceSource for Niri {
@@ -400,23 +489,10 @@ impl InjectHarness for NiriInjectHarness<'_> {
         };
         let cx = b.rect.x + b.rect.w / 2.0;
         let cy = b.rect.y + b.rect.h / 2.0;
-        let Some(surface) = self.resolve_window(wid) else {
-            return crate::inject::protocol::ToggleReply::no_action();
-        };
-        // smithay 79bbed5 `PointerInnerHandle::motion` does
-        // `event.location - loc` (`pointer.rs:801-804`). AT-SPI rects are
-        // surface-relative, so `loc` must be `(0, 0)` for the client to see
-        // `(cx, cy)`. `contents_under`'s point is a *global* surface origin
-        // (`PointContents` docs); pairing it with a surface-relative
-        // `(cx, cy)` shifts the click off the widget.
-        let pointer = self.state.niri.seat.get_pointer().unwrap().clone();
-        let clicked = crate::inject::dispatch::inject_agent_button_click(
-            &pointer,
-            self.agent_state(),
-            Some((surface, Point::from((0.0, 0.0)))),
-            cx,
-            cy,
-        );
+        // extents_with_fallback stores Screen coords when the window rect
+        // origin is (0, 0). Otherwise the rect is window-relative.
+        let screen_coords = b.rect.x == 0.0 && b.rect.y == 0.0;
+        let clicked = self.click_atspi_center_on_user_seat(wid, cx, cy, screen_coords);
         if !clicked {
             return crate::inject::protocol::ToggleReply::no_action();
         }
