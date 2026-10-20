@@ -1611,6 +1611,31 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    /// Scroll the tiling column that contains `window` into the viewport.
+    ///
+    /// Uses `activate_column`'s view-fit, not `activate_column_preserve_view`
+    /// and not [`Self::activate_window`] (which preserves the view under
+    /// free-scroll). Floating windows return false. Does not switch workspaces.
+    pub fn scroll_window_column_into_view(&mut self, window: &W::Id) -> bool {
+        let MonitorSet::Normal { monitors, .. } = &mut self.monitor_set else {
+            return false;
+        };
+        for mon in monitors.iter_mut() {
+            for ws in mon.workspaces.iter_mut() {
+                if !ws.has_window(window) {
+                    continue;
+                }
+                if ws.floating().has_window(window) {
+                    return false;
+                }
+                return ws
+                    .scrolling_mut()
+                    .scroll_column_into_view_for_window(window);
+            }
+        }
+        false
+    }
+
     pub fn activate_window_without_raising(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
