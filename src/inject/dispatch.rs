@@ -214,20 +214,17 @@ pub fn post_at_toggle_dispatch(
 
 /// Map an AT-SPI `ToggleOutcome` onto the wire `ToggleState`.
 ///
-/// `do_action("toggle")` does not read back the resulting widget state, and
-/// the compositor has no in-process GTK 4 `GtkToggleButton` checked-bit.
-/// `Flipped` / `GrabFocusFallbackUsed` therefore become `Unchecked`: the
-/// action demonstrably fired, not "we measured the widget is now checked".
-/// Callers treat both `Checked` and `Unchecked` as `is_success()`. Do not
-/// present `Checked` as measured truth.
+/// A D-Bus action result is not an observed widget state; do not map
+/// `Flipped` / `GrabFocusFallbackUsed` to `Checked` or `Unchecked`.
 pub fn toggle_state_from_outcome(
     outcome: crate::inject::atspi_action::ToggleOutcome,
 ) -> crate::inject::protocol::ToggleState {
     use crate::inject::atspi_action::ToggleOutcome;
     use crate::inject::protocol::ToggleState;
     match outcome {
-        ToggleOutcome::Flipped | ToggleOutcome::GrabFocusFallbackUsed => ToggleState::Unchecked,
-        ToggleOutcome::PointerClickFallback
+        ToggleOutcome::Flipped
+        | ToggleOutcome::GrabFocusFallbackUsed
+        | ToggleOutcome::PointerClickFallback
         | ToggleOutcome::NoActionExposed
         | ToggleOutcome::Empty => ToggleState::NoAction,
     }
@@ -1208,12 +1205,11 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     }
 
     /// v40.33: worker `AT_TOGGLE_REQ`. AT-SPI lookup stays on this thread
-    /// (no compositor state). A truthful D-Bus `Action.do_action("toggle")`
-    /// is preferred; otherwise post onto the main loop so
+    /// (no compositor state). Bounds only gate a post onto the main loop so
     /// `NiriInjectHarness` can click the real `WlSurface` via the user seat.
-    /// Never click `DispatchFocus` — that pointer target's `button` is empty.
+    /// The lookup rect is not a `ToggleState`. Never click `DispatchFocus` —
+    /// that pointer target's `button` is empty.
     fn at_toggle_req(&mut self, wid: u64, name: &str) -> crate::inject::protocol::ToggleReply {
-        use crate::inject::atspi_action::ToggleOutcome;
         use crate::inject::atspi_ladder::element_lookup_via_tree_dump;
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
         let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
@@ -1244,19 +1240,6 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         // harness re-derives the same center from `wid`/`name`.
         let _cx = b.rect.x + b.rect.w / 2.0;
         let _cy = b.rect.y + b.rect.h / 2.0;
-        let outcome = crate::inject::atspi_action::toggle_matched_node(&b.dbus_dest, &b.dbus_path);
-        match outcome {
-            ToggleOutcome::Flipped | ToggleOutcome::GrabFocusFallbackUsed => {
-                // Action fired. Not a measured GTK checked-bit; see
-                // `toggle_state_from_outcome`.
-                return crate::inject::protocol::ToggleReply {
-                    state: toggle_state_from_outcome(outcome),
-                };
-            }
-            ToggleOutcome::PointerClickFallback
-            | ToggleOutcome::NoActionExposed
-            | ToggleOutcome::Empty => {}
-        }
         if let Some(tx) = self.state.at_toggle_tx.as_ref() {
             return post_at_toggle_dispatch(tx, wid, name);
         }
