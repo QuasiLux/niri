@@ -92,6 +92,9 @@ impl<'a> NiriInjectHarness<'a> {
     /// offset so a same-call `window_hit_geom` sees the on-output origin.
     /// Does not use `activate_window` (free-scroll preserves the view).
     fn scroll_wid_column_into_view(&mut self, wid: u64) -> bool {
+        // Live call site. A `#[used]` static alone is not enough: lld gc
+        // drops it unless this function black-boxes the bytes.
+        let _ = std::hint::black_box(SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38);
         let id = MappedId::from_raw(wid);
         let Some(window) = self.state.niri.find_window_by_id(id) else {
             return false;
@@ -239,6 +242,13 @@ static KEY_DELIVERY_V40_7A_HARNESS_IDENT: &[u8] =
 #[used]
 static AT_TOGGLE_REQ_REAL_SURFACE_V40_33_HARNESS: &[u8] =
     b"\x01AT_TOGGLE_REQ_REAL_SURFACE_V40_33\x01";
+
+/// v40.38: scroll the off-viewport column into view before `contents_under`.
+/// Byte static plus `black_box` in `scroll_wid_column_into_view` so the
+/// release ELF keeps the literal (lld gc drops a parent-only `#[used]`).
+#[used]
+static SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38: &[u8] =
+    b"SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38\0";
 
 impl InjectHarness for NiriInjectHarness<'_> {
     type AgentState = State;
@@ -605,5 +615,12 @@ mod tests {
         let _ = std::hint::black_box(KEY_DELIVERY_V40_7_HARNESS_IDENT);
         assert!(!crate::inject::KEY_DELIVERY_V40_7_USER_SEAT_ROUTING.is_empty());
         assert!(!KEY_DELIVERY_V40_7_HARNESS_IDENT.is_empty());
+    }
+
+    #[test]
+    fn v40_38_scroll_ident_is_published() {
+        let _ = std::hint::black_box(SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38);
+        let s = std::str::from_utf8(SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38).unwrap();
+        assert!(s.contains("SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38"));
     }
 }
