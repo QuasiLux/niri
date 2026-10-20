@@ -476,6 +476,10 @@ pub struct Niri {
     pub layer_hit_tx: Option<calloop::channel::Sender<crate::inject::dispatch::LayerHitDispatchReq>>,
     /// v40.25 WINDOW_FOCUS_REQ handoff sender. Channel lives on `event_loop`.
     pub focus_window_tx: Option<calloop::channel::Sender<crate::inject::dispatch::FocusDispatchReq>>,
+    /// v40.33 AT_TOGGLE_REQ handoff sender. Channel lives on `event_loop`.
+    /// The worker posts here; `dispatch_at_toggle_request` runs
+    /// `NiriInjectHarness::at_toggle_req` on this loop.
+    pub at_toggle_tx: Option<calloop::channel::Sender<crate::inject::dispatch::AtToggleDispatchReq>>,
     pub grant_map: crate::inject::GrantMap,
     pub grant_confirm: crate::inject::GrantConfirmState,
     pub app_catalog: crate::inject::app_catalog::AppCatalogMarker,
@@ -885,6 +889,22 @@ impl State {
         let _ = std::hint::black_box(crate::inject::protocol::WINDOW_FOCUS_REQ_V40_24);
         let reply = crate::input::focus_window::focus_window_niri(self, req.wid);
         let _ = req.reply.send(reply);
+    }
+
+    /// v40.33: `AT_TOGGLE_REQ` on the main loop. The worker cannot see
+    /// `niri::State`, so it cannot resolve a `WlSurface` pointer focus.
+    /// This constructs `NiriInjectHarness` and calls `at_toggle_req`, which
+    /// passes `Some((surface, pt))` into `inject_agent_button_click`.
+    pub fn dispatch_at_toggle_request(
+        &mut self,
+        req: crate::inject::dispatch::AtToggleDispatchReq,
+    ) {
+        let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);
+        let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
+        let crate::inject::dispatch::AtToggleDispatchReq { wid, name, reply } = req;
+        let mut harness = crate::inject::NiriInjectHarness::new(self);
+        let toggle = harness.at_toggle_req(wid, &name);
+        let _ = reply.send(toggle);
     }
 
     pub fn refresh_and_flush_clients(&mut self) {
@@ -2968,6 +2988,7 @@ impl Niri {
         let mut key_dispatch_tx = None;
         let mut layer_hit_tx = None;
         let mut focus_window_tx = None;
+        let mut at_toggle_tx = None;
         if crate::inject::inject_spawn_enabled() {
             let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
                 .map(PathBuf::from)
@@ -3021,6 +3042,18 @@ impl Niri {
                                 })
                                 .unwrap();
                             focus_window_tx = Some(focus_tx.clone());
+                            let (toggle_tx, toggle_rx) = calloop::channel::channel::<
+                                crate::inject::dispatch::AtToggleDispatchReq,
+                            >();
+                            event_loop
+                                .insert_source(toggle_rx, |event, _, state| match event {
+                                    calloop::channel::Event::Msg(req) => {
+                                        state.dispatch_at_toggle_request(req)
+                                    }
+                                    calloop::channel::Event::Closed => (),
+                                })
+                                .unwrap();
+                            at_toggle_tx = Some(toggle_tx.clone());
                             let token_file = crate::inject::token_file_path();
                             let _ = server.reload_tokens(&token_file);
                             apply_inject_socket_ownership(&inject_socket_path, gid);
@@ -3082,6 +3115,7 @@ impl Niri {
                                             let key_tx = key_tx.clone();
                                             let layer_tx = layer_tx.clone();
                                             let focus_tx = focus_tx.clone();
+                                            let toggle_tx = toggle_tx.clone();
                                             thread::spawn(move || {
                                                 let _ = crate::inject::dispatch::dispatch_inject_connection(
                                                     stream,
@@ -3097,6 +3131,7 @@ impl Niri {
                                                     app_id_map,
                                                     Some(layer_tx),
                                                     Some(focus_tx),
+                                                    Some(toggle_tx),
                                                 );
                                             });
                                         }
@@ -3279,6 +3314,7 @@ impl Niri {
             key_dispatch_tx,
             layer_hit_tx,
             focus_window_tx,
+            at_toggle_tx,
             grant_map: crate::inject::GrantMap::new(),
             grant_confirm: crate::inject::GrantConfirmState::new(),
             app_catalog: crate::inject::app_catalog::AppCatalogMarker,
