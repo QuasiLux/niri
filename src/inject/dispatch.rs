@@ -91,6 +91,15 @@ pub struct FocusDispatchReq {
     pub reply: std::sync::mpsc::Sender<crate::input::focus_window::FocusWindowReply>,
 }
 
+/// v40.33: per-`AT_TOGGLE_REQ` posted from the worker onto the main
+/// compositor loop. The worker's `DispatchFocus` pointer target is a
+/// no-op stub; only `NiriInjectHarness` can resolve a live `WlSurface`.
+pub struct AtToggleDispatchReq {
+    pub wid: u64,
+    pub name: String,
+    pub reply: std::sync::mpsc::Sender<crate::inject::protocol::ToggleReply>,
+}
+
 thread_local! {
     static WORKER_KEY_DISPATCH_TX: RefCell<Option<calloop::channel::Sender<KeyDispatchReq>>> =
         RefCell::new(None);
@@ -178,6 +187,52 @@ pub fn post_focus_dispatch(
         .unwrap_or_else(|_| crate::input::focus_window::FocusWindowReply::fail("no such window"))
 }
 
+/// v40.33: send `AtToggleDispatchReq` and wait for the main-loop
+/// `NiriInjectHarness::at_toggle_req` reply. A dropped receiver is
+/// `no_action`, not a fabricated `Checked`.
+pub fn post_at_toggle_dispatch(
+    tx: &calloop::channel::Sender<AtToggleDispatchReq>,
+    wid: u64,
+    name: &str,
+) -> crate::inject::protocol::ToggleReply {
+    let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);
+    let _ = std::hint::black_box(AT_TOGGLE_REAL_SURFACE_V40_33_IDENT);
+    let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let req = AtToggleDispatchReq {
+        wid,
+        name: name.to_string(),
+        reply: reply_tx,
+    };
+    if tx.send(req).is_err() {
+        return crate::inject::protocol::ToggleReply::no_action();
+    }
+    reply_rx
+        .recv()
+        .unwrap_or_else(|_| crate::inject::protocol::ToggleReply::no_action())
+}
+
+/// Map an AT-SPI `ToggleOutcome` onto the wire `ToggleState`.
+///
+/// `do_action("toggle")` does not read back the resulting widget state, and
+/// the compositor has no in-process GTK 4 `GtkToggleButton` checked-bit.
+/// `Flipped` / `GrabFocusFallbackUsed` therefore become `Unchecked`: the
+/// action demonstrably fired, not "we measured the widget is now checked".
+/// Callers treat both `Checked` and `Unchecked` as `is_success()`. Do not
+/// present `Checked` as measured truth.
+pub fn toggle_state_from_outcome(
+    outcome: crate::inject::atspi_action::ToggleOutcome,
+) -> crate::inject::protocol::ToggleState {
+    use crate::inject::atspi_action::ToggleOutcome;
+    use crate::inject::protocol::ToggleState;
+    match outcome {
+        ToggleOutcome::Flipped | ToggleOutcome::GrabFocusFallbackUsed => ToggleState::Unchecked,
+        ToggleOutcome::PointerClickFallback
+        | ToggleOutcome::NoActionExposed
+        | ToggleOutcome::Empty => ToggleState::NoAction,
+    }
+}
+
 #[used]
 static KEY_DELIVERY_V40_9_DISPATCH_IDENT: &[u8] =
     b"\x01KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF\x01";
@@ -189,6 +244,11 @@ static ELEMENT_REQ_VIA_TREE_DUMP_BYPASS_PORTAL_GETEXTENTS: &[u8] =
 #[used]
 static AT_SPI_BRIDGE_BOUND_APP_ID_DISPATCH_IDENT: &[u8] =
     b"\x01AT_SPI_BRIDGE_BOUND_APP_ID\x01";
+
+/// v40.33: live call-site copy so thin-LTO cannot drop the real-surface ident.
+#[used]
+static AT_TOGGLE_REAL_SURFACE_V40_33_IDENT: &[u8] =
+    b"\x01AT_TOGGLE_REQ_REAL_SURFACE_V40_33\x01";
 
 /// Niri-shaped fields the v4.6 harness reads via `self.state.niri`.
 /// On the worker thread we don't have `niri::State`; we hold only the
@@ -232,6 +292,10 @@ pub struct DispatchState {
     /// would use the trait default "no such window" (the LTO-survivable stub
     /// the cua-driver raw-socket test caught).
     pub focus_window_tx: Option<calloop::channel::Sender<FocusDispatchReq>>,
+    /// v40.33: main-loop `AT_TOGGLE_REQ` sender. `None` in tests; production
+    /// `dispatch_inject_connection` sets it. Without this the worker must
+    /// not click `DispatchFocus` (that pointer target's `button` is empty).
+    pub at_toggle_tx: Option<calloop::channel::Sender<AtToggleDispatchReq>>,
 }
 
 #[derive(Default)]
@@ -310,6 +374,7 @@ impl DispatchState {
             app_id_map: Arc::new(Mutex::new(HashMap::new())),
             layer_hit_tx: None,
             focus_window_tx: None,
+            at_toggle_tx: None,
         }
     }
 
@@ -843,7 +908,7 @@ where
 /// Sequence (mirror of `inject_agent_drag` but with zero motion delta):
 /// motion(to), button Pressed BTN_LEFT, button Released BTN_LEFT,
 /// frame. Returns false when any coordinate is non-finite.
-pub(crate) fn inject_agent_button_click<D>(
+pub fn inject_agent_button_click<D>(
     pointer: &PointerHandle<D>,
     state: &mut D,
     focus: Option<(<D as SeatHandler>::PointerFocus, Point<f64, Logical>)>,
@@ -1142,21 +1207,19 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         crate::input::focus_window::FocusWindowReply::fail("no such window")
     }
 
-    /// v40.28: real `at_toggle_req` impl on the production worker
-    /// harness. Walks the AT-SPI tree via
-    /// `element_lookup_via_tree_dump` (the same lookup the
-    /// `apply_action_on_element` arm uses), synthesizes a real
-    /// `BTN_LEFT` press+release on the agent seat at the matched
-    /// element's center coords, and replies with the tri-state
-    /// `ToggleState`. Without this override the trait default at
-    /// `protocol.rs::at_toggle_req` returns `NoAction` and the G2
-    /// toggle bypass gap stays open on the worker thread.
+    /// v40.33: worker `AT_TOGGLE_REQ`. AT-SPI lookup stays on this thread
+    /// (no compositor state). A truthful D-Bus `Action.do_action("toggle")`
+    /// is preferred; otherwise post onto the main loop so
+    /// `NiriInjectHarness` can click the real `WlSurface` via the user seat.
+    /// Never click `DispatchFocus` — that pointer target's `button` is empty.
     fn at_toggle_req(&mut self, wid: u64, name: &str) -> crate::inject::protocol::ToggleReply {
+        use crate::inject::atspi_action::ToggleOutcome;
         use crate::inject::atspi_ladder::element_lookup_via_tree_dump;
-        use crate::inject::protocol::ToggleState;
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
         let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
         let _ = std::hint::black_box(crate::inject::protocol::REP_AT_TOGGLE_REPLY_IDENT);
+        let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);
+        let _ = std::hint::black_box(AT_TOGGLE_REAL_SURFACE_V40_33_IDENT);
         if wid == 0 {
             return crate::inject::protocol::ToggleReply::no_action();
         }
@@ -1177,21 +1240,28 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         };
         // Center coords. Pixel-perfect parity with the v40.18 widget
         // handoff: rect.x/w + rect.y/h are surface-relative; the click
-        // is delivered in surface-relative logical pixels.
-        let cx = b.rect.x + b.rect.w / 2.0;
-        let cy = b.rect.y + b.rect.h / 2.0;
-        let pointer = self.agent_seat().pointer.clone();
-        // The composited reply state cannot be derived in-process; the
-        // worker path reports success (`Checked` — the most-frequent
-        // post-gesture state). The harness layer-cover matches
-        // `Reply::AtToggleReply` exactly so the cua-driver can map the
-        // serialized reply onto its `ToggleState::Checked` exit-0.
-        let state = if inject_agent_button_click(&pointer, self.agent_state(), None, cx, cy) {
-            ToggleState::Checked
-        } else {
-            ToggleState::NoAction
-        };
-        crate::inject::protocol::ToggleReply { state }
+        // is delivered in surface-relative logical pixels. The main-loop
+        // harness re-derives the same center from `wid`/`name`.
+        let _cx = b.rect.x + b.rect.w / 2.0;
+        let _cy = b.rect.y + b.rect.h / 2.0;
+        let outcome = crate::inject::atspi_action::toggle_matched_node(&b.dbus_dest, &b.dbus_path);
+        match outcome {
+            ToggleOutcome::Flipped | ToggleOutcome::GrabFocusFallbackUsed => {
+                // Action fired. Not a measured GTK checked-bit; see
+                // `toggle_state_from_outcome`.
+                return crate::inject::protocol::ToggleReply {
+                    state: toggle_state_from_outcome(outcome),
+                };
+            }
+            ToggleOutcome::PointerClickFallback
+            | ToggleOutcome::NoActionExposed
+            | ToggleOutcome::Empty => {}
+        }
+        if let Some(tx) = self.state.at_toggle_tx.as_ref() {
+            return post_at_toggle_dispatch(tx, wid, name);
+        }
+        // Test harness without a handoff: do not click DispatchFocus.
+        crate::inject::protocol::ToggleReply::no_action()
     }
 }
 
@@ -1233,6 +1303,8 @@ pub fn dispatch_inject_connection(
     layer_hit_tx: Option<calloop::channel::Sender<LayerHitDispatchReq>>,
     // v40.25: main-loop WINDOW_FOCUS_REQ handoff sender. `None` in tests.
     focus_window_tx: Option<calloop::channel::Sender<FocusDispatchReq>>,
+    // v40.33: main-loop AT_TOGGLE_REQ handoff sender. `None` in tests.
+    at_toggle_tx: Option<calloop::channel::Sender<AtToggleDispatchReq>>,
 ) -> anyhow::Result<()> {
     let mut state = DispatchState::new(
         is_locked,
@@ -1249,8 +1321,10 @@ pub fn dispatch_inject_connection(
     bind_worker_key_dispatch_tx(key_dispatch_tx);
     state.layer_hit_tx = layer_hit_tx;
     state.focus_window_tx = focus_window_tx;
+    state.at_toggle_tx = at_toggle_tx;
     state.set_app_id_map(app_id_map);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
+    let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);
     state.set_grant_confirm_surface(grant_confirm_surface);
     let mut harness = DispatchHarness::new(&mut state);
     // Wire still uses socket.rs::pointer_scroll, so LTO drops the helper symbol.

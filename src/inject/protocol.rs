@@ -178,6 +178,15 @@ pub static AT_TOGGLE_REQ_PARSE_V40_29: &[u8] = b"\x01AT_TOGGLE_REQ_PARSE_V40_29\
 #[allow(dead_code)]
 pub static AT_TOGGLE_REQ_DISPATCH_V40_29: &[u8] = b"\x01AT_TOGGLE_REQ_DISPATCH_V40_29\x01";
 
+/// v40.33: production `AT_TOGGLE_REQ` resolves a real `WlSurface` pointer
+/// focus on `NiriInjectHarness` and does not treat a hardcoded
+/// `ToggleState::Checked` as an observed widget state. Byte static plus
+/// `black_box` at the live harness call site so thin-LTO cannot drop it.
+/// Acceptance: `strings | grep AT_TOGGLE_REQ_REAL_SURFACE_V40_33`.
+#[used]
+pub static AT_TOGGLE_REQ_REAL_SURFACE_V40_33: &[u8] =
+    b"\x01AT_TOGGLE_REQ_REAL_SURFACE_V40_33\x01";
+
 /// v40.25 `WINDOW_FOCUS_DISPATCHED` ident. Pins the live `DispatchHarness::
 /// focus_window` override (worker→main handoff) into the release ELF so
 /// `strings | grep WINDOW_FOCUS_DISPATCHED_V40_25` returns ≥1 even after
