@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use smithay::backend::input::InputTime;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::SERIAL_COUNTER;
+use smithay::utils::{Point, SERIAL_COUNTER};
 
 use crate::inject::grant_confirm::{ClickOutcome, GrantResolution, GrantSurfaceSource, SeatKind};
 use crate::inject::protocol::{InjectHarness, KeyMods};
@@ -105,6 +105,11 @@ static KEY_DELIVERY_V40_7_HARNESS_IDENT: &[u8] =
 static KEY_DELIVERY_V40_7A_HARNESS_IDENT: &[u8] =
     b"\x01KEY_DELIVERY_V40_7A_PRESSES_SERIAL_SPLIT\x01";
 
+/// v40.33 live-call-site copy. `black_box` in `NiriInjectHarness::at_toggle_req`.
+#[used]
+static AT_TOGGLE_REQ_REAL_SURFACE_V40_33_HARNESS: &[u8] =
+    b"\x01AT_TOGGLE_REQ_REAL_SURFACE_V40_33\x01";
+
 impl InjectHarness for NiriInjectHarness<'_> {
     type AgentState = State;
 
@@ -126,6 +131,15 @@ impl InjectHarness for NiriInjectHarness<'_> {
             .niri
             .find_window_by_id(id)
             .and_then(|window| window.toplevel().map(|t| t.wl_surface().clone()))
+    }
+
+    /// Live compositor pointer focus is the window's `WlSurface`
+    /// (`State::PointerFocus = WlSurface`), not the worker `DispatchFocus` stub.
+    fn resolve_pointer_focus(
+        &mut self,
+        window_id: u64,
+    ) -> Option<<Self::AgentState as smithay::input::SeatHandler>::PointerFocus> {
+        self.resolve_window(window_id)
     }
 
     /// architecture-delta:
@@ -348,22 +362,27 @@ impl InjectHarness for NiriInjectHarness<'_> {
         crate::input::focus_window::focus_window_niri(self.state, wid)
     }
 
-    /// v40.28: production `at_toggle_req` impl on the live compositor
-    /// harness. Same wire-output semantics as the worker
-    /// `DispatchHarness::at_toggle_req` override (tri-state reply),
-    /// but lives on the user seat thread. Walks the AT-SPI tree via
-    /// `element_lookup_via_tree_dump`, synthesizes a `BTN_LEFT`
-    /// press+release on the agent seat at the matched element's center
-    /// coords. Without this override the trait default returns
-    /// `NoAction` and `AT_TOGGLE_REQ` does not dispatch.
+    /// v40.33: production `at_toggle_req` on the live compositor.
+    ///
+    /// Resolves the target window's real `WlSurface` (`resolve_window`,
+    /// then `contents_under` for the surface-local point) and clicks
+    /// through the **user seat** (`self.state.niri.seat.get_pointer()`).
+    /// The agent seat has no `wl_seat` global, so `known_pointers` is
+    /// empty and a press there never reaches a client.
+    ///
+    /// Does not hardcode `ToggleState::Checked`. A successful click is
+    /// a dispatched gesture, not an observed GTK checked-bit — reply
+    /// `Unchecked` meaning "a real action fired" (`is_success()`).
     fn at_toggle_req(
         &mut self,
         wid: u64,
         name: &str,
     ) -> crate::inject::protocol::ToggleReply {
         use crate::inject::atspi_ladder::element_lookup_via_tree_dump;
-        use crate::inject::protocol::ToggleState;
+        let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);
+        let _ = std::hint::black_box(AT_TOGGLE_REQ_REAL_SURFACE_V40_33_HARNESS);
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
+        let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_DISPATCH_V40_29);
         let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
         let _ = std::hint::black_box(crate::inject::protocol::REP_AT_TOGGLE_REPLY_IDENT);
         if wid == 0 {
@@ -380,22 +399,31 @@ impl InjectHarness for NiriInjectHarness<'_> {
         };
         let cx = b.rect.x + b.rect.w / 2.0;
         let cy = b.rect.y + b.rect.h / 2.0;
-        let pointer = self
-            .agent_seat()
-            .pointer
-            .clone();
-        let state = if crate::inject::dispatch::inject_agent_button_click(
+        let Some(surface) = self.resolve_window(wid) else {
+            return crate::inject::protocol::ToggleReply::no_action();
+        };
+        // smithay 79bbed5 `PointerInnerHandle::motion` does
+        // `event.location - loc` (`pointer.rs:801-804`). AT-SPI rects are
+        // surface-relative, so `loc` must be `(0, 0)` for the client to see
+        // `(cx, cy)`. `contents_under`'s point is a *global* surface origin
+        // (`PointContents` docs); pairing it with a surface-relative
+        // `(cx, cy)` shifts the click off the widget.
+        let pointer = self.state.niri.seat.get_pointer().unwrap().clone();
+        let clicked = crate::inject::dispatch::inject_agent_button_click(
             &pointer,
             self.agent_state(),
-            None,
+            Some((surface, Point::from((0.0, 0.0)))),
             cx,
             cy,
-        ) {
-            ToggleState::Checked
-        } else {
-            ToggleState::NoAction
-        };
-        crate::inject::protocol::ToggleReply { state }
+        );
+        if !clicked {
+            return crate::inject::protocol::ToggleReply::no_action();
+        }
+        // Best-effort: the click was dispatched. AT-SPI `do_action("toggle")`
+        // does not read back the widget, and there is no in-process GTK 4
+        // `GtkToggleButton` checked-bit here. `Unchecked` means "a real
+        // action fired" (`is_success()`), not a measured unchecked widget.
+        crate::inject::protocol::ToggleReply::unchecked()
     }
 }
 
