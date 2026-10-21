@@ -1,6 +1,13 @@
 #[macro_use]
 extern crate tracing;
 
+// Trap 45: build-time gate. The literal below MUST be present in the
+// resulting `niri` ELF (verified via `strings ... | grep -c IDENT`).
+// Source-only marker; has no runtime effect.
+#[used]
+static V40_44_M1_REBASE_SIDE_STAGE_V40_44: &[u8] =
+    b"V40_44_M1_REBASE_SIDE_STAGE_V40_44\0";
+
 #[cfg(feature = "dbus")]
 pub mod a11y;
 pub mod animation;
