@@ -43,7 +43,7 @@ static OPC_GRANT_RESOLVED_IDENT: &str = "GRANT_RESOLVED";
 #[allow(dead_code)]
 static GRANT_RESOLVED_OPCODE: &[u8] = b"GRANT_RESOLVED_OPCODE\0";
 
-/// `AT_ELEMENT_REQ <wid> LC <role> <name>` / `EI <role> <name> <text…>` / `CV <query>`.
+/// `AT_ELEMENT_REQ <wid> LC <role> <name> [<index>]` / `EI <role> <name> <text…> [<index>]` / `CV <query>`.
 pub const OPC_AT_ELEMENT_REQ: &str = "AT_ELEMENT_REQ";
 
 /// `AT_ACTION_REQ <wid> <role> <name> [<action_name>] <index>` — v40.15.3a.
@@ -88,6 +88,10 @@ static OPC_GRANT_REQUEST_IDENT: &str = "GRANT_REQUEST";
 #[used]
 #[allow(dead_code)]
 static OPC_AT_ELEMENT_REQ_IDENT: &str = "AT_ELEMENT_REQ";
+
+/// v40.41: nth-sibling AT_ELEMENT_REQ index.
+#[used]
+pub static AT_ELEMENT_REQ_INDEX_NTH_SIBLING_V40_41: &[u8] = b"AT_ELEMENT_REQ_INDEX_NTH_SIBLING_V40_41\0";
 
 #[used]
 #[allow(dead_code)]
@@ -449,9 +453,12 @@ pub enum Frame {
         resolution: GrantResolution,
     },
     /// `AT_ELEMENT_REQ <wid> LC|EI|CV …` — see [`parse_at_element_req`].
+    /// Optional trailing `<index>` (LC/EI only) is the 0-based nth match.
     AtElementReq {
         window_id: u64,
         action: crate::inject::atspi_ladder::AtSpiAction,
+        /// v40.41: nth-sibling selector (LC/EI only).
+        index: Option<u32>,
     },
     /// `AT_ACTION_REQ <wid> <role> <name> [<action_name>] <index>` — v40.15.3a.
     AtActionReq {
@@ -1245,12 +1252,14 @@ fn parse_f64(s: &str) -> Result<f64, FrameError> {
 }
 
 /// Wire shapes:
-/// - `AT_ELEMENT_REQ <wid> LC <role> <name>`
-/// - `AT_ELEMENT_REQ <wid> EI <role> <name> <text…>` (text may contain spaces)
-/// - `AT_ELEMENT_REQ <wid> CV <query>`
+/// - `AT_ELEMENT_REQ <wid> LC <role> <name> [<index>]`
+/// - `AT_ELEMENT_REQ <wid> EI <role> <name> <text…> [<index>]` (text may contain spaces;
+///    a trailing purely-numeric token is the nth-sibling index, not text)
+/// - `AT_ELEMENT_REQ <wid> CV <query>` (no sibling index)
 fn parse_at_element_req(text: &str) -> Result<Frame, FrameError> {
     use crate::inject::atspi_ladder::AtSpiAction;
 
+    let _ = std::hint::black_box(AT_ELEMENT_REQ_INDEX_NTH_SIBLING_V40_41);
     let mut parts = text.split_whitespace();
     let _opc = parts.next().ok_or(FrameError::Malformed)?;
     let window_id: u64 = parts
@@ -1263,28 +1272,38 @@ fn parse_at_element_req(text: &str) -> Result<Frame, FrameError> {
         "LC" => {
             let acc_role = parts.next().ok_or(FrameError::Malformed)?;
             let name_query = parts.next().ok_or(FrameError::Malformed)?;
+            let index = match parts.next() {
+                Some(tok) => Some(tok.parse::<u32>().map_err(|_| FrameError::Malformed)?),
+                None => None,
+            };
             if parts.next().is_some() {
                 return Err(FrameError::Malformed);
             }
+            let _ = std::hint::black_box(AT_ELEMENT_REQ_INDEX_NTH_SIBLING_V40_41);
             Ok(Frame::AtElementReq {
                 window_id,
                 action: AtSpiAction::LabelClick {
                     acc_role: acc_role.to_string(),
                     name_query: name_query.to_string(),
+                    index,
                 },
+                index,
             })
         }
         "EI" => {
             let acc_role = parts.next().ok_or(FrameError::Malformed)?;
             let name_query = parts.next().ok_or(FrameError::Malformed)?;
-            let insert_text = remainder_after_tokens(text, 5).unwrap_or("").to_string();
+            let (text_body, index) =
+                split_off_optional_index(remainder_after_tokens(text, 5).unwrap_or(""))?;
             Ok(Frame::AtElementReq {
                 window_id,
                 action: AtSpiAction::EditInsert {
                     acc_role: acc_role.to_string(),
                     name_query: name_query.to_string(),
-                    text: insert_text,
+                    text: text_body.to_string(),
+                    index,
                 },
+                index,
             })
         }
         "CV" => {
@@ -1297,9 +1316,30 @@ fn parse_at_element_req(text: &str) -> Result<Frame, FrameError> {
                 action: AtSpiAction::Canvas {
                     query: query.to_string(),
                 },
+                index: None,
             })
         }
         _ => Err(FrameError::Malformed),
+    }
+}
+
+/// Split an optional trailing numeric off the end of a space-separated remainder.
+/// Returns `(body_without_optional_index, Option<u32>)`. A last token that is
+/// purely numeric `u32` is the nth-sibling index; otherwise the body is left
+/// intact (EI text may end in a non-numeric word).
+fn split_off_optional_index(remainder: &str) -> Result<(&str, Option<u32>), FrameError> {
+    let trimmed = remainder.trim_end();
+    if trimmed.is_empty() {
+        return Ok((trimmed, None));
+    }
+    let last_space = trimmed.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+    if last_space == trimmed.len() {
+        return Ok((trimmed.trim_end(), None));
+    }
+    let (body, last) = trimmed.split_at(last_space);
+    match last.parse::<u32>() {
+        Ok(n) => Ok((body.trim_end(), Some(n))),
+        Err(_) => Ok((trimmed, None)),
     }
 }
 

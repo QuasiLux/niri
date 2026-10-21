@@ -12,16 +12,30 @@ pub enum AtSpiAction {
     LabelClick {
         acc_role: String,
         name_query: String,
+        /// v40.41: nth-sibling selector (0 = first match).
+        index: Option<u32>,
     },
     /// Bot wants to insert text into a labeled text field.
     EditInsert {
         acc_role: String,
         name_query: String,
         text: String,
+        /// v40.41: nth-sibling selector (0 = first match).
+        index: Option<u32>,
     },
     /// Bot wants to interact with the canvas (a "canvas" element).
     /// Always routed to `BACKGROUND_UNAVAILABLE` for Chrome surfaces.
     Canvas { query: String },
+}
+
+impl AtSpiAction {
+    /// v40.41: nth-sibling selector for LabelClick/EditInsert; always None for Canvas.
+    pub fn index(&self) -> Option<u32> {
+        match self {
+            AtSpiAction::LabelClick { index, .. } | AtSpiAction::EditInsert { index, .. } => *index,
+            AtSpiAction::Canvas { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +64,7 @@ pub fn route(app_id: &str, action: &AtSpiAction) -> AtSpiRoute {
             AtSpiAction::LabelClick {
                 acc_role,
                 name_query,
+                ..
             },
         )
         | (
@@ -68,6 +83,7 @@ pub fn route(app_id: &str, action: &AtSpiAction) -> AtSpiRoute {
             AtSpiAction::LabelClick {
                 acc_role,
                 name_query,
+                ..
             },
         )
         | (
@@ -136,13 +152,13 @@ pub struct BridgeClick {
 }
 
 thread_local! {
-    static SCAN_OVERRIDE: std::cell::RefCell<Option<fn(u64, &str, &str) -> Option<ElementBounds>>> =
+    static SCAN_OVERRIDE: std::cell::RefCell<Option<fn(u64, &str, &str, u32) -> Option<ElementBounds>>> =
         const { std::cell::RefCell::new(None) };
     static LAST_BRIDGE_CLICK: std::cell::RefCell<Option<BridgeClick>> =
         const { std::cell::RefCell::new(None) };
 }
 
-pub fn set_scan_override(f: Option<fn(u64, &str, &str) -> Option<ElementBounds>>) {
+pub fn set_scan_override(f: Option<fn(u64, &str, &str, u32) -> Option<ElementBounds>>) {
     SCAN_OVERRIDE.with(|slot| *slot.borrow_mut() = f);
 }
 
@@ -150,11 +166,12 @@ pub fn scan_session_dbus_for_element(
     window_id: u64,
     role: &str,
     name_query: &str,
+    index: u32,
 ) -> Option<ElementBounds> {
     let hook = SCAN_OVERRIDE.with(|slot| *slot.borrow());
     match hook {
-        Some(f) => f(window_id, role, name_query),
-        None => real_scan_session_dbus_for_element(window_id, role, name_query),
+        Some(f) => f(window_id, role, name_query, index),
+        None => real_scan_session_dbus_for_element(window_id, role, name_query, index),
     }
 }
 
@@ -166,6 +183,7 @@ pub fn scan_session_dbus_for_element_by_app_id(
     role: &str,
     name: &str,
     app_id: &str,
+    index: u32,
 ) -> Option<ElementBounds> {
     let _ = std::hint::black_box(crate::inject::protocol::SCAN_BY_APP_ID_V40_15_4);
     let _ = std::hint::black_box(crate::inject::protocol::G1_AT_SPI_BRIDGE_FALLBACK_V40_15_4);
@@ -173,10 +191,11 @@ pub fn scan_session_dbus_for_element_by_app_id(
         return None;
     }
     let roots = filter_tree_by_app_id(acquire_tree_roots(None), app_id);
-    if let Some(hit) = lookup_nested_tree(&roots, window_id, role, name) {
+    let mut hits: u32 = 0;
+    if let Some(hit) = lookup_nested_tree(&roots, window_id, role, name, index, &mut hits) {
         return Some(hit);
     }
-    real_scan_session_dbus_for_element_by_app_id(window_id, role, name, app_id)
+    real_scan_session_dbus_for_element_by_app_id(window_id, role, name, app_id, index)
 }
 
 /// v40.15.4: dump only the matched application's subtree (not the full bus).
@@ -326,12 +345,15 @@ pub fn element_lookup_via_tree_dump(
     window_id: u64,
     role: &str,
     name_query: &str,
+    index: u32,
 ) -> Option<ElementBounds> {
     let _ = std::hint::black_box(ELEMENT_AX_LOOKUP_V40_14_6);
     let _ = std::hint::black_box(ACTION_NAME_FALLBACK_CHAIN_V40_14_15_IDENT);
     let _ = std::hint::black_box(INNER_SWITCH_RESOLUTION_V40_14_15_IDENT);
+    let _ = std::hint::black_box(crate::inject::protocol::AT_ELEMENT_REQ_INDEX_NTH_SIBLING_V40_41);
     let roots = acquire_tree_roots(None);
-    lookup_nested_tree(&roots, window_id, role, name_query)
+    let mut hits: u32 = 0;
+    lookup_nested_tree(&roots, window_id, role, name_query, index, &mut hits)
 }
 
 fn lookup_nested_tree(
@@ -339,22 +361,57 @@ fn lookup_nested_tree(
     window_id: u64,
     role: &str,
     name_query: &str,
+    target_index: u32,
+    hits: &mut u32,
 ) -> Option<ElementBounds> {
     for node in nodes {
         if ax_role_matches(role, &node.role) && ax_name_matches(name_query, &node.name) {
-            if node.n_actions > 0 {
+            if *hits == target_index {
+                if node.n_actions > 0 {
+                    return Some(element_bounds_from_nodes(window_id, role, node, node));
+                }
+                if let Some(inner) = find_actionable_switch_descendant(node) {
+                    return Some(element_bounds_from_nodes(window_id, role, node, inner));
+                }
                 return Some(element_bounds_from_nodes(window_id, role, node, node));
             }
-            if let Some(inner) = find_actionable_switch_descendant(node) {
-                return Some(element_bounds_from_nodes(window_id, role, node, inner));
-            }
-            return Some(element_bounds_from_nodes(window_id, role, node, node));
+            *hits += 1;
         }
-        if let Some(hit) = lookup_nested_tree(&node.children, window_id, role, name_query) {
+        if let Some(hit) = lookup_nested_tree(
+            &node.children,
+            window_id,
+            role,
+            name_query,
+            target_index,
+            hits,
+        ) {
             return Some(hit);
         }
     }
     None
+}
+
+/// v40.41: hit-counter used by `walk_scan`. Preferred matches skip until
+/// `target_index`; non-preferred still keep only the first fallback in `first`.
+fn take_nth_scan_hit(
+    preferred: bool,
+    target_index: u32,
+    hits: &mut u32,
+    first: &mut Option<ElementBounds>,
+    bounds: ElementBounds,
+) -> Option<ElementBounds> {
+    if preferred {
+        if *hits == target_index {
+            return Some(bounds);
+        }
+        *hits += 1;
+        None
+    } else {
+        if first.is_none() {
+            *first = Some(bounds);
+        }
+        None
+    }
 }
 
 fn element_bounds_from_nodes(
@@ -712,6 +769,7 @@ fn real_scan_session_dbus_for_element_by_app_id(
     role: &str,
     name_query: &str,
     app_id: &str,
+    index: u32,
 ) -> Option<ElementBounds> {
     let _ = std::hint::black_box(crate::inject::protocol::G1_AT_SPI_BRIDGE_FALLBACK_V40_15_4);
     increment_real_scan_attempts();
@@ -722,7 +780,7 @@ fn real_scan_session_dbus_for_element_by_app_id(
         let app_id = app_id.to_owned();
         return match std::thread::spawn(move || {
             real_bus::scan_session_dbus_for_element_by_app_id(
-                window_id, &role, &name_query, &app_id,
+                window_id, &role, &name_query, &app_id, index,
             )
         })
         .join()
@@ -733,7 +791,7 @@ fn real_scan_session_dbus_for_element_by_app_id(
     }
     #[cfg(not(feature = "dbus"))]
     {
-        let _ = (window_id, role, name_query, app_id);
+        let _ = (window_id, role, name_query, app_id, index);
         None
     }
 }
@@ -742,6 +800,7 @@ fn real_scan_session_dbus_for_element(
     window_id: u64,
     role: &str,
     name_query: &str,
+    index: u32,
 ) -> Option<ElementBounds> {
     let _ = std::hint::black_box(AT_SPI_BRIDGE_REAL);
     increment_real_scan_attempts();
@@ -750,7 +809,7 @@ fn real_scan_session_dbus_for_element(
         let role = role.to_owned();
         let name_query = name_query.to_owned();
         return match std::thread::spawn(move || {
-            real_bus::scan_session_dbus_for_element(window_id, &role, &name_query)
+            real_bus::scan_session_dbus_for_element(window_id, &role, &name_query, index)
         })
         .join()
         {
@@ -760,7 +819,7 @@ fn real_scan_session_dbus_for_element(
     }
     #[cfg(not(feature = "dbus"))]
     {
-        let _ = (window_id, role, name_query);
+        let _ = (window_id, role, name_query, index);
         None
     }
 }
@@ -830,6 +889,7 @@ mod real_bus {
         role: &str,
         name_query: &str,
         app_id: &str,
+        index: u32,
     ) -> Option<ElementBounds> {
         let conn = match connect_a11y_bus() {
             Ok(c) => c,
@@ -843,6 +903,7 @@ mod real_bus {
                 continue;
             }
             let mut first: Option<ElementBounds> = None;
+            let mut hits: u32 = 0;
             match walk_scan(
                 &conn,
                 &bus,
@@ -853,6 +914,8 @@ mod real_bus {
                 role,
                 name_query,
                 None,
+                index,
+                &mut hits,
                 &mut first,
             ) {
                 Ok(Some(hit)) => return Some(hit),
@@ -873,6 +936,7 @@ mod real_bus {
         window_id: u64,
         role: &str,
         name_query: &str,
+        index: u32,
     ) -> Option<ElementBounds> {
         let conn = match connect_a11y_bus() {
             Ok(c) => c,
@@ -883,6 +947,7 @@ mod real_bus {
         };
         let (bus, path) = start_node(None);
         let mut first: Option<ElementBounds> = None;
+        let mut hits: u32 = 0;
         match walk_scan(
             &conn,
             &bus,
@@ -893,6 +958,8 @@ mod real_bus {
             role,
             name_query,
             None,
+            index,
+            &mut hits,
             &mut first,
         ) {
             Ok(Some(hit)) => Some(hit),
@@ -974,6 +1041,8 @@ mod real_bus {
         role_query: &str,
         name_query: &str,
         inherited_window_id: Option<String>,
+        target_index: u32,
+        hits: &mut u32,
         first: &mut Option<ElementBounds>,
     ) -> zbus::Result<Option<ElementBounds>> {
         if bus.is_empty() || path == NULL_PATH || !limits.enter(bus, path, depth) {
@@ -998,11 +1067,14 @@ mod real_bus {
                 dbus_dest: bus.to_string(),
                 dbus_path: path.to_string(),
             };
-            if preferred {
-                return Ok(Some(bounds));
-            }
-            if first.is_none() {
-                *first = Some(bounds);
+            if let Some(hit) = super::take_nth_scan_hit(
+                preferred,
+                target_index,
+                hits,
+                first,
+                bounds,
+            ) {
+                return Ok(Some(hit));
             }
         }
 
@@ -1017,6 +1089,8 @@ mod real_bus {
                 role_query,
                 name_query,
                 effective_wid.clone(),
+                target_index,
+                hits,
                 first,
             )? {
                 return Ok(Some(hit));
@@ -1820,5 +1894,43 @@ mod tests {
         // ATSPI_STATE_INDETERMINATE (value 35) is bit 3 of word 1.
         assert_eq!(toggle_checked_from_state_words(&[0, 1u32 << 3]), None);
         assert_eq!(toggle_checked_from_state_words(&[1u32 << 4, 1u32 << 3]), None);
+    }
+
+    #[test]
+    fn walk_scan_nth_preferred_skips_earlier_hits() {
+        // `set_scan_override` replaces `walk_scan` entirely, so the inject
+        // scan-override test cannot see this counter. Pin it here.
+        use super::{take_nth_scan_hit, ElementBounds};
+        use crate::inject::grant_confirm::Rect;
+
+        fn bounds(path: &str) -> ElementBounds {
+            ElementBounds {
+                path: path.into(),
+                rect: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                },
+                ..Default::default()
+            }
+        }
+
+        let mut hits = 0u32;
+        let mut first = None;
+        let miss = take_nth_scan_hit(true, 1, &mut hits, &mut first, bounds("atspi://42#button:+"));
+        assert!(miss.is_none(), "index 0 preferred must be skipped when target is 1");
+        assert_eq!(hits, 1);
+        let hit = take_nth_scan_hit(true, 1, &mut hits, &mut first, bounds("atspi://42#button:M+"));
+        assert_eq!(hit.as_ref().map(|b| b.path.as_str()), Some("atspi://42#button:M+"));
+
+        let mut hits = 0u32;
+        let mut first = None;
+        let past = take_nth_scan_hit(true, 9, &mut hits, &mut first, bounds("atspi://42#button:+"));
+        assert!(past.is_none());
+        let past = take_nth_scan_hit(true, 9, &mut hits, &mut first, bounds("atspi://42#button:M+"));
+        assert!(past.is_none());
+        assert_eq!(hits, 2);
+        assert!(first.is_none(), "preferred misses must not populate the non-preferred fallback");
     }
 }

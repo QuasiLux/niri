@@ -102,7 +102,7 @@ fn dummy_surface() -> SurfaceKeep {
     }
 }
 
-fn fixture_bounds(wid: u64, _role: &str, _name: &str) -> Option<ElementBounds> {
+fn fixture_bounds(wid: u64, _role: &str, _name: &str, _index: u32) -> Option<ElementBounds> {
     if wid != KNOWN_WID {
         return None;
     }
@@ -370,9 +370,10 @@ impl InjectHarness for RealSurfaceHarness<'_> {
             wid,
             "toggle button",
             name,
+            0,
         )
         .or_else(|| {
-            niri::inject::atspi_ladder::scan_session_dbus_for_element(wid, "toggle button", name)
+            niri::inject::atspi_ladder::scan_session_dbus_for_element(wid, "toggle button", name, 0)
         });
         let Some(b) = bounds else {
             return ToggleReply::no_action();
@@ -666,7 +667,7 @@ fn reply_is_the_observation_not_the_click() {
         });
         reset_real_surface_buttons();
         set_observe_toggle_override(None);
-        let bounds = fixture_bounds(KNOWN_WID, "toggle button", TOGGLE_NAME).expect("fixture");
+        let bounds = fixture_bounds(KNOWN_WID, "toggle button", TOGGLE_NAME, 0).expect("fixture");
         assert!(
             bounds.dbus_dest.is_empty() && bounds.dbus_path.is_empty(),
             "fixture dest/path stay empty so a live GetState must not run"
