@@ -1224,6 +1224,7 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
                 AtSpiAction::LabelClick {
                     acc_role,
                     name_query,
+                    ..
                 },
             )
             | (
@@ -1397,10 +1398,10 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         // Mirror the AT_ACTION_REQ arm's lookup shape. The tree-dump
         // path has bounds already; fall back to the session-dbus scan
         // when the dump is empty (per-cwd fixtures differ).
-        let bounds = element_lookup_via_tree_dump(wid, "toggle button", name)
+        let bounds = element_lookup_via_tree_dump(wid, "toggle button", name, 0)
             .or_else(|| {
                 crate::inject::atspi_ladder::scan_session_dbus_for_element(
-                    wid, "toggle button", name,
+                    wid, "toggle button", name, 0,
                 )
             });
         let Some(b) = bounds else {

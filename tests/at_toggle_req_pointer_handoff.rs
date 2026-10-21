@@ -50,7 +50,7 @@ const RECT_W: f64 = 40.0;
 const RECT_H: f64 = 20.0;
 const BTN_LEFT: u32 = 0x110;
 
-fn fixture_bounds(wid: u64, role: &str, name: &str) -> Option<ElementBounds> {
+fn fixture_bounds(wid: u64, role: &str, name: &str, _index: u32) -> Option<ElementBounds> {
     if wid != KNOWN_WINDOW {
         return None;
     }

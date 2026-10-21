@@ -1944,6 +1944,7 @@ fn atspi_strong_route_routes_to_element_for_gnome_calculator() {
         &AtSpiAction::LabelClick {
             acc_role: "push button".into(),
             name_query: "7".into(),
+            index: None,
         },
     );
     assert!(matches!(
@@ -1960,6 +1961,7 @@ fn atspi_chrome_button_routes_to_element_for_zen() {
         &AtSpiAction::LabelClick {
             acc_role: "push button".into(),
             name_query: "Reload".into(),
+            index: None,
         },
     );
     assert!(matches!(r, AtSpiRoute::Element { .. }));
@@ -1990,6 +1992,7 @@ fn atspi_raw_inject_route_for_alacritty_uses_raw_path() {
         &AtSpiAction::LabelClick {
             acc_role: "push button".into(),
             name_query: "x".into(),
+            index: None,
         },
     );
     assert_eq!(r, AtSpiRoute::RawInject);
@@ -2003,6 +2006,7 @@ fn atspi_unknown_app_id_returns_background_unavailable_never_raw() {
         &AtSpiAction::LabelClick {
             acc_role: "push button".into(),
             name_query: "x".into(),
+            index: None,
         },
     );
     assert_eq!(
@@ -2036,12 +2040,14 @@ fn atspi_per_action_policy_no_silent_fallback_to_user_seat() {
             AtSpiAction::LabelClick {
                 acc_role: "push button".into(),
                 name_query: "x".into(),
-            },
+            index: None,
+        },
             AtSpiAction::EditInsert {
                 acc_role: "text".into(),
                 name_query: "y".into(),
                 text: "z".into(),
-            },
+            index: None,
+        },
             AtSpiAction::Canvas {
                 query: "page".into(),
             },
@@ -2058,6 +2064,7 @@ fn atspi_per_action_policy_no_silent_fallback_to_user_seat() {
         &AtSpiAction::LabelClick {
             acc_role: "push button".into(),
             name_query: "x".into(),
+            index: None,
         },
     );
     assert!(!matches!(chrome_r, AtSpiRoute::RawInject));
@@ -2076,7 +2083,7 @@ fn atspi_strong_gnome_calculator_button_7() {
     set_scan_override(None);
     let _ = take_bridge_click();
 
-    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+    fn scan(window_id: u64, role: &str, name_query: &str, _index: u32) -> Option<ElementBounds> {
         if role == "button" && name_query == "7" {
             Some(ElementBounds {
                 path: format!("atspi://{window_id}#button:7"),
@@ -2145,7 +2152,7 @@ fn atspi_chrome_zen_search_textbox() {
     set_scan_override(None);
     let _ = take_bridge_click();
 
-    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+    fn scan(window_id: u64, role: &str, name_query: &str, _index: u32) -> Option<ElementBounds> {
         if role == "text" && name_query == "Search..." {
             Some(ElementBounds {
                 path: format!("atspi://{window_id}#text:Search..."),
@@ -2212,7 +2219,7 @@ fn atspi_missing_element_returns_background_unavailable() {
     set_scan_override(None);
     let _ = take_bridge_click();
 
-    fn scan(_window_id: u64, _role: &str, _name_query: &str) -> Option<ElementBounds> {
+    fn scan(_window_id: u64, _role: &str, _name_query: &str, _index: u32) -> Option<ElementBounds> {
         None
     }
 
@@ -2317,7 +2324,7 @@ fn at_element_diff_returns_full_on_first_query() {
     reset_gap4_test_hooks();
     set_scan_override(None);
 
-    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+    fn scan(window_id: u64, role: &str, name_query: &str, _index: u32) -> Option<ElementBounds> {
         if role == "button" && name_query == "7" {
             Some(ElementBounds {
                 path: format!("atspi://{window_id}#button:7"),
@@ -2393,7 +2400,7 @@ fn at_element_off_screen_warning() {
         h: 100.0,
     }]));
 
-    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+    fn scan(window_id: u64, role: &str, name_query: &str, _index: u32) -> Option<ElementBounds> {
         if role == "button" && name_query == "7" {
             Some(ElementBounds {
                 path: format!("atspi://{window_id}#button:7"),
@@ -3533,7 +3540,7 @@ fn atspi_bridge_real_connects_to_session_dbus() {
     set_scan_override(None);
     set_tree_dump_override(None);
     let before = real_scan_attempts();
-    let _found = scan_session_dbus_for_element(42, "button", "7");
+    let _found = scan_session_dbus_for_element(42, "button", "7", 0);
     assert!(
         real_scan_attempts() >= before + 1,
         "real scan path must increment even when the bus is absent"
@@ -3673,7 +3680,7 @@ fn route_after_bind_is_not_canvasraw_for_atspi_strong_app() {
     set_tree_dump_override(None);
     let _ = take_bridge_click();
 
-    fn scan(window_id: u64, role: &str, name_query: &str) -> Option<ElementBounds> {
+    fn scan(window_id: u64, role: &str, name_query: &str, _index: u32) -> Option<ElementBounds> {
         if role == "button" && name_query == "7" {
             Some(ElementBounds {
                 path: format!("atspi://{window_id}#button:7"),
@@ -3786,7 +3793,7 @@ fn live_grant_v40_14_6_element_lookup_via_tree_dump_hit() {
     }
     set_tree_dump_override(Some(dump));
 
-    let found = element_lookup_via_tree_dump(42, "button", "OK");
+    let found = element_lookup_via_tree_dump(42, "button", "OK", 0);
     let b = found.expect("expected Some for button/OK match");
     assert_eq!(b.rect.x, 100.0);
     assert_eq!(b.rect.y, 200.0);
@@ -3843,7 +3850,7 @@ fn live_grant_v40_14_6_element_lookup_via_tree_dump_miss() {
     }
     set_tree_dump_override(Some(dump));
 
-    let found = element_lookup_via_tree_dump(42, "button", "Mute");
+    let found = element_lookup_via_tree_dump(42, "button", "Mute", 0);
     assert!(found.is_none(), "expected None for non-existent button/Mute");
 
     set_tree_dump_override(None);
@@ -3946,12 +3953,12 @@ fn name_match_substring_misses_with_exact_query_returns_empty() {
     }
 
     set_tree_dump_override(Some(dump));
-    let mute = element_lookup_via_tree_dump(42, "button", "Mute");
+    let mute = element_lookup_via_tree_dump(42, "button", "Mute", 0);
     assert!(
         mute.is_some(),
         "substring query Mute must match Mute audio"
     );
-    let mute_ci = element_lookup_via_tree_dump(42, "button", "mute");
+    let mute_ci = element_lookup_via_tree_dump(42, "button", "mute", 0);
     assert!(
         mute_ci.is_some(),
         "case-insensitive query mute must match Mute audio"
@@ -3982,12 +3989,289 @@ fn name_match_substring_misses_completely_unrelated_query() {
     }
 
     set_tree_dump_override(Some(dump));
-    let miss = element_lookup_via_tree_dump(42, "button", "ZZZNOMATCHZZZ");
+    let miss = element_lookup_via_tree_dump(42, "button", "ZZZNOMATCHZZZ", 0);
     assert!(
         miss.is_none(),
         "unrelated query must be None, got {miss:?}"
     );
     reset_gap4_test_hooks();
+}
+
+fn galculator_plus_mplus_dump(_path: Option<&str>) -> Vec<niri::inject::atspi_ladder::TreeNode> {
+    use niri::inject::atspi_ladder::TreeNode;
+    vec![TreeNode {
+        role: "panel".into(),
+        name: "pad".into(),
+        x: 0.0,
+        y: 0.0,
+        w: 200.0,
+        h: 80.0,
+        visible: true,
+        children: vec![
+            TreeNode {
+                role: "push button".into(),
+                name: "+".into(),
+                x: 10.0,
+                y: 20.0,
+                w: 40.0,
+                h: 16.0,
+                visible: true,
+                children: vec![],
+                ..Default::default()
+            },
+            TreeNode {
+                role: "push button".into(),
+                name: "M+".into(),
+                x: 50.0,
+                y: 20.0,
+                w: 40.0,
+                h: 16.0,
+                visible: true,
+                children: vec![],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }]
+}
+
+/// v40.41: galculator-shaped siblings `+` then `M+`. Query `+` is a substring
+/// of both names; index 0 must resolve the first sibling, not `M+`.
+#[test]
+fn name_match_substring_nth_sibling_resolves_plus_when_index_0() {
+    use niri::inject::atspi_ladder::{
+        element_lookup_via_tree_dump, reset_gap4_test_hooks, set_tree_dump_override,
+    };
+
+    reset_gap4_test_hooks();
+    set_tree_dump_override(Some(galculator_plus_mplus_dump));
+    let found = element_lookup_via_tree_dump(42, "button", "+", 0);
+    let path = found.as_ref().map(|b| b.path.as_str());
+    reset_gap4_test_hooks();
+    assert_eq!(path, Some("atspi://42#button:+"));
+}
+
+/// v40.41: same fixture, index 1 must skip `+` and resolve `M+`.
+#[test]
+fn name_match_substring_nth_sibling_resolves_m_plus_when_index_1() {
+    use niri::inject::atspi_ladder::{
+        element_lookup_via_tree_dump, reset_gap4_test_hooks, set_tree_dump_override,
+    };
+
+    reset_gap4_test_hooks();
+    set_tree_dump_override(Some(galculator_plus_mplus_dump));
+    let found = element_lookup_via_tree_dump(42, "button", "+", 1);
+    let path = found.as_ref().map(|b| b.path.as_str());
+    reset_gap4_test_hooks();
+    assert_eq!(path, Some("atspi://42#button:M+"));
+}
+
+/// v40.41: absent trailing index on the wire is `None` on both `Frame` and
+/// `AtSpiAction::LabelClick`, and the dump-first dispatch still returns the
+/// first sibling (`#button:+`, not `#button:M+`).
+#[test]
+fn name_match_substring_nth_sibling_legacy_first_when_index_0_default() {
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_scan_override, set_tree_dump_override, AtSpiAction,
+    };
+    use niri::inject::protocol::{parse_frame, Frame};
+
+    reset_gap4_test_hooks();
+    set_tree_dump_override(Some(galculator_plus_mplus_dump));
+    set_scan_override(None);
+
+    let (frame, rest) = parse_frame(b"AT_ELEMENT_REQ 42 LC button +\n").expect("parse LC no index");
+    assert!(rest.is_empty(), "{rest:?}");
+    match frame {
+        Frame::AtElementReq {
+            index: None,
+            action: AtSpiAction::LabelClick { index: None, .. },
+            ..
+        } => {}
+        other => panic!("expected LC index None, got {other:?}"),
+    }
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    let mut harness = DispatchHarness::new(&mut state);
+    // `run_protocol` takes the stub Harness whose default route is always
+    // BACKGROUND_UNAVAILABLE; DispatchHarness is the production-shaped path
+    // every other AT_ELEMENT_REQ dump test uses.
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button +\n",
+        hello_auth()
+    );
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    reset_gap4_test_hooks();
+    assert!(
+        replies.contains("atspi://42#button:+"),
+        "legacy first-hit must keep +: {replies:?}"
+    );
+    assert!(
+        !replies.contains("atspi://42#button:M+"),
+        "legacy first-hit must not return M+: {replies:?}"
+    );
+}
+
+/// v40.41: index past the last matching sibling is the existing not-found shape.
+#[test]
+fn name_match_substring_nth_sibling_index_past_end_returns_none() {
+    use niri::inject::atspi_ladder::{
+        element_lookup_via_tree_dump, reset_gap4_test_hooks, set_tree_dump_override,
+    };
+
+    reset_gap4_test_hooks();
+    set_tree_dump_override(Some(galculator_plus_mplus_dump));
+    let found = element_lookup_via_tree_dump(42, "button", "+", 9);
+    reset_gap4_test_hooks();
+    assert!(found.is_none(), "past-the-end index must be None, got {found:?}");
+}
+
+/// v40.41: index reaches `scan_session_dbus_for_element` (the public override
+/// seam). `set_scan_override` *replaces* `walk_scan`; the hit-counter inside
+/// `walk_scan` itself is unit-tested in
+/// `atspi_ladder::tests::walk_scan_nth_preferred_skips_earlier_hits`.
+#[test]
+fn name_match_substring_nth_sibling_index_reaches_scan_override() {
+    use niri::inject::atspi_ladder::{
+        reset_gap4_test_hooks, set_scan_override, set_tree_dump_override, AtSpiAction, ElementBounds,
+    };
+    use niri::inject::grant_confirm::Rect;
+    use niri::inject::protocol::{parse_frame, Frame, FrameError};
+
+    reset_gap4_test_hooks();
+    set_tree_dump_override(None);
+
+    fn scan(
+        _window_id: u64,
+        _role: &str,
+        _name_query: &str,
+        index: u32,
+    ) -> Option<ElementBounds> {
+        let path = if index == 1 {
+            "atspi://scan-sentinel-1#button:M+"
+        } else {
+            "atspi://scan-sentinel-0#button:+"
+        };
+        Some(ElementBounds {
+            path: path.into(),
+            rect: Rect {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0,
+            },
+            ..Default::default()
+        })
+    }
+    set_scan_override(Some(scan));
+
+    let (frame, _) = parse_frame(b"AT_ELEMENT_REQ 42 LC button + 1\n").expect("parse LC index 1");
+    match frame {
+        Frame::AtElementReq {
+            index: Some(1),
+            action: AtSpiAction::LabelClick { index: Some(1), .. },
+            ..
+        } => {}
+        other => panic!("expected LC index Some(1), got {other:?}"),
+    }
+    let (frame, _) = parse_frame(b"AT_ELEMENT_REQ 42 EI text Search hello 1\n").expect("parse EI index");
+    match frame {
+        Frame::AtElementReq {
+            index: Some(1),
+            action: AtSpiAction::EditInsert {
+                text,
+                index: Some(1),
+                ..
+            },
+            ..
+        } if text == "hello" => {}
+        other => panic!("expected EI text=hello index Some(1), got {other:?}"),
+    }
+    assert_eq!(
+        parse_frame(b"AT_ELEMENT_REQ 42 LC button + foo\n"),
+        Err(FrameError::Malformed)
+    );
+    assert_eq!(
+        parse_frame(b"AT_ELEMENT_REQ 42 CV page 1\n"),
+        Err(FrameError::Malformed)
+    );
+
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    state.set_bound_app_id("gnome-calculator");
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button + 1\n",
+        hello_auth()
+    );
+    let replies_one = run_protocol_on(&mut harness, req.as_bytes());
+
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!(
+        "{}BIND {KNOWN_WINDOW}\nAT_ELEMENT_REQ {KNOWN_WINDOW} LC button + 0\n",
+        hello_auth()
+    );
+    let replies_zero = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+    reset_gap4_test_hooks();
+
+    assert!(
+        replies_one.contains("atspi://scan-sentinel-1"),
+        "index 1 must hit scan sentinel 1: {replies_one:?}"
+    );
+    assert!(
+        !replies_one.contains("atspi://scan-sentinel-0"),
+        "index 1 must not hit scan sentinel 0: {replies_one:?}"
+    );
+    assert!(
+        replies_zero.contains("atspi://scan-sentinel-0"),
+        "index 0 must hit scan sentinel 0: {replies_zero:?}"
+    );
+    assert!(
+        !replies_zero.contains("atspi://scan-sentinel-1"),
+        "index 0 must not hit scan sentinel 1: {replies_zero:?}"
+    );
 }
 
 
@@ -4004,7 +4288,7 @@ fn at_element_req_returns_valid_bounds_for_known_element() {
 
     reset_gap4_test_hooks();
 
-    fn scan(_window_id: u64, _role: &str, _name_query: &str) -> Option<ElementBounds> {
+    fn scan(_window_id: u64, _role: &str, _name_query: &str, _index: u32) -> Option<ElementBounds> {
         Some(ElementBounds {
             path: "atspi://scan-sentinel".into(),
             rect: Rect {
@@ -4091,7 +4375,7 @@ fn at_element_req_bounds_match_tree_dump() {
 
     reset_gap4_test_hooks();
 
-    fn scan(_window_id: u64, _role: &str, _name_query: &str) -> Option<ElementBounds> {
+    fn scan(_window_id: u64, _role: &str, _name_query: &str, _index: u32) -> Option<ElementBounds> {
         Some(ElementBounds {
             path: "atspi://scan-sentinel".into(),
             rect: Rect {
