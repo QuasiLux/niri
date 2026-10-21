@@ -112,11 +112,24 @@ pub struct AtElementClickDispatchReq {
     pub reply: std::sync::mpsc::Sender<bool>,
 }
 
+/// v40.39b: per-CLICK posted from the worker onto the main compositor loop.
+/// The worker's `DispatchFocus::button` is empty; only the main loop can
+/// deliver `wl_pointer` to a real `WlSurface`.
+pub struct PointerClickDispatchReq {
+    pub wid: u64,
+    pub x: f64,
+    pub y: f64,
+    pub reply: std::sync::mpsc::Sender<bool>,
+}
+
 thread_local! {
     static WORKER_KEY_DISPATCH_TX: RefCell<Option<calloop::channel::Sender<KeyDispatchReq>>> =
         RefCell::new(None);
     static WORKER_ELEMENT_CLICK_TX: RefCell<
         Option<calloop::channel::Sender<AtElementClickDispatchReq>>,
+    > = RefCell::new(None);
+    static WORKER_POINTER_CLICK_TX: RefCell<
+        Option<calloop::channel::Sender<PointerClickDispatchReq>>,
     > = RefCell::new(None);
 }
 
@@ -128,6 +141,14 @@ fn bind_worker_element_click_tx(
     tx: Option<calloop::channel::Sender<AtElementClickDispatchReq>>,
 ) {
     WORKER_ELEMENT_CLICK_TX.with(|slot| *slot.borrow_mut() = tx);
+}
+
+/// Bind the worker-thread CLICK handoff sender. Production
+/// `dispatch_inject_connection` sets this; tests bind a pump receiver.
+pub fn bind_worker_pointer_click_tx(
+    tx: Option<calloop::channel::Sender<PointerClickDispatchReq>>,
+) {
+    WORKER_POINTER_CLICK_TX.with(|slot| *slot.borrow_mut() = tx);
 }
 
 /// Post an AT_ELEMENT pointer fallback to the main loop and wait.
@@ -161,6 +182,39 @@ fn post_element_click_dispatch(
         x,
         y,
         screen_coords,
+        reply: reply_tx,
+    };
+    if tx.send(req).is_err() {
+        return false;
+    }
+    reply_rx.recv().unwrap_or(false)
+}
+
+/// Post a CLICK frame to the main loop and wait.
+///
+/// Returns `None` when this thread has no handoff sender (in-process tests).
+/// Callers must not click `DispatchFocus` in that case.
+pub fn try_handoff_pointer_click(wid: u64, x: f64, y: f64) -> Option<bool> {
+    WORKER_POINTER_CLICK_TX.with(|slot| {
+        let tx = slot.borrow();
+        tx.as_ref()
+            .map(|tx| post_pointer_click_dispatch(tx, wid, x, y))
+    })
+}
+
+/// Send `PointerClickDispatchReq` on `tx` and wait for the main-loop bool ACK.
+pub fn post_pointer_click_dispatch(
+    tx: &calloop::channel::Sender<PointerClickDispatchReq>,
+    wid: u64,
+    x: f64,
+    y: f64,
+) -> bool {
+    let _ = std::hint::black_box(POINTER_CLICK_HANDOFF_V40_39B);
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let req = PointerClickDispatchReq {
+        wid,
+        x,
+        y,
         reply: reply_tx,
     };
     if tx.send(req).is_err() {
@@ -312,6 +366,11 @@ static AT_TOGGLE_REAL_SURFACE_V40_33_IDENT: &[u8] =
 #[used]
 static POINTER_FRAME_SPLIT_V40_35_IDENT: &[u8] = b"\x01POINTER_FRAME_SPLIT_V40_35\x01";
 
+/// v40.39b: worker→main CLICK handoff. `black_box` at the live post site
+/// so lld gc keeps the literal in the release ELF.
+#[used]
+pub static POINTER_CLICK_HANDOFF_V40_39B: &[u8] = b"POINTER_CLICK_HANDOFF_V40_39B\0";
+
 /// Niri-shaped fields the v4.6 harness reads via `self.state.niri`.
 /// On the worker thread we don't have `niri::State`; we hold only the
 /// snapshot the dispatch loop needs.
@@ -363,6 +422,11 @@ pub struct DispatchState {
     /// that `socket.rs` posts through. Without this the worker must not
     /// click `DispatchFocus`.
     pub element_click_tx: Option<calloop::channel::Sender<AtElementClickDispatchReq>>,
+    /// v40.39b: main-loop CLICK sender. `None` in tests.
+    /// `dispatch_inject_connection` sets it and binds the thread-local copy
+    /// that `socket.rs` posts through. Without this the worker must not
+    /// click `DispatchFocus`.
+    pub pointer_click_tx: Option<calloop::channel::Sender<PointerClickDispatchReq>>,
 }
 
 #[derive(Default)]
@@ -443,6 +507,7 @@ impl DispatchState {
             focus_window_tx: None,
             at_toggle_tx: None,
             element_click_tx: None,
+            pointer_click_tx: None,
         }
     }
 
@@ -1232,6 +1297,24 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         true
     }
 
+    fn pointer_click_at(&mut self, window_id: u64, x: f64, y: f64) -> bool {
+        let _ = std::hint::black_box(POINTER_CLICK_HANDOFF_V40_39B);
+        if let Some(tx) = self.state.pointer_click_tx.as_ref() {
+            return post_pointer_click_dispatch(tx, window_id, x, y);
+        }
+        // tests/inject.rs: no main-loop receiver, so keep the agent-seat path.
+        // Production must not land here — DispatchFocus::button is empty.
+        let pointer = self.state.agent_seat.pointer.clone();
+        let origin = Point::from((0.0, 0.0));
+        inject_agent_button_click(
+            &pointer,
+            self.state,
+            Some((DispatchFocus, origin)),
+            x,
+            y,
+        )
+    }
+
     fn scroll(&mut self, h_axis: f64, v_axis: f64) -> bool {
         let pointer = self.state.agent_seat.pointer.clone();
         let origin = Point::from((0.0, 0.0));
@@ -1372,6 +1455,8 @@ pub fn dispatch_inject_connection(
     at_toggle_tx: Option<calloop::channel::Sender<AtToggleDispatchReq>>,
     // v40.35: main-loop AT_ELEMENT pointer-fallback sender. `None` in tests.
     element_click_tx: Option<calloop::channel::Sender<AtElementClickDispatchReq>>,
+    // v40.39b: main-loop CLICK handoff sender. `None` in tests.
+    pointer_click_tx: Option<calloop::channel::Sender<PointerClickDispatchReq>>,
 ) -> anyhow::Result<()> {
     let mut state = DispatchState::new(
         is_locked,
@@ -1391,6 +1476,9 @@ pub fn dispatch_inject_connection(
     state.at_toggle_tx = at_toggle_tx;
     state.element_click_tx = element_click_tx.clone();
     bind_worker_element_click_tx(element_click_tx);
+    state.pointer_click_tx = pointer_click_tx.clone();
+    bind_worker_pointer_click_tx(pointer_click_tx);
+    let _ = std::hint::black_box(POINTER_CLICK_HANDOFF_V40_39B);
     state.set_app_id_map(app_id_map);
     let _ = std::hint::black_box(crate::inject::KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF);
     let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);

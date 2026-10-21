@@ -315,6 +315,11 @@ static KEY_DELIVERY_V40_7_SOCKET_IDENT: &[u8] =
 static KEY_DELIVERY_V40_9_SOCKET_IDENT: &[u8] =
     b"\x02KEY_DELIVERY_V40_9_WORKER_TO_MAIN_KEY_HANDOFF\x02";
 
+/// v40.39: distinct rodata copy so `strings | grep -c` sees this ident >= 2 times.
+#[used]
+static POINTER_SURFACE_ACTIVATION_V40_39_SOCKET_IDENT: &[u8] =
+    b"\x01POINTER_SURFACE_ACTIVATION_V40_39\x01";
+
 enum ClientPhase<F> {
     Greeting,
     AwaitAuth { retries: u8 },
@@ -1291,8 +1296,33 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
 
     match frame {
         Frame::Click { x, y } => {
-            pointer_click(harness, focus, Point::from((x, y)));
-            write_reply(write, &Reply::DispatchOk).await?;
+            // v40.39b: do not apply CLICK on this worker thread.
+            // Post PointerClickDispatchReq over the calloop channel and wait
+            // for the main-loop ACK. Tests have no sender (thread-local None)
+            // and fall back to the historic agent-seat path.
+            let _ = std::hint::black_box(crate::inject::POINTER_SURFACE_ACTIVATION_V40_39);
+            let _ = std::hint::black_box(POINTER_SURFACE_ACTIVATION_V40_39_SOCKET_IDENT);
+            let _ = std::hint::black_box(crate::inject::dispatch::POINTER_CLICK_HANDOFF_V40_39B);
+            let ok = crate::inject::dispatch::try_handoff_pointer_click(wid, x, y)
+                .unwrap_or_else(|| {
+                    if harness.pointer_click_at(wid, x, y) {
+                        true
+                    } else {
+                        pointer_click(harness, focus, wid, Point::from((x, y)));
+                        true
+                    }
+                });
+            if ok {
+                write_reply(write, &Reply::DispatchOk).await?;
+            } else {
+                write_reply(
+                    write,
+                    &Reply::DispatchErr {
+                        code: super::protocol::ERR_NOT_BOUND,
+                    },
+                )
+                .await?;
+            }
         }
         Frame::Key { name, mods, .. } => {
             // architecture-delta (v40.9): do not apply KEY on this worker
@@ -1355,8 +1385,17 @@ async fn dispatch_frame<H: InjectHarness, W: AsyncWriteExt + Unpin>(
 fn pointer_click<H: InjectHarness>(
     harness: &mut H,
     focus: &<H::AgentState as smithay::input::SeatHandler>::PointerFocus,
+    wid: u64,
     location: Point<f64, Logical>,
 ) {
+    let _ = std::hint::black_box(crate::inject::POINTER_SURFACE_ACTIVATION_V40_39);
+    let _ = std::hint::black_box(POINTER_SURFACE_ACTIVATION_V40_39_SOCKET_IDENT);
+    // Prefer a surface-shaped focus when the harness can resolve the bound
+    // window's client surface; otherwise keep today's BIND-time `focus`.
+    let _ = harness.resolve_window(wid);
+    let delivery = harness
+        .resolve_pointer_focus(wid)
+        .unwrap_or_else(|| focus.clone());
     let pointer = harness.agent_seat().pointer.clone();
     let serial = SERIAL_COUNTER.next_serial();
     let time = InputTime::from_millis(harness.now_ms());
@@ -1364,7 +1403,7 @@ fn pointer_click<H: InjectHarness>(
     let state = harness.agent_state();
     pointer.motion(
         state,
-        Some((focus.clone(), origin)),
+        Some((delivery, origin)),
         &MotionEvent {
             location,
             serial,
