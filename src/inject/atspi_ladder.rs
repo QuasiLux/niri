@@ -318,13 +318,88 @@ fn ax_role_matches(query: &str, role_name: &str) -> bool {
             || r.contains("entry"))
 }
 
-/// Inline mirror of `real_bus::name_matches` (case-insensitive substring).
+/// v40.46: the name-match predicate is exact-first, and never lets a
+/// punctuation-only / 1-2 character operator query fall through to substring.
+///
+/// Measured defect (galculator, every keypad key is `[toggle button]`):
+/// substring matching resolved `button "+"` to `M+` and `button "-"` to `<-`,
+/// because those longer labels occur earlier in tree order and contain the
+/// operator character. A one-character query is essentially guaranteed to
+/// collide with *some* longer label.
+///
+/// The nth-sibling `--index` wire (v40.41 / v40.42) CANNOT rescue this: the
+/// candidate SET is already wrong, not merely mis-ordered, so indexing selects
+/// a wrong element more deterministically. Predicate before index, always.
+#[used]
+pub(crate) static AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46_IDENT: &[u8] =
+    b"\x01AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46\x01";
+
+/// Operator / arithmetic characters that carry no word content. A query made
+/// only of these is a key label (`+`, `-`, `<-` is not a query, `M+` is a name),
+/// never a partial word.
+fn ax_is_operator_char(c: char) -> bool {
+    matches!(
+        c,
+        '+' | '-' | '*' | '/' | '.' | '=' | '<' | '>' | '%' | '(' | ')' | '^' | ',' | '!'
+    )
+}
+
+/// True when the trimmed query is punctuation-only or 1-2 characters, i.e.
+/// the collision class where substring matching is unsafe.
+fn ax_is_exact_only_query(q: &str) -> bool {
+    q.chars().all(ax_is_operator_char) || q.chars().count() <= 2
+}
+
+/// Inline mirror of `real_bus::name_matches`.
+///
+/// v40.46 semantics, in order:
+///   1. empty query -> no match;
+///   2. trimmed case-insensitive EXACT match -> match, before any substring;
+///   3. punctuation-only or 1-2 char query -> exact only, never substring;
+///   4. otherwise substring, as a LAST resort (a caller asking for `"mute"`
+///      must still find `"Mute audio output"`).
 fn ax_name_matches(query: &str, name: &str) -> bool {
+    let _ = std::hint::black_box(AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46_IDENT);
     let q = query.trim();
     if q.is_empty() {
         return false;
     }
-    name.trim().to_lowercase().contains(&q.to_lowercase())
+    let n = name.trim();
+
+    // 2. Exact-match fast path, before any substring check.
+    if n.eq_ignore_ascii_case(q) {
+        return true;
+    }
+
+    // 3. Bare-punctuation and very short operator queries never fall through.
+    if ax_is_exact_only_query(q) {
+        return false;
+    }
+
+    // 4. Substring last resort: genuine partial multi-word labels.
+    n.to_lowercase().contains(&q.to_lowercase())
+}
+
+/// v40.46: the full candidate set a lookup accepted, capped, so an ambiguous
+/// or no-match answer is diagnosable from the wire instead of silently wrong.
+/// Names are stamped `role:name` exactly as the selected element would be.
+pub(crate) const AX_CANDIDATE_LOG_CAP: usize = 8;
+
+pub(crate) fn ax_candidate_names(
+    nodes: &[TreeNode],
+    role: &str,
+    name_query: &str,
+    out: &mut Vec<String>,
+) {
+    for node in nodes {
+        if out.len() >= AX_CANDIDATE_LOG_CAP {
+            return;
+        }
+        if ax_role_matches(role, &node.role) && ax_name_matches(name_query, &node.name) {
+            out.push(ax_stamp_path(0, role, &node.name));
+        }
+        ax_candidate_names(&node.children, role, name_query, out);
+    }
 }
 
 /// Inline mirror of `real_bus::stamp_path` (whitespace → `_`).
@@ -351,9 +426,36 @@ pub fn element_lookup_via_tree_dump(
     let _ = std::hint::black_box(ACTION_NAME_FALLBACK_CHAIN_V40_14_15_IDENT);
     let _ = std::hint::black_box(INNER_SWITCH_RESOLUTION_V40_14_15_IDENT);
     let _ = std::hint::black_box(crate::inject::protocol::AT_ELEMENT_REQ_INDEX_NTH_SIBLING_V40_41);
+    let _ = std::hint::black_box(AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46_IDENT);
     let roots = acquire_tree_roots(None);
     let mut hits: u32 = 0;
-    lookup_nested_tree(&roots, window_id, role, name_query, index, &mut hits)
+    let found = lookup_nested_tree(&roots, window_id, role, name_query, index, &mut hits);
+    // v40.46: the candidate set that was accepted is what turns a G7 "wrong
+    // element" into a diagnosable line on the wire. Cheap (capped) and only
+    // runs when the lookup misses or is ambiguous.
+    if found.is_none() {
+        let mut candidates = Vec::new();
+        ax_candidate_names(&roots, role, name_query, &mut candidates);
+        tracing::debug!(
+            window_id,
+            role,
+            name_query,
+            index,
+            candidates = ?candidates,
+            "atspi.element_lookup.no_match (AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46)"
+        );
+    } else {
+        tracing::debug!(
+            window_id,
+            role,
+            name_query,
+            index,
+            matched = %found.as_ref().map(|b| b.path.clone()).unwrap_or_default(),
+            matched_nth = hits,
+            "atspi.element_lookup.hit (AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46)"
+        );
+    }
+    found
 }
 
 fn lookup_nested_tree(
@@ -1932,5 +2034,124 @@ mod tests {
         assert!(past.is_none());
         assert_eq!(hits, 2);
         assert!(first.is_none(), "preferred misses must not populate the non-preferred fallback");
+    }
+
+    // ---------------- v40.46: ax_name_matches exact-first ----------------
+
+    /// v40.46 / G7: the measured galculator defect. On the unmodified baseline
+    /// (`name.to_lowercase().contains(q.to_lowercase())`) this FAILS, because
+    /// `"M+".contains("+")` is true.
+    #[test]
+    fn ax_name_matches_exact_operator_beats_longer_substring() {
+        use super::ax_name_matches;
+        assert!(
+            !ax_name_matches("+", "M+"),
+            "'+' must NOT match the longer label 'M+' by substring"
+        );
+        assert!(ax_name_matches("+", "+"), "'+' must match the key labelled '+'");
+    }
+
+    /// v40.46 / G7: the second measured collision, `-` -> `<-`. Fails on baseline.
+    #[test]
+    fn ax_name_matches_exact_operator_minus_vs_less() {
+        use super::ax_name_matches;
+        assert!(
+            !ax_name_matches("-", "<-"),
+            "'-' must NOT match the longer label '<-' by substring"
+        );
+        assert!(ax_name_matches("-", "-"), "'-' must match the key labelled '-'");
+    }
+
+    /// v40.46 regression guard: exact-first must NOT over-tighten. A caller
+    /// asking for "mute" still finds "Mute audio output" (the G2 path).
+    #[test]
+    fn ax_name_matches_still_finds_partial_word_labels() {
+        use super::ax_name_matches;
+        assert!(
+            ax_name_matches("mute", "Mute audio output"),
+            "partial multi-word label lookup must survive v40.46"
+        );
+        assert!(ax_name_matches("Mute", "Mute audio"));
+    }
+
+    /// v40.46: the exact fast path is case-insensitive.
+    #[test]
+    fn ax_name_matches_is_case_insensitive_on_exact() {
+        use super::ax_name_matches;
+        assert!(ax_name_matches("Search", "search"));
+        assert!(ax_name_matches("search", "Search"));
+        assert!(ax_name_matches("  OK  ", "ok"), "trim both sides before exact");
+    }
+
+    /// v40.46 integration shape of the G7 failure: the candidate list is
+    /// ordered `[M+, +]` (galculator's real tree order — the longer label
+    /// comes FIRST), and the ladder must select the EXACT `+` node.
+    /// On the baseline this selects `M+` and fails.
+    #[test]
+    fn ax_lookup_selects_exact_plus_when_mplus_precedes_it() {
+        use super::{ax_candidate_names, ax_name_matches, lookup_nested_tree, TreeNode};
+
+        fn node(role: &str, name: &str) -> TreeNode {
+            TreeNode {
+                role: role.into(),
+                name: name.into(),
+                x: 0.0,
+                y: 0.0,
+                w: 40.0,
+                h: 16.0,
+                visible: true,
+                children: vec![],
+                ..Default::default()
+            }
+        }
+
+        // galculator order: M+ BEFORE +.
+        let roots = vec![TreeNode {
+            role: "panel".into(),
+            name: "pad".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 80.0,
+            visible: true,
+            children: vec![node("push button", "M+"), node("push button", "+")],
+            ..Default::default()
+        }];
+
+        // Candidate set for "+" is now exactly the one node that IS "+".
+        let mut candidates = Vec::new();
+        ax_candidate_names(&roots, "button", "+", &mut candidates);
+        assert_eq!(
+            candidates,
+            vec!["atspi://0#button:+".to_string()],
+            "candidate set for '+' must contain only the exact '+' node"
+        );
+
+        // The selected element is the exact "+", not "M+".
+        let mut hits = 0u32;
+        let found = lookup_nested_tree(&roots, 42, "button", "+", 0, &mut hits)
+            .expect("exact '+' node must be found");
+        assert_eq!(found.path, "atspi://42#button:+");
+
+        // The "-" shape: "<-" precedes "-".
+        let minus_roots = vec![TreeNode {
+            role: "panel".into(),
+            name: "pad".into(),
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 80.0,
+            visible: true,
+            children: vec![node("push button", "<-"), node("push button", "-")],
+            ..Default::default()
+        }];
+        let mut hits = 0u32;
+        let found = lookup_nested_tree(&minus_roots, 42, "button", "-", 0, &mut hits)
+            .expect("exact '-' node must be found");
+        assert_eq!(found.path, "atspi://42#button:-");
+
+        // Sanity: the predicate itself, independent of tree order.
+        assert!(!ax_name_matches("+", "M+"));
+        assert!(ax_name_matches("+", "+"));
     }
 }
