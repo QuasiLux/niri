@@ -707,11 +707,11 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     crate::inject::atspi_ladder::FORCE_ICON_REDRAW_V40_15_5_OVERRIDE_IDENT,
                 );
                 let bounds = crate::inject::atspi_ladder::element_lookup_via_tree_dump(
-                    req_wid, &role, &name,
+                    req_wid, &role, &name, 0,
                 )
                 .or_else(|| {
                     crate::inject::atspi_ladder::scan_session_dbus_for_element(
-                        req_wid, &role, &name,
+                        req_wid, &role, &name, 0,
                     )
                 });
                 let reply = match bounds {
@@ -765,8 +765,9 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 write_reply(&mut write, &reply).await?;
                 ClientPhase::Dispatch { focus, wid }
             }
-            (ClientPhase::Dispatch { focus, wid }, Frame::AtElementReq { window_id, action }) => {
+            (ClientPhase::Dispatch { focus, wid }, Frame::AtElementReq { window_id, action, .. }) => {
                 let app_id = harness.app_id_for(window_id).unwrap_or_default();
+                let index = action.index().unwrap_or(0);
                 use super::atspi_ladder::AtSpiRoute;
                 match harness.route(&app_id, &action) {
                     AtSpiRoute::Element { role, query } => {
@@ -780,7 +781,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                         // the dump returned empty (no children).
                         if let Some(bounds) =
                             crate::inject::atspi_ladder::element_lookup_via_tree_dump(
-                                window_id, &role, &query,
+                                window_id, &role, &query, index,
                             )
                         {
                             let cx = bounds.rect.x + bounds.rect.w / 2.0;
@@ -849,7 +850,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                             .await?;
                         } else if let Some(bounds) =
                             crate::inject::atspi_ladder::scan_session_dbus_for_element(
-                                window_id, &role, &query,
+                                window_id, &role, &query, index,
                             )
                         {
                             // Fallback: dump returned no children — try
@@ -920,7 +921,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                             .await?;
                         } else if let Some(bounds) =
                             crate::inject::atspi_ladder::scan_session_dbus_for_element_by_app_id(
-                                window_id, &role, &query, &app_id,
+                                window_id, &role, &query, &app_id, index,
                             )
                         {
                             // v40.15.4 G1: consumer-side walk missed (GTK 2/3

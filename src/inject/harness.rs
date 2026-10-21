@@ -590,8 +590,8 @@ impl InjectHarness for NiriInjectHarness<'_> {
         // The lookup below is the re-read: do not click a rect captured
         // against the stale origin.
         let _ = self.scroll_wid_column_into_view(wid);
-        let bounds = element_lookup_via_tree_dump(wid, "toggle button", name).or_else(|| {
-            crate::inject::atspi_ladder::scan_session_dbus_for_element(wid, "toggle button", name)
+        let bounds = element_lookup_via_tree_dump(wid, "toggle button", name, 0).or_else(|| {
+            crate::inject::atspi_ladder::scan_session_dbus_for_element(wid, "toggle button", name, 0)
         });
         let Some(b) = bounds else {
             return crate::inject::protocol::ToggleReply::no_action();
