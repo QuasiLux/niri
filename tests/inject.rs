@@ -4051,9 +4051,16 @@ fn name_match_substring_nth_sibling_resolves_plus_when_index_0() {
     assert_eq!(path, Some("atspi://42#button:+"));
 }
 
-/// v40.41: same fixture, index 1 must skip `+` and resolve `M+`.
+/// v40.46 SUPERSEDES the v40.41 shape of this test. Under v40.46 a
+/// punctuation-only query is EXACT-only, so `M+` is no longer a candidate for
+/// `+` at any index — the candidate SET (not its order) is what was wrong, and
+/// indexing a wrong set selects a wrong element more deterministically.
+/// index 1 for `+` is therefore past-the-end, the existing not-found shape.
+///
+/// To reach `M+` the caller must now query `M+` exactly, which the sibling
+/// test below pins.
 #[test]
-fn name_match_substring_nth_sibling_resolves_m_plus_when_index_1() {
+fn name_match_exact_operator_plus_index_past_exact_candidate_is_none() {
     use niri::inject::atspi_ladder::{
         element_lookup_via_tree_dump, reset_gap4_test_hooks, set_tree_dump_override,
     };
@@ -4061,6 +4068,25 @@ fn name_match_substring_nth_sibling_resolves_m_plus_when_index_1() {
     reset_gap4_test_hooks();
     set_tree_dump_override(Some(galculator_plus_mplus_dump));
     let found = element_lookup_via_tree_dump(42, "button", "+", 1);
+    reset_gap4_test_hooks();
+    assert!(
+        found.is_none(),
+        "'+' has exactly one exact candidate; index 1 must be None, got {found:?}"
+    );
+}
+
+/// v40.46: `M+` is still reachable — by asking for it exactly. This is the
+/// replacement for the deleted `..._resolves_m_plus_when_index_1`: `M+` was
+/// never the answer to `+`, it is the answer to `M+`.
+#[test]
+fn name_match_exact_query_still_reaches_m_plus_by_its_own_name() {
+    use niri::inject::atspi_ladder::{
+        element_lookup_via_tree_dump, reset_gap4_test_hooks, set_tree_dump_override,
+    };
+
+    reset_gap4_test_hooks();
+    set_tree_dump_override(Some(galculator_plus_mplus_dump));
+    let found = element_lookup_via_tree_dump(42, "button", "M+", 0);
     let path = found.as_ref().map(|b| b.path.as_str());
     reset_gap4_test_hooks();
     assert_eq!(path, Some("atspi://42#button:M+"));
