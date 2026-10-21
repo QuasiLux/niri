@@ -376,6 +376,13 @@ pub static POINTER_CLICK_HANDOFF_V40_39B: &[u8] = b"POINTER_CLICK_HANDOFF_V40_39
 #[used]
 static AT_TOGGLE_REQ_VIA_POINTER_HANDOFF_V40_40: &[u8] = b"AT_TOGGLE_REQ_VIA_POINTER_HANDOFF_V40_40\0";
 
+/// v40.43: AT_TOGGLE_REQ reaches the real client surface through the
+/// production `at_toggle_tx` channel (window-relative AT-SPI bounds
+/// translated to global coords by `click_atspi_center_on_user_seat`).
+#[used]
+static AT_TOGGLE_REQ_REACHES_REAL_CLIENT_SURFACE_V40_43: &[u8] =
+    b"AT_TOGGLE_REQ_REACHES_REAL_CLIENT_SURFACE_V40_43\0";
+
 /// Niri-shaped fields the v4.6 harness reads via `self.state.niri`.
 /// On the worker thread we don't have `niri::State`; we hold only the
 /// snapshot the dispatch loop needs.
@@ -1375,11 +1382,13 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         crate::input::focus_window::FocusWindowReply::fail("no such window")
     }
 
-    /// v40.40: worker `AT_TOGGLE_REQ`. AT-SPI lookup stays on this thread
-    /// (no compositor state). The widget center is posted through the
-    /// worker→main pointer CLICK handoff (`PointerClickDispatchReq`) so
-    /// the main loop delivers motion + BTN_LEFT on the real `WlSurface`.
-    /// Never click `DispatchFocus` — that pointer target's `button` is empty.
+    /// v40.43: worker `AT_TOGGLE_REQ`. AT-SPI lookup for the production
+    /// path runs on the main loop (`NiriInjectHarness::at_toggle_req` →
+    /// `click_atspi_center_on_user_seat`), which translates window-relative
+    /// AT-SPI bounds to global coords before the click. Never post the
+    /// widget center through `try_handoff_pointer_click`: that handoff is
+    /// the `Frame::Click` shape (global logical). Never click
+    /// `DispatchFocus` — that pointer target's `button` is empty.
     fn at_toggle_req(&mut self, wid: u64, name: &str) -> crate::inject::protocol::ToggleReply {
         use crate::inject::atspi_ladder::element_lookup_via_tree_dump;
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
@@ -1389,11 +1398,21 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         let _ = std::hint::black_box(AT_TOGGLE_REAL_SURFACE_V40_33_IDENT);
         let _ = std::hint::black_box(POINTER_CLICK_HANDOFF_V40_39B);
         let _ = std::hint::black_box(AT_TOGGLE_REQ_VIA_POINTER_HANDOFF_V40_40);
+        let _ = std::hint::black_box(AT_TOGGLE_REQ_REACHES_REAL_CLIENT_SURFACE_V40_43);
         if wid == 0 {
             return crate::inject::protocol::ToggleReply::no_action();
         }
         if name.trim().is_empty() {
             return crate::inject::protocol::ToggleReply::no_action();
+        }
+        // Production always has `at_toggle_tx`. Post `{wid, name}` so the
+        // main loop re-looks-up and translates window-relative → global.
+        // The v40.40 `try_handoff_pointer_click` detour is the wrong shape
+        // (CLICK global coords); keep it only as the in-process fallback
+        // for tests that bind the CLICK sender and not `at_toggle_tx`.
+        if let Some(tx) = self.state.at_toggle_tx.as_ref() {
+            let _ = std::hint::black_box(AT_TOGGLE_REQ_REACHES_REAL_CLIENT_SURFACE_V40_43);
+            return post_at_toggle_dispatch(tx, wid, name);
         }
         // Mirror the AT_ACTION_REQ arm's lookup shape. The tree-dump
         // path has bounds already; fall back to the session-dbus scan
@@ -1407,14 +1426,6 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         let Some(b) = bounds else {
             return crate::inject::protocol::ToggleReply::no_action();
         };
-        // Widget center. `PointerClickDispatchReq` x/y are the same
-        // coordinate space `Frame::Click` uses (global logical). AT-SPI
-        // Window extents are window-relative unless the origin-zero
-        // marker (`rect.x == 0 && rect.y == 0`) stored Screen coords.
-        // `pointer_click_at` delivers with surface origin (0, 0), so the
-        // client sees this center as surface-local — the widget hit.
-        // Production worker has the CLICK sender; in-process tests
-        // without one fall back to `post_at_toggle_dispatch`.
         let cx = b.rect.x + b.rect.w / 2.0;
         let cy = b.rect.y + b.rect.h / 2.0;
         if let Some(clicked) = try_handoff_pointer_click(wid, cx, cy) {
@@ -1429,9 +1440,6 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
                 Some(false) => return crate::inject::protocol::ToggleReply::unchecked(),
                 None => return crate::inject::protocol::ToggleReply::no_action(),
             }
-        }
-        if let Some(tx) = self.state.at_toggle_tx.as_ref() {
-            return post_at_toggle_dispatch(tx, wid, name);
         }
         // Test harness without a handoff: do not click DispatchFocus.
         crate::inject::protocol::ToggleReply::no_action()
