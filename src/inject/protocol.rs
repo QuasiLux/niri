@@ -814,6 +814,13 @@ pub trait InjectHarness {
     fn drag(&mut self, _from_x: f64, _from_y: f64, _to_x: f64, _to_y: f64) -> bool {
         false
     }
+    /// v40.39b: worker→main pointer click. Default false so stub harnesses
+    /// keep compiling. Production `NiriInjectHarness` activates the real
+    /// `WlSurface` and delivers on the user seat.
+    fn pointer_click_at(&mut self, window_id: u64, x: f64, y: f64) -> bool {
+        let _ = (window_id, x, y);
+        false
+    }
     fn is_locked(&self) -> bool {
         false
     }

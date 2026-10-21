@@ -489,6 +489,9 @@ pub struct Niri {
     /// v40.35: AT_ELEMENT pointer-fallback handoff. Channel lives on `event_loop`.
     pub element_click_tx:
         Option<calloop::channel::Sender<crate::inject::dispatch::AtElementClickDispatchReq>>,
+    /// v40.39b: CLICK worker→main pointer handoff. Channel lives on `event_loop`.
+    pub pointer_click_tx:
+        Option<calloop::channel::Sender<crate::inject::dispatch::PointerClickDispatchReq>>,
     pub grant_map: crate::inject::GrantMap,
     pub grant_confirm: crate::inject::GrantConfirmState,
     pub app_catalog: crate::inject::app_catalog::AppCatalogMarker,
@@ -931,6 +934,21 @@ impl State {
         } = req;
         let mut harness = crate::inject::NiriInjectHarness::new(self);
         let clicked = harness.click_atspi_center_on_user_seat(wid, x, y, screen_coords);
+        let _ = reply.send(clicked);
+    }
+
+    /// v40.39b: CLICK on the main loop. The worker cannot see `niri::State`,
+    /// so it cannot resolve a `WlSurface` pointer focus. This constructs
+    /// `NiriInjectHarness`, activates the real surface, and delivers
+    /// `wl_pointer.motion` + `button` via `niri.seat.get_pointer()`.
+    pub fn dispatch_pointer_click_request(
+        &mut self,
+        req: crate::inject::dispatch::PointerClickDispatchReq,
+    ) {
+        let _ = std::hint::black_box(crate::inject::dispatch::POINTER_CLICK_HANDOFF_V40_39B);
+        let crate::inject::dispatch::PointerClickDispatchReq { wid, x, y, reply } = req;
+        let mut harness = crate::inject::NiriInjectHarness::new(self);
+        let clicked = harness.pointer_click_at(wid, x, y);
         let _ = reply.send(clicked);
     }
 
@@ -3017,6 +3035,7 @@ impl Niri {
         let mut focus_window_tx = None;
         let mut at_toggle_tx = None;
         let mut element_click_tx = None;
+        let mut pointer_click_tx = None;
         if crate::inject::inject_spawn_enabled() {
             let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
                 .map(PathBuf::from)
@@ -3094,6 +3113,18 @@ impl Niri {
                                 })
                                 .unwrap();
                             element_click_tx = Some(element_tx.clone());
+                            let (pointer_tx, pointer_rx) = calloop::channel::channel::<
+                                crate::inject::dispatch::PointerClickDispatchReq,
+                            >();
+                            event_loop
+                                .insert_source(pointer_rx, |event, _, state| match event {
+                                    calloop::channel::Event::Msg(req) => {
+                                        state.dispatch_pointer_click_request(req)
+                                    }
+                                    calloop::channel::Event::Closed => (),
+                                })
+                                .unwrap();
+                            pointer_click_tx = Some(pointer_tx.clone());
                             let token_file = crate::inject::token_file_path();
                             let _ = server.reload_tokens(&token_file);
                             apply_inject_socket_ownership(&inject_socket_path, gid);
@@ -3157,6 +3188,7 @@ impl Niri {
                                             let focus_tx = focus_tx.clone();
                                             let toggle_tx = toggle_tx.clone();
                                             let element_tx = element_tx.clone();
+                                            let pointer_tx = pointer_tx.clone();
                                             thread::spawn(move || {
                                                 let _ = crate::inject::dispatch::dispatch_inject_connection(
                                                     stream,
@@ -3174,6 +3206,7 @@ impl Niri {
                                                     Some(focus_tx),
                                                     Some(toggle_tx),
                                                     Some(element_tx),
+                                                    Some(pointer_tx),
                                                 );
                                             });
                                         }
@@ -3361,6 +3394,7 @@ impl Niri {
             focus_window_tx,
             at_toggle_tx,
             element_click_tx,
+            pointer_click_tx,
             grant_map: crate::inject::GrantMap::new(),
             grant_confirm: crate::inject::GrantConfirmState::new(),
             app_catalog: crate::inject::app_catalog::AppCatalogMarker,

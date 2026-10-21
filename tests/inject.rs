@@ -439,6 +439,50 @@ fn bind_click_drives_pointer_motion_on_agent_seat() {
 }
 
 #[test]
+fn v40_39_pointer_click_activates_surface_before_delivery() {
+    let _ = std::hint::black_box(niri::inject::POINTER_SURFACE_ACTIVATION_V40_39);
+    let tokens = token_file();
+    let mut state = DispatchState::new(
+        false,
+        false,
+        tokens.clone(),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(None)),
+    );
+    if let Some(surface) = state.bound_surface.clone() {
+        state
+            .surface_map
+            .lock()
+            .unwrap()
+            .insert(KNOWN_WINDOW, surface);
+    }
+    state
+        .grants
+        .lock()
+        .unwrap()
+        .insert(("bot-a".to_string(), KNOWN_WINDOW), ());
+    let mut harness = DispatchHarness::new(&mut state);
+    let req = format!("{}BIND {KNOWN_WINDOW}\nCLICK 100 200\n", hello_auth());
+    let replies = run_protocol_on(&mut harness, req.as_bytes());
+    let _ = fs::remove_file(&tokens);
+
+    assert!(replies.contains("HELLO OK\n"), "{replies:?}");
+    assert!(replies.contains("AUTH OK bot-a\n"), "{replies:?}");
+    assert!(replies.contains("BIND OK "), "{replies:?}");
+    assert!(replies.contains("DISPATCH OK\n"), "{replies:?}");
+    assert_eq!(
+        state.snapshot_motion_count(),
+        1,
+        "DispatchHarness CLICK must still record exactly one motion"
+    );
+    assert_eq!(
+        state.surface_target.lock().unwrap().last_motion,
+        Some(Point::from((100.0, 200.0)))
+    );
+}
+
+#[test]
 fn auth_mismatch_closes_after_retry() {
     let tokens = token_file();
     let mut harness = Harness::new(tokens.clone());
