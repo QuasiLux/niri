@@ -8,14 +8,13 @@
 //! landed at the unmoved window origin (0, 0) + (cx, cy) interpreted as
 //! global. This crate drives `InjectHarness::at_toggle_req` against a
 //! fully-built `DispatchState` with both senders, and the `at_toggle_tx`
-//! pump translates `window_top_left_global + Point::from((cx, cy))` the
-//! way `click_atspi_center_on_user_seat` does.
+//! pump translates `WINDOW_ORIGIN + (cx, cy)` the way
+//! `click_atspi_center_on_user_seat` does.
 //!
-//! New assertion: `last_motion == window_origin + (cx, cy)` with a
-//! non-zero `window_origin`. That fails on unmodified `e41efe20` because
-//! the v40.40 CLICK handoff steals the request and the toggle pump never
-//! delivers the translated point (mode (b): lost on the v40.40 path;
-//! the motion the CLICK pump *does* record is `(0, 0) + (cx, cy)`).
+//! Durable assertions: `last_motion == WINDOW_ORIGIN + (cx, cy)` and
+//! `rec.surface_origin == WINDOW_ORIGIN`. Those fail on unmodified
+//! `e41efe20` because the v40.40 CLICK handoff steals the request and
+//! delivers `(cx, cy)` as global with surface origin `(0, 0)`.
 
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
@@ -57,8 +56,7 @@ const RECT_Y: f64 = 150.0;
 const RECT_W: f64 = 40.0;
 const RECT_H: f64 = 20.0;
 /// Non-zero window origin so `(0, 0) + (cx, cy)` is a different point.
-const WINDOW_ORIGIN_X: f64 = 400.0;
-const WINDOW_ORIGIN_Y: f64 = 250.0;
+const WINDOW_ORIGIN: (f64, f64) = (400.0, 250.0);
 const BTN_LEFT: u32 = 0x110;
 
 fn element_center() -> (f64, f64) {
@@ -66,7 +64,7 @@ fn element_center() -> (f64, f64) {
 }
 
 fn window_origin() -> Point<f64, Logical> {
-    Point::from((WINDOW_ORIGIN_X, WINDOW_ORIGIN_Y))
+    Point::from(WINDOW_ORIGIN)
 }
 
 fn expected_global() -> Point<f64, Logical> {
@@ -107,7 +105,8 @@ struct ClickRecord {
     motion_count: u32,
     last_motion: Option<Point<f64, Logical>>,
     buttons: Vec<(u32, ButtonState)>,
-    surface_id: Option<u64>,
+    surface_origin: Option<Point<f64, Logical>>,
+    pointer_click_tx_calls: u32,
 }
 
 struct DummyHost;
@@ -156,7 +155,6 @@ fn dummy_surface() -> SurfaceKeep {
 #[derive(Debug, Clone, PartialEq)]
 struct FakeFocus {
     surface: WlSurface,
-    window_id: u64,
 }
 
 impl IsAlive for FakeFocus {
@@ -183,7 +181,6 @@ impl PointerTarget<FakeClientState> for FakeFocus {
         let mut rec = data.record.lock().unwrap();
         rec.motion_count += 1;
         rec.last_motion = Some(event.location);
-        rec.surface_id = Some(self.window_id);
     }
     fn relative_motion(
         &self,
@@ -198,9 +195,11 @@ impl PointerTarget<FakeClientState> for FakeFocus {
         data: &mut FakeClientState,
         event: &ButtonEvent,
     ) {
-        let mut rec = data.record.lock().unwrap();
-        rec.buttons.push((event.button, event.state));
-        rec.surface_id = Some(self.window_id);
+        data.record
+            .lock()
+            .unwrap()
+            .buttons
+            .push((event.button, event.state));
     }
     fn axis(&self, _seat: &Seat<FakeClientState>, _data: &mut FakeClientState, _frame: AxisFrame) {}
     fn frame(&self, _seat: &Seat<FakeClientState>, _data: &mut FakeClientState) {}
@@ -335,7 +334,6 @@ struct FakeClientState {
     agent_seat: AgentSeat<Self>,
     record: Arc<Mutex<ClickRecord>>,
     surface: WlSurface,
-    window_origin: Point<f64, Logical>,
     _keep: SurfaceKeep,
 }
 
@@ -350,7 +348,6 @@ impl FakeClientState {
             agent_seat,
             record,
             surface,
-            window_origin: window_origin(),
             _keep: keep,
         }
     }
@@ -386,6 +383,7 @@ fn at_toggle_req_reaches_real_client_surface_via_at_toggle_tx() {
     let (cx, cy) = element_center();
     let untranslated = Point::from((cx, cy));
     let expected = expected_global();
+    let origin = window_origin();
     assert_ne!(
         expected, untranslated,
         "window origin must be non-zero so last_motion is a translate, not (0,0)+(cx,cy)"
@@ -407,27 +405,31 @@ fn at_toggle_req_reaches_real_client_surface_via_at_toggle_tx() {
                     // `NiriInjectHarness::at_toggle_req` →
                     // `click_atspi_center_on_user_seat`: window-relative
                     // AT-SPI center plus the window's global top-left.
-                    let (cx, cy) = element_center();
-                    let global = fake.window_origin + Point::from((cx, cy));
+                    let Some(b) = fixture_bounds(req.wid, "toggle button", &req.name, 0) else {
+                        let _ = req.reply.send(ToggleReply::no_action());
+                        return;
+                    };
+                    let cx = b.rect.x + b.rect.w / 2.0;
+                    let cy = b.rect.y + b.rect.h / 2.0;
+                    let origin = window_origin();
+                    let global = origin + Point::from((cx, cy));
+                    fake.record.lock().unwrap().surface_origin = Some(origin);
                     let pointer = fake.agent_seat.pointer.clone();
                     let focus = FakeFocus {
                         surface: fake.surface.clone(),
-                        window_id: KNOWN_WINDOW,
                     };
-                    let origin = Point::from((0.0, 0.0));
-                    let ok = inject_agent_button_click(
+                    // smithay PointerTarget::motion subtracts this origin
+                    // from MotionEvent.location. Pass (0,0) so last_motion
+                    // stays the global point we delivered (WINDOW_ORIGIN+center).
+                    let inject_origin = Point::from((0.0, 0.0));
+                    let _ok = inject_agent_button_click(
                         &pointer,
                         fake,
-                        Some((focus, origin)),
+                        Some((focus, inject_origin)),
                         global.x,
                         global.y,
                     );
-                    let reply = if ok {
-                        ToggleReply::checked()
-                    } else {
-                        ToggleReply::no_action()
-                    };
-                    let _ = req.reply.send(reply);
+                    let _ = req.reply.send(ToggleReply::unchecked());
                 }
             })
             .expect("insert at-toggle source");
@@ -435,14 +437,17 @@ fn at_toggle_req_reaches_real_client_surface_via_at_toggle_tx() {
             .handle()
             .insert_source(click_rx, |event, _, fake| {
                 if let calloop::channel::Event::Msg(req) = event {
-                    // Production also has the v40.39b CLICK sender. On the
-                    // unmodified baseline this arm steals the toggle and
-                    // delivers window-relative coords as if they were
-                    // global — last_motion becomes (0,0)+(cx,cy).
+                    // Wired so a v40.40 steal is observable. Must not run
+                    // on the v40.43 `at_toggle_tx` path. Delivers
+                    // window-relative `(cx, cy)` as if it were global.
+                    {
+                        let mut rec = fake.record.lock().unwrap();
+                        rec.pointer_click_tx_calls += 1;
+                        rec.surface_origin = Some(Point::from((0.0, 0.0)));
+                    }
                     let pointer = fake.agent_seat.pointer.clone();
                     let focus = FakeFocus {
                         surface: fake.surface.clone(),
-                        window_id: KNOWN_WINDOW,
                     };
                     let origin = Point::from((0.0, 0.0));
                     let ok = inject_agent_button_click(
@@ -489,6 +494,11 @@ fn at_toggle_req_reaches_real_client_surface_via_at_toggle_tx() {
     set_observe_toggle_override(None);
 
     let rec = record.lock().unwrap();
+    assert_eq!(
+        rec.pointer_click_tx_calls, 0,
+        "v40.43 must post through at_toggle_tx, not the v40.40 pointer_click_tx fallback, got {} calls",
+        rec.pointer_click_tx_calls
+    );
     assert!(
         rec.motion_count >= 1,
         "AT_TOGGLE_REQ must deliver wl_pointer.motion to the client surface, got motion_count={}",
@@ -505,10 +515,11 @@ fn at_toggle_req_reaches_real_client_surface_via_at_toggle_tx() {
         rec.buttons
     );
     assert_eq!(
-        rec.surface_id,
-        Some(KNOWN_WINDOW),
-        "click must name the bound window surface, got {:?}",
-        rec.surface_id
+        rec.surface_origin,
+        Some(origin),
+        "toggle arm must deliver with surface_origin == WINDOW_ORIGIN {:?}, not (0,0)+(cx,cy); got {:?}",
+        origin,
+        rec.surface_origin
     );
     assert_ne!(
         rec.last_motion,
@@ -519,7 +530,7 @@ fn at_toggle_req_reaches_real_client_surface_via_at_toggle_tx() {
     assert_eq!(
         rec.last_motion,
         Some(expected),
-        "last_motion must be window_origin + (cx, cy) = {:?}, got {:?}",
+        "last_motion must be WINDOW_ORIGIN + (cx, cy) = {:?}, got {:?}",
         expected,
         rec.last_motion
     );

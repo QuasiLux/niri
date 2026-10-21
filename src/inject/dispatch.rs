@@ -1414,9 +1414,9 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
             let _ = std::hint::black_box(AT_TOGGLE_REQ_REACHES_REAL_CLIENT_SURFACE_V40_43);
             return post_at_toggle_dispatch(tx, wid, name);
         }
-        // Mirror the AT_ACTION_REQ arm's lookup shape. The tree-dump
-        // path has bounds already; fall back to the session-dbus scan
-        // when the dump is empty (per-cwd fixtures differ).
+        // In-process fallback (no main-loop channel). The bounds lookup
+        // here is the v40.40 path: still wrong-shape for production, kept
+        // for tests that bind `pointer_click_tx` only.
         let bounds = element_lookup_via_tree_dump(wid, "toggle button", name, 0)
             .or_else(|| {
                 crate::inject::atspi_ladder::scan_session_dbus_for_element(
@@ -1441,7 +1441,7 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
                 None => return crate::inject::protocol::ToggleReply::no_action(),
             }
         }
-        // Test harness without a handoff: do not click DispatchFocus.
+        // Test harness without any handoff: do not click DispatchFocus.
         crate::inject::protocol::ToggleReply::no_action()
     }
 }
