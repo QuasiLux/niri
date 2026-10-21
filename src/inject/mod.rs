@@ -243,6 +243,14 @@ pub static KEY_DELIVERY_V40_13_PLANE_IDENTS: &[&str] = &[
     KEY_DELIVERY_V40_13_SHIFT_THROUGH,
 ];
 
+/// v40.39: agent-seat POINTER surface activation before delivery. The
+/// pointer analogue of `KEY_DELIVERY_V40_6_SURFACE_ACTIVATION`.
+pub const POINTER_SURFACE_ACTIVATION_V40_39: &str =
+    "POINTER_SURFACE_ACTIVATION_V40_39";
+#[used]
+pub static POINTER_SURFACE_ACTIVATION_V40_39_PLANE_IDENTS: &[&str] =
+    &[POINTER_SURFACE_ACTIVATION_V40_39];
+
 #[used]
 pub static AT_SPI_BRIDGE_LIVE_PLANE_IDENTS: &[&str] = &[
     crate::inject::atspi_ladder::AT_SPI_BRIDGE_LIVE,

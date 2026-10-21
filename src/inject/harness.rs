@@ -105,6 +105,22 @@ impl<'a> NiriInjectHarness<'a> {
             .scroll_window_column_into_view(&window)
     }
 
+    /// v40.39: activate `wid`'s client surface before the pointer frame.
+    ///
+    /// The agent seat has no `wl_seat` global, so a press never reaches a
+    /// client (same class as the v40.7 KEY finding). Mirror
+    /// `KEY_DELIVERY_V40_6_SURFACE_ACTIVATION`: activate the layout window
+    /// and hand the real `WlSurface` back as the pointer focus.
+    pub fn activate_pointer_surface(&mut self, wid: u64) -> Option<WlSurface> {
+        let _ = std::hint::black_box(POINTER_SURFACE_ACTIVATION_V40_39);
+        let _ = std::hint::black_box(crate::inject::POINTER_SURFACE_ACTIVATION_V40_39);
+        let id = MappedId::from_raw(wid);
+        let window = self.state.niri.find_window_by_id(id)?;
+        let target = window.toplevel().map(|t| t.wl_surface().clone())?;
+        self.state.niri.layout.activate_window(&window);
+        Some(target)
+    }
+
     /// User-seat `BTN_LEFT` at the AT-SPI center.
     ///
     /// `screen_coords` is true when the rect origin was (0, 0) and
@@ -173,6 +189,8 @@ impl<'a> NiriInjectHarness<'a> {
                 _ => return false,
             }
         }
+        // v40.39: activate the bound client surface before the pointer frame.
+        let _ = self.activate_pointer_surface(wid);
         let Some(pointer) = self.state.niri.seat.get_pointer() else {
             return false;
         };
@@ -249,6 +267,12 @@ static AT_TOGGLE_REQ_REAL_SURFACE_V40_33_HARNESS: &[u8] =
 #[used]
 static SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38: &[u8] =
     b"SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38\0";
+
+/// v40.39: byte static + `black_box` live call site so the release ELF keeps
+/// the literal (lld gc drops a parent-only `#[used]`).
+#[used]
+static POINTER_SURFACE_ACTIVATION_V40_39: &[u8] =
+    b"POINTER_SURFACE_ACTIVATION_V40_39\0";
 
 impl InjectHarness for NiriInjectHarness<'_> {
     type AgentState = State;
@@ -492,6 +516,35 @@ impl InjectHarness for NiriInjectHarness<'_> {
         )
     }
 
+    /// v40.39b: production CLICK on the live compositor.
+    ///
+    /// Activates `wid`'s client `WlSurface` then delivers motion + BTN_LEFT
+    /// through the **user seat** (`self.state.niri.seat.get_pointer()`).
+    /// The agent seat has no `wl_seat` global, so a press there never
+    /// reaches a client. Called from `State::dispatch_pointer_click_request`.
+    fn pointer_click_at(&mut self, window_id: u64, x: f64, y: f64) -> bool {
+        let _ = std::hint::black_box(POINTER_SURFACE_ACTIVATION_V40_39);
+        let _ = std::hint::black_box(crate::inject::POINTER_SURFACE_ACTIVATION_V40_39);
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        let Some(surface) = self.activate_pointer_surface(window_id) else {
+            return false;
+        };
+        let Some(pointer) = self.state.niri.seat.get_pointer() else {
+            return false;
+        };
+        let pointer = pointer.clone();
+        let origin = Point::from((0.0, 0.0));
+        crate::inject::dispatch::inject_agent_button_click(
+            &pointer,
+            self.agent_state(),
+            Some((surface, origin)),
+            x,
+            y,
+        )
+    }
+
     fn layer_hit_test(&mut self, x: i32, y: i32) -> crate::input::layer_hit_test::LayerHitReply {
         let _ = std::hint::black_box(crate::inject::protocol::LAYER_HIT_TEST_V40_18);
         crate::input::layer_hit_test::hit_test_niri(&self.state.niri, x, y)
@@ -622,5 +675,13 @@ mod tests {
         let _ = std::hint::black_box(SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38);
         let s = std::str::from_utf8(SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38).unwrap();
         assert!(s.contains("SCROLL_OFF_VIEWPORT_COLUMN_INTO_VIEW_V40_38"));
+    }
+
+    #[test]
+    fn v40_39_pointer_surface_activation_ident_is_published() {
+        let _ = std::hint::black_box(POINTER_SURFACE_ACTIVATION_V40_39);
+        let _ = std::hint::black_box(crate::inject::POINTER_SURFACE_ACTIVATION_V40_39);
+        assert!(!POINTER_SURFACE_ACTIVATION_V40_39.is_empty());
+        assert!(crate::inject::POINTER_SURFACE_ACTIVATION_V40_39_PLANE_IDENTS.contains(&crate::inject::POINTER_SURFACE_ACTIVATION_V40_39));
     }
 }
