@@ -1557,10 +1557,10 @@ fn parse_at_action_req(text: &str) -> Result<Frame, FrameError> {
 /// cua-driver sibling already selects client-side with the identical
 /// rule, so client and server index identically or not at all.
 ///
-/// Absent index = today's behaviour exactly. A 3-tuple whose name is
-/// itself numeric (`AT_TOGGLE_REQ 4 123`) stays name-only: the peel needs
-/// at least 3 remainder tokens, so a 1- or 2-token remainder can never
-/// have its NAME silently reinterpreted as an index.
+/// Absent index = today's behaviour exactly. A single-token remainder
+/// whose token is itself numeric (`AT_TOGGLE_REQ 4 123`) stays name-only:
+/// the peel needs at least TWO remainder tokens, so a 1-token remainder
+/// can never have its NAME silently reinterpreted as an index.
 fn parse_at_toggle_req(text: &str) -> Result<Frame, FrameError> {
     // v40.29 pin: parse-side ident must survive thin-LTO. Read once,
     // drop — the goal is codegen reachability, not actual semantics.
@@ -1578,11 +1578,23 @@ fn parse_at_toggle_req(text: &str) -> Result<Frame, FrameError> {
         return Err(FrameError::Malformed);
     }
     // v40.50: peel the optional trailing occurrence index FIRST, using the
-    // shared v40.46/v40.41 helper. `rest.len() > 2` means at least three
-    // remainder tokens exist (opc+wid already consumed), so a name can
-    // never be stolen: the shortest peelable shape is
-    // `toggle button <w0> <w1> 2` (4 tokens) and `<role> <name> 2` (3).
-    let index = if rest.len() > 2 {
+    // shared v40.46/v40.41 helper.
+    //
+    // v40.50b (review round 1): the gate is `rest.len() > 1`, NOT `> 2`.
+    // The live producer `qlux-cua-driver` fb3b43d
+    // `encode_at_toggle_req_line` emits `<wid> <name_tok> <n>` for every
+    // name that is not exactly two words — a TWO-token remainder. The `> 2`
+    // gate never fired for those, the tokens fell through to the legacy
+    // 3-tuple arm below, and the occurrence was taken as the NAME
+    // (`name="2"`, `index=None`). That is the exact "silent index drop"
+    // class this opcode exists to kill, still live for single-token names.
+    //
+    // `> 1` is the correct boundary, not `> 0`: with a ONE-token remainder
+    // there is nothing to peel off, so `AT_TOGGLE_REQ 4 123` keeps `123`
+    // as its NAME and never steals it into the index field. Two tokens is
+    // the shortest shape that can carry a name AND an occurrence, so `> 1`
+    // is both sufficient and minimal.
+    let index = if rest.len() > 1 {
         let joined = rest.join(" ");
         let (body, index) = split_off_optional_index(&joined)?;
         // Own the tokens so nothing borrows `joined`/`body` past this block.
