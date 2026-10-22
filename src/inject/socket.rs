@@ -699,6 +699,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     role,
                     name,
                     index,
+                    nth,
                 },
             ) => {
                 let _ = std::hint::black_box(crate::inject::protocol::AT_ACTION_REQ_OPCODE_V40_15_3);
@@ -706,51 +707,68 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 let _ = std::hint::black_box(
                     crate::inject::atspi_ladder::FORCE_ICON_REDRAW_V40_15_5_OVERRIDE_IDENT,
                 );
-                let bounds = crate::inject::atspi_ladder::element_lookup_via_tree_dump(
-                    req_wid, &role, &name, 0,
-                )
-                .or_else(|| {
-                    crate::inject::atspi_ladder::scan_session_dbus_for_element(
-                        req_wid, &role, &name, 0,
-                    )
-                });
-                let reply = match bounds {
-                    None => Reply::AtActionReply {
-                        ok: false,
-                        error: Some("ELEMENT_NOT_FOUND".into()),
-                        force_redraw: false,
-                    },
-                    Some(b) => {
-                        let path = if b.dbus_path.is_empty() {
-                            b.path.clone()
-                        } else {
-                            b.dbus_path.clone()
-                        };
-                        crate::inject::protocol::set_last_action_target(
-                            &b.dbus_dest,
-                            &path,
-                            b.n_actions,
+                let _ = std::hint::black_box(crate::inject::protocol::AT_ACTION_OCCURRENCE_INDEX_V40_51);
+                let occurrence = nth.unwrap_or(0);
+                use crate::inject::atspi_ladder::element_lookup_via_tree_dump_counted;
+                let reply = match element_lookup_via_tree_dump_counted(req_wid, &role, &name, occurrence) {
+                    Err(candidates) => {
+                        tracing::warn!(
+                            window_id = req_wid,
+                            role = %role,
+                            name = %name,
+                            requested = occurrence,
+                            candidates,
+                            "atspi.action_req.index_out_of_range (AT_ACTION_OCCURRENCE_INDEX_V40_51)"
                         );
-                        match harness.apply_action_on_element(req_wid, &path, index) {
-                            Ok(()) => {
-                                let force_redraw = role == "toggle button";
-                                if force_redraw {
-                                    let _ = crate::inject::atspi_ladder::force_icon_redraw(
-                                        &b.dbus_dest,
-                                        &path,
-                                    );
-                                }
-                                Reply::AtActionReply {
-                                    ok: true,
-                                    error: None,
-                                    force_redraw,
+                        // NEVER fall back to the first match here.
+                        Reply::at_action_occurrence_out_of_range(occurrence, candidates)
+                    }
+                    Ok(looked) => {
+                        let bounds = looked.or_else(|| {
+                            crate::inject::atspi_ladder::scan_session_dbus_for_element(
+                                req_wid, &role, &name, occurrence,
+                            )
+                        });
+                        match bounds {
+                            None => Reply::AtActionReply {
+                                ok: false,
+                                error: Some("ELEMENT_NOT_FOUND".into()),
+                                force_redraw: false,
+                                resolved: None,
+                            },
+                            Some(b) => {
+                                let path = if b.dbus_path.is_empty() {
+                                    b.path.clone()
+                                } else {
+                                    b.dbus_path.clone()
+                                };
+                                crate::inject::protocol::set_last_action_target(
+                                    &b.dbus_dest,
+                                    &path,
+                                    b.n_actions,
+                                );
+                                match harness.apply_action_on_element(req_wid, &path, index) {
+                                    Ok(()) => {
+                                        let force_redraw = role == "toggle button";
+                                        if force_redraw {
+                                            let _ = crate::inject::atspi_ladder::force_icon_redraw(
+                                                &b.dbus_dest,
+                                                &path,
+                                            );
+                                        }
+                                        let resolved = Some(
+                                            crate::inject::protocol::ResolvedTarget::from_bounds(&b, &name),
+                                        );
+                                        Reply::at_action_ok(force_redraw, resolved)
+                                    }
+                                    Err(code) => Reply::AtActionReply {
+                                        ok: false,
+                                        error: Some(code.into()),
+                                        force_redraw: false,
+                                        resolved: None,
+                                    },
                                 }
                             }
-                            Err(code) => Reply::AtActionReply {
-                                ok: false,
-                                error: Some(code.into()),
-                                force_redraw: false,
-                            },
                         }
                     }
                 };
@@ -759,6 +777,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                     role = %role,
                     name = %name,
                     index,
+                    occurrence,
                     ?reply,
                     "atspi.action_req"
                 );
