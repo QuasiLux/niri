@@ -405,7 +405,8 @@ fn at_toggle_req_reaches_real_client_surface_via_at_toggle_tx() {
                     // `NiriInjectHarness::at_toggle_req` →
                     // `click_atspi_center_on_user_seat`: window-relative
                     // AT-SPI center plus the window's global top-left.
-                    let Some(b) = fixture_bounds(req.wid, "toggle button", &req.name, 0) else {
+                    let Some(b) = fixture_bounds(req.wid, "toggle button", &req.name, req.index.unwrap_or(0))
+                    else {
                         let _ = req.reply.send(ToggleReply::no_action());
                         return;
                     };
@@ -487,7 +488,7 @@ fn at_toggle_req_reaches_real_client_surface_via_at_toggle_tx() {
     state.at_toggle_tx = Some(toggle_tx);
     let mut harness = DispatchHarness::new(&mut state);
 
-    let _reply = InjectHarness::at_toggle_req(&mut harness, KNOWN_WINDOW, TOGGLE_NAME);
+    let _reply = InjectHarness::at_toggle_req(&mut harness, KNOWN_WINDOW, TOGGLE_NAME, None);
 
     bind_worker_pointer_click_tx(None);
     set_scan_override(None);

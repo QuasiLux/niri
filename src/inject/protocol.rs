@@ -182,6 +182,33 @@ pub static AT_TOGGLE_REQ_PARSE_V40_29: &[u8] = b"\x01AT_TOGGLE_REQ_PARSE_V40_29\
 #[allow(dead_code)]
 pub static AT_TOGGLE_REQ_DISPATCH_V40_29: &[u8] = b"\x01AT_TOGGLE_REQ_DISPATCH_V40_29\x01";
 
+/// v40.50: `AT_TOGGLE_REQ` carries an OPTIONAL TRAILING occurrence
+/// index and `AT_TOGGLE_REPLY` reports the resolved identity.
+///
+/// Measured (v40.49 G2, `t_973ff960`): pavucontrol, three sibling rows
+/// sharing `role`+`name`, target row at tree index 2. The client resolved
+/// index 2 and computed the right screen point; it then handed this
+/// server only the NAME, and this server re-matched by accessible name
+/// and took the first match — index 0, the role-aggregate row. The wire
+/// was not broken: it returned rc=0 and a well-formed reply for a click
+/// aimed at a widget it had no way to name. It was **blind**.
+///
+/// Acceptance: `strings | grep AT_TOGGLE_OCCURRENCE_INDEX_V40_50` >= 1.
+#[used]
+pub static AT_TOGGLE_OCCURRENCE_INDEX_V40_50: &[u8] =
+    b"\x01AT_TOGGLE_OCCURRENCE_INDEX_V40_50\x01";
+
+/// Render an f64 rect field as a compact integer when it is integral
+/// (AT-SPI extents are integer pixels), so the wire reads
+/// `x=1929 y=305 w=36 h=34` rather than `x=1929.0`.
+pub(crate) fn fmt_coord(v: f64) -> String {
+    if v.is_finite() && v.fract() == 0.0 && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
 /// v40.33: production `AT_TOGGLE_REQ` resolves a real `WlSurface` pointer
 /// focus on `NiriInjectHarness` and does not treat a hardcoded
 /// `ToggleState::Checked` as an observed widget state. Byte static plus
@@ -369,6 +396,16 @@ pub enum ToggleState {
     Checked,
     Unchecked,
     NoAction,
+    /// v40.50: the caller named an occurrence index that does not exist.
+    /// `candidates` is the number of elements the predicate actually
+    /// accepted, so a caller can tell "this tree holds 3 rows named
+    /// `Mute audio`" from "this tree holds none".
+    ///
+    /// This variant exists to make silent substitution IMPOSSIBLE: never
+    /// fall back to the first match here. A silent fall-back is the exact
+    /// defect class that made `AT_TOGGLE_REQ` deliver to the role-aggregate
+    /// row while the scored per-stream row was never dispatched to at all.
+    IndexOutOfRange { requested: u32, candidates: u32 },
 }
 
 impl ToggleState {
@@ -380,6 +417,7 @@ impl ToggleState {
             ToggleState::Checked => "checked",
             ToggleState::Unchecked => "unchecked",
             ToggleState::NoAction => "no_action",
+            ToggleState::IndexOutOfRange { .. } => "index_out_of_range",
         }
     }
 
@@ -394,25 +432,86 @@ impl ToggleState {
 /// per the brief; see [`ToggleState`]. Synthesized by
 /// [`InjectHarness::at_toggle_req`] and consumed by the socket
 /// dispatch arm that writes the wire reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// v40.50: `resolved` is the identity of the element the action actually
+/// landed on. It is `None` for every soft-fail and for the legacy
+/// name-only path. **A reply that cannot name the element it acted on is
+/// a defect in its own right**: a mis-delivered click returns exactly the
+/// same rc=0 and the same well-formed `AT_TOGGLE_REPLY checked` as a
+/// correct one, which is what made the v40.49 G2 mis-delivery invisible.
+/// The wire is not broken — it is *blind*; these fields remove the
+/// blindness.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ToggleReply {
     pub state: ToggleState,
+    pub resolved: Option<ResolvedTarget>,
+}
+
+/// v40.50: which occurrence the selector actually resolved, so the reply
+/// can be checked against what the caller asked for.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ResolvedTarget {
+    /// The accessible name of the matched element (not the query).
+    pub name: String,
+    /// Resolved rect in the same coordinate space the click used.
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    /// `atspi://<wid>#<role>:<name>` — the same stamped path the
+    /// `AT_ELEMENT_REPLY` lookup opcode already returns.
+    pub path: String,
 }
 
 impl ToggleReply {
     pub fn checked() -> Self {
         Self {
             state: ToggleState::Checked,
+            resolved: None,
         }
     }
     pub fn unchecked() -> Self {
         Self {
             state: ToggleState::Unchecked,
+            resolved: None,
         }
     }
     pub fn no_action() -> Self {
         Self {
             state: ToggleState::NoAction,
+            resolved: None,
+        }
+    }
+    /// v40.50: out-of-range occurrence index. Names the candidate count so
+    /// the caller can distinguish "no such row" from "no such name", and
+    /// never silently substitutes the first match.
+    pub fn index_out_of_range(requested: u32, candidates: u32) -> Self {
+        Self {
+            state: ToggleState::IndexOutOfRange {
+                requested,
+                candidates,
+            },
+            resolved: None,
+        }
+    }
+    /// v40.50: attach the resolved identity to an existing tri-state reply.
+    pub fn with_resolved(mut self, resolved: ResolvedTarget) -> Self {
+        self.resolved = Some(resolved);
+        self
+    }
+    /// v40.50: build the resolved identity from the ladder's `ElementBounds`
+    /// plus the AT-SPI name that produced it.
+    pub fn resolved_from_bounds(
+        bounds: &crate::inject::atspi_ladder::ElementBounds,
+        name: &str,
+    ) -> ResolvedTarget {
+        ResolvedTarget {
+            name: name.to_string(),
+            x: bounds.rect.x,
+            y: bounds.rect.y,
+            w: bounds.rect.w,
+            h: bounds.rect.h,
+            path: bounds.path.clone(),
         }
     }
 }
@@ -486,9 +585,18 @@ pub enum Frame {
     ///
     /// Server reply is tri-state; see [`ToggleState`] and the
     /// [`Reply::AtToggleReply`] encoder.
+    ///
+    /// v40.50: `index` is an OPTIONAL TRAILING occurrence selector,
+    /// `AT_TOGGLE_REQ <wid> <name> [<nth>]`, reusing the same peeling rule
+    /// as the `AT_ELEMENT_REQ` EI arm (`split_off_optional_index`) so the
+    /// two opcodes cannot drift on what an index means. `None` reproduces
+    /// v40.46 behaviour exactly (first match).
     AtToggleReq {
         wid: u64,
         name: String,
+        /// v40.50: 0-based occurrence index under the v40.46 exact-first
+        /// predicate. `None` = absent on the wire = first match.
+        index: Option<u32>,
     },
     /// `AT_TREE_REQ <wid> [path…]` — see [`parse_at_tree_req`].
     AtTreeReq {
@@ -572,7 +680,10 @@ impl FrameError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// v40.50: `Eq` is dropped — `AtToggleReply.resolved` carries `f64`
+/// geometry, and `f64` is never `Eq`. Nothing in the tree required `Eq`
+/// (`assert_eq!` only needs `PartialEq`).
+#[derive(Debug, Clone, PartialEq)]
 pub enum Reply {
     HelloOk,
     AuthOk { bot_id: String },
@@ -595,7 +706,15 @@ pub enum Reply {
     /// `AT_TOGGLE_REPLY <state>\n`. The cua-driver v40.28
     /// `ParsedReply::AtToggleReply` exits 0 on `Checked`/`Unchecked`,
     /// 2 on `NoAction` (soft-fail).
-    AtToggleReply { state: ToggleState },
+    ///
+    /// v40.50: `resolved` appends `x= y= w= h= path=` so the caller can
+    /// verify WHERE the action landed. `None` keeps the v40.46 three-token
+    /// wire byte-for-byte (backward compatible with a peer that ignores
+    /// the extra fields).
+    AtToggleReply {
+        state: ToggleState,
+        resolved: Option<ResolvedTarget>,
+    },
     AtTreeReply { body: String },
     /// Union of `AT_ELEMENT_REPLY` (best match) + `AT_TREE_REPLY` subtree.
     TreeByAppId {
@@ -726,22 +845,46 @@ impl Reply {
                     format!("{REP_WINDOW_FOCUS_REPLY} 0 {reason}\n")
                 }
             }
-            Reply::AtToggleReply { state } => {
+            Reply::AtToggleReply { state, resolved } => {
                 // v40.29 pin: dispatch-side ident must survive thin-LTO.
                 // Read once, drop — the goal is codegen reachability.
                 let _ = std::hint::black_box(AT_TOGGLE_REQ_DISPATCH_V40_29);
                 let _ = std::hint::black_box(REP_AT_TOGGLE_REPLY_IDENT);
                 let _ = std::hint::black_box(OPC_AT_TOGGLE_REQ_IDENT);
                 let _ = std::hint::black_box(AT_TOGGLE_REQ_V40_28);
+                let _ = std::hint::black_box(AT_TOGGLE_OCCURRENCE_INDEX_V40_50);
                 let word = state.as_wire();
-                if state.is_success() {
-                    format!("{REP_AT_TOGGLE_REPLY} {word}\n")
-                } else {
+                // v40.50: an out-of-range occurrence index is a DISTINCT
+                // wire outcome naming the candidate count. Never
+                // `checked`/`unchecked` here — that would read as
+                // "delivered to the first match".
+                if let ToggleState::IndexOutOfRange {
+                    requested,
+                    candidates,
+                } = state
+                {
+                    return format!(
+                        "{REP_AT_TOGGLE_REPLY} {word} index={requested} candidates={candidates}\n"
+                    )
+                    .into_bytes();
+                }
+                // v40.50: the resolved identity follows the state token, so
+                // a caller can verify WHERE the action landed instead of
+                // trusting an rc=0 that a mis-delivery also returns.
+                match resolved {
+                    Some(r) => format!(
+                        "{REP_AT_TOGGLE_REPLY} {word} x={} y={} w={} h={} path={}\n",
+                        fmt_coord(r.x),
+                        fmt_coord(r.y),
+                        fmt_coord(r.w),
+                        fmt_coord(r.h),
+                        r.path
+                    ),
                     // NoAction (soft-fail). Match cua-driver exit-2 via the
                     // same wire; do NOT add `err <reason>` — that shape is
                     // for AT_ACTION_REQ. The tri-state reply is the
                     // contract; no token appended on no-action.
-                    format!("{REP_AT_TOGGLE_REPLY} {word}\n")
+                    None => format!("{REP_AT_TOGGLE_REPLY} {word}\n"),
                 }
             }
         };
@@ -959,9 +1102,15 @@ pub trait InjectHarness {
     /// path the `apply_action_on_element` arm uses) and dispatch the
     /// synthesized button event through the agent seat's
     /// `PointerHandle`.
-    fn at_toggle_req(&mut self, wid: u64, name: &str) -> ToggleReply {
+    ///
+    /// v40.50: `index` is the optional trailing occurrence selector from
+    /// the wire (`None` = first match). `out_of_range` is how an impl
+    /// reports "the selector named an element that does not exist" —
+    /// it MUST carry the candidate count rather than substituting the
+    /// first match.
+    fn at_toggle_req(&mut self, wid: u64, name: &str, index: Option<u32>) -> ToggleReply {
         let _ = std::hint::black_box(AT_TOGGLE_REQ_V40_28);
-        let _ = (wid, name);
+        let _ = (wid, name, index);
         ToggleReply::no_action()
     }
 }
@@ -1399,10 +1548,24 @@ fn parse_at_action_req(text: &str) -> Result<Frame, FrameError> {
 ///   and is kept because the brief form parses 1-token name the same
 ///   way (`rest.len() == 1` → name). 2-tuple form is detected when
 ///   `rest.len() == 1`; 3-tuple when `rest.len() == 2`.
+///
+/// v40.50: every shape gains an OPTIONAL TRAILING occurrence index,
+/// `AT_TOGGLE_REQ <wid> <name> [<nth>]`, peeled with the SAME
+/// `split_off_optional_index` helper the `AT_ELEMENT_REQ` EI arm uses.
+/// Reusing the helper (rather than a second parser) is what keeps the
+/// two opcodes from ever disagreeing about what an index means — the
+/// cua-driver sibling already selects client-side with the identical
+/// rule, so client and server index identically or not at all.
+///
+/// Absent index = today's behaviour exactly. A 3-tuple whose name is
+/// itself numeric (`AT_TOGGLE_REQ 4 123`) stays name-only: the peel needs
+/// at least 3 remainder tokens, so a 1- or 2-token remainder can never
+/// have its NAME silently reinterpreted as an index.
 fn parse_at_toggle_req(text: &str) -> Result<Frame, FrameError> {
     // v40.29 pin: parse-side ident must survive thin-LTO. Read once,
     // drop — the goal is codegen reachability, not actual semantics.
     let _ = std::hint::black_box(AT_TOGGLE_REQ_PARSE_V40_29);
+    let _ = std::hint::black_box(crate::inject::atspi_ladder::AT_TOGGLE_OCCURRENCE_INDEX_V40_50_IDENT);
     let mut parts = text.split_whitespace();
     let _opc = parts.next().ok_or(FrameError::Malformed)?;
     let wid: u64 = parts
@@ -1410,20 +1573,34 @@ fn parse_at_toggle_req(text: &str) -> Result<Frame, FrameError> {
         .ok_or(FrameError::Malformed)?
         .parse()
         .map_err(|_| FrameError::Malformed)?;
-    let rest: Vec<&str> = parts.collect();
+    let mut rest: Vec<String> = parts.map(str::to_string).collect();
     if rest.is_empty() {
         return Err(FrameError::Malformed);
     }
+    // v40.50: peel the optional trailing occurrence index FIRST, using the
+    // shared v40.46/v40.41 helper. `rest.len() > 2` means at least three
+    // remainder tokens exist (opc+wid already consumed), so a name can
+    // never be stolen: the shortest peelable shape is
+    // `toggle button <w0> <w1> 2` (4 tokens) and `<role> <name> 2` (3).
+    let index = if rest.len() > 2 {
+        let joined = rest.join(" ");
+        let (body, index) = split_off_optional_index(&joined)?;
+        // Own the tokens so nothing borrows `joined`/`body` past this block.
+        rest = body.split_whitespace().map(str::to_string).collect();
+        index
+    } else {
+        None
+    };
     // Brief 2-tuple form: `AT_TOGGLE_REQ <wid> toggle button <w0> <w1>`
     if rest.len() >= 3 && rest[0] == "toggle" && rest[1] == "button" {
         let mut name_iter = rest.iter().skip(2);
         let first = name_iter.next().ok_or(FrameError::Malformed)?;
-        let mut name = first.to_string();
+        let mut name = first.clone();
         for tok in name_iter {
             name.push(' ');
             name.push_str(tok);
         }
-        return Ok(Frame::AtToggleReq { wid, name });
+        return Ok(Frame::AtToggleReq { wid, name, index });
     }
     // Brief 2-tuple form: `AT_TOGGLE_REQ <wid> <name>` (single-token
     // name). Two-word names in this form go through the
@@ -1431,7 +1608,8 @@ fn parse_at_toggle_req(text: &str) -> Result<Frame, FrameError> {
     if rest.len() == 1 {
         return Ok(Frame::AtToggleReq {
             wid,
-            name: rest[0].to_string(),
+            name: rest[0].clone(),
+            index,
         });
     }
     // Legacy 3-tuple form: `AT_TOGGLE_REQ <wid> <role> <name>`. Drop
@@ -1439,7 +1617,8 @@ fn parse_at_toggle_req(text: &str) -> Result<Frame, FrameError> {
     if rest.len() == 2 {
         return Ok(Frame::AtToggleReq {
             wid,
-            name: rest[1].to_string(),
+            name: rest[1].clone(),
+            index,
         });
     }
     Err(FrameError::Malformed)
@@ -1472,24 +1651,30 @@ fn parse_at_tree_by_app_id(text: &str) -> Result<Frame, FrameError> {
 /// `tests/inject.rs` can call it.
 pub fn encode_at_toggle_req(req: &Frame) -> Vec<u8> {
     let _ = std::hint::black_box(AT_TOGGLE_REQ_PARSE_V40_29);
+    let _ = std::hint::black_box(AT_TOGGLE_OCCURRENCE_INDEX_V40_50);
     match req {
-        Frame::AtToggleReq { wid, name } => {
+        Frame::AtToggleReq { wid, name, index } => {
             // Wire shapes (mirror cua-driver v40.28
             // `encode_at_toggle_req_line`):
             // - Single-token name: `AT_TOGGLE_REQ <wid> <name>\n`
             // - Two-word name:      `AT_TOGGLE_REQ <wid> toggle button <w0> <w1>\n`
             //   so the live parser preserves `Mute audio` instead of
             //   collapsing it to `Mute`.
+            // v40.50: `Some(n)` appends the trailing occurrence index,
+            // which round-trips through the same peeling rule the
+            // `AT_ELEMENT_REQ` EI arm uses.
+            let index_tok = index.map(|n| n.to_string());
             let toks: Vec<&str> = name.split_whitespace().collect();
+            let suffix = index_tok.as_deref().map(|n| format!(" {n}")).unwrap_or_default();
             if toks.len() == 2 {
                 format!(
-                    "{OPC_AT_TOGGLE_REQ} {wid} toggle button {} {}\n",
+                    "{OPC_AT_TOGGLE_REQ} {wid} toggle button {} {}{suffix}\n",
                     toks[0], toks[1]
                 )
                 .into_bytes()
             } else {
                 let name_tok = toks.first().copied().unwrap_or("");
-                format!("{OPC_AT_TOGGLE_REQ} {wid} {name_tok}\n").into_bytes()
+                format!("{OPC_AT_TOGGLE_REQ} {wid} {name_tok}{suffix}\n").into_bytes()
             }
         }
         _ => unreachable!("encode_at_toggle_req only accepts Frame::AtToggleReq"),
@@ -1503,7 +1688,23 @@ pub fn encode_at_toggle_req(req: &Frame) -> Vec<u8> {
 pub fn encode_at_toggle_reply(state: ToggleState) -> Vec<u8> {
     let _ = std::hint::black_box(AT_TOGGLE_REQ_DISPATCH_V40_29);
     let _ = std::hint::black_box(AT_TOGGLE_REQ_PARSE_V40_29);
-    format!("{REP_AT_TOGGLE_REPLY} {}\n", state.as_wire()).into_bytes()
+    let _ = std::hint::black_box(AT_TOGGLE_OCCURRENCE_INDEX_V40_50);
+    Reply::AtToggleReply {
+        state,
+        resolved: None,
+    }
+    .to_bytes()
+}
+
+/// v40.50: test-only encoder for a reply that DOES carry the resolved
+/// identity, so a test can assert the geometry the server reports.
+pub fn encode_at_toggle_reply_resolved(reply: &ToggleReply) -> Vec<u8> {
+    let _ = std::hint::black_box(AT_TOGGLE_OCCURRENCE_INDEX_V40_50);
+    Reply::AtToggleReply {
+        state: reply.state,
+        resolved: reply.resolved.clone(),
+    }
+    .to_bytes()
 }
 
 fn parse_at_tree_req(text: &str) -> Result<Frame, FrameError> {

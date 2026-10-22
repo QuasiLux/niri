@@ -5429,6 +5429,7 @@ fn atspi_action_toggle_roundtrip_v40_29() {
     let single = niri::inject::Frame::AtToggleReq {
         wid: 7,
         name: "Allow".to_string(),
+        index: None,
     };
     let single_bytes = encode_at_toggle_req(&single);
     let single_line = std::str::from_utf8(&single_bytes).expect("ascii wire");
@@ -5439,6 +5440,7 @@ fn atspi_action_toggle_roundtrip_v40_29() {
     let two_word = niri::inject::Frame::AtToggleReq {
         wid: 42,
         name: "Mute audio".to_string(),
+        index: None,
     };
     let req_bytes = encode_at_toggle_req(&two_word);
     let req_line = std::str::from_utf8(&req_bytes).expect("ascii wire");
@@ -5452,9 +5454,10 @@ fn atspi_action_toggle_roundtrip_v40_29() {
         niri::inject::protocol::parse_frame(&single_bytes).expect("parse");
     assert!(rest.is_empty(), "no trailing bytes");
     match parsed {
-        niri::inject::Frame::AtToggleReq { wid, name } => {
+        niri::inject::Frame::AtToggleReq { wid, name, index } => {
             assert_eq!(wid, 7);
             assert_eq!(name, "Allow");
+            assert_eq!(index, None);
         }
         other => panic!("expected Frame::AtToggleReq, got {other:?}"),
     }
@@ -5464,9 +5467,10 @@ fn atspi_action_toggle_roundtrip_v40_29() {
         niri::inject::protocol::parse_frame(&req_bytes).expect("parse");
     assert!(rest.is_empty(), "no trailing bytes");
     match parsed {
-        niri::inject::Frame::AtToggleReq { wid, name } => {
+        niri::inject::Frame::AtToggleReq { wid, name, index } => {
             assert_eq!(wid, 42);
             assert_eq!(name, "Mute audio");
+            assert_eq!(index, None);
         }
         other => panic!("expected Frame::AtToggleReq, got {other:?}"),
     }
