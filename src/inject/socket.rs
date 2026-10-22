@@ -1147,7 +1147,7 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
             }
             (
                 ClientPhase::Dispatch { focus, wid },
-                Frame::AtToggleReq { wid: req_wid, name },
+                Frame::AtToggleReq { wid: req_wid, name, index },
             ) => {
                 // v40.28 — `AT_TOGGLE_REQ <wid> <name>` server handler.
                 // Synthesizes a real `BTN_LEFT` press+release at the
@@ -1159,16 +1159,22 @@ pub async fn handle_inject_client_with_close<H: InjectHarness>(
                 let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
                 let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
                 let _ = std::hint::black_box(crate::inject::protocol::REP_AT_TOGGLE_REPLY_IDENT);
-                let reply = harness.at_toggle_req(req_wid, &name);
+                let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_OCCURRENCE_INDEX_V40_50);
+                let reply = harness.at_toggle_req(req_wid, &name, index);
                 tracing::debug!(
                     window_id = req_wid,
                     name = %name,
+                    index = ?index,
+                    resolved = ?reply.resolved,
                     ?reply,
                     "atspi.toggle_req"
                 );
                 write_reply(
                     &mut write,
-                    &Reply::AtToggleReply { state: reply.state },
+                    &Reply::AtToggleReply {
+                        state: reply.state,
+                        resolved: reply.resolved,
+                    },
                 )
                 .await?;
                 ClientPhase::Dispatch { focus, wid }

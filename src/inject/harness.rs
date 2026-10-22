@@ -571,27 +571,55 @@ impl InjectHarness for NiriInjectHarness<'_> {
         &mut self,
         wid: u64,
         name: &str,
+        index: Option<u32>,
     ) -> crate::inject::protocol::ToggleReply {
-        use crate::inject::atspi_ladder::element_lookup_via_tree_dump;
+        use crate::inject::atspi_ladder::element_lookup_via_tree_dump_counted;
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);
         let _ = std::hint::black_box(AT_TOGGLE_REQ_REAL_SURFACE_V40_33_HARNESS);
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_DISPATCH_V40_29);
         let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
         let _ = std::hint::black_box(crate::inject::protocol::REP_AT_TOGGLE_REPLY_IDENT);
+        let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_OCCURRENCE_INDEX_V40_50);
         if wid == 0 {
             return crate::inject::protocol::ToggleReply::no_action();
         }
         if name.trim().is_empty() {
             return crate::inject::protocol::ToggleReply::no_action();
         }
+        // v40.50: absent index = today's behaviour exactly (first match).
+        // Present index selects the nth candidate under the SAME v40.46
+        // exact-first predicate, in the SAME pre-order.
+        let nth = index.unwrap_or(0);
         // Scroll before the AT-SPI bounds are consumed. A window-relative
         // center added to an off-viewport origin is `click_contents_under_none`.
         // The lookup below is the re-read: do not click a rect captured
         // against the stale origin.
         let _ = self.scroll_wid_column_into_view(wid);
-        let bounds = element_lookup_via_tree_dump(wid, "toggle button", name, 0).or_else(|| {
-            crate::inject::atspi_ladder::scan_session_dbus_for_element(wid, "toggle button", name, 0)
+        let bounds = match element_lookup_via_tree_dump_counted(
+            wid,
+            "toggle button",
+            name,
+            nth,
+        ) {
+            Ok(Some(b)) => Some(b),
+            // v40.50: the predicate accepted `candidates` elements and the
+            // requested one is not among them. NEVER substitute the first
+            // match — a silent fall-back is the defect this card fixes.
+            Err(candidates) => {
+                tracing::warn!(
+                    window_id = wid,
+                    name,
+                    requested = nth,
+                    candidates,
+                    "atspi.toggle_req.index_out_of_range (AT_TOGGLE_OCCURRENCE_INDEX_V40_50)"
+                );
+                return crate::inject::protocol::ToggleReply::index_out_of_range(nth, candidates);
+            }
+            Ok(None) => None,
+        }
+        .or_else(|| {
+            crate::inject::atspi_ladder::scan_session_dbus_for_element(wid, "toggle button", name, nth)
         });
         let Some(b) = bounds else {
             return crate::inject::protocol::ToggleReply::no_action();
@@ -609,10 +637,15 @@ impl InjectHarness for NiriInjectHarness<'_> {
         // unobserved and the wire reply is `no_action` on purpose (honesty
         // over convenience). Do not return `unchecked()` as a stand-in for
         // success.
+        // v40.50: every reply past this point carries WHERE it landed, so a
+        // caller can tell a correct delivery from a mis-delivered one.
+        let resolved = crate::inject::protocol::ToggleReply::resolved_from_bounds(&b, name);
         match crate::inject::atspi_ladder::observe_toggle_checked(&b.dbus_dest, &b.dbus_path) {
-            Some(true) => crate::inject::protocol::ToggleReply::checked(),
-            Some(false) => crate::inject::protocol::ToggleReply::unchecked(),
-            None => crate::inject::protocol::ToggleReply::no_action(),
+            Some(true) => crate::inject::protocol::ToggleReply::checked().with_resolved(resolved),
+            Some(false) => {
+                crate::inject::protocol::ToggleReply::unchecked().with_resolved(resolved)
+            }
+            None => crate::inject::protocol::ToggleReply::no_action().with_resolved(resolved),
         }
     }
 }

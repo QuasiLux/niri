@@ -412,7 +412,7 @@ fn at_toggle_req_click_reaches_client_surface() {
     state.pointer_click_tx = Some(tx);
     let mut harness = DispatchHarness::new(&mut state);
 
-    let _reply = InjectHarness::at_toggle_req(&mut harness, KNOWN_WINDOW, TOGGLE_NAME);
+    let _reply = InjectHarness::at_toggle_req(&mut harness, KNOWN_WINDOW, TOGGLE_NAME, None);
 
     bind_worker_pointer_click_tx(None);
     set_scan_override(None);
