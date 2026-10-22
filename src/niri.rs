@@ -913,9 +913,14 @@ impl State {
     ) {
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
-        let crate::inject::dispatch::AtToggleDispatchReq { wid, name, reply } = req;
+        let crate::inject::dispatch::AtToggleDispatchReq {
+            wid,
+            name,
+            index,
+            reply,
+        } = req;
         let mut harness = crate::inject::NiriInjectHarness::new(self);
-        let toggle = harness.at_toggle_req(wid, &name);
+        let toggle = harness.at_toggle_req(wid, &name, index);
         let _ = reply.send(toggle);
     }
 

@@ -334,6 +334,22 @@ fn ax_role_matches(query: &str, role_name: &str) -> bool {
 pub(crate) static AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46_IDENT: &[u8] =
     b"\x01AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46\x01";
 
+/// v40.50: the ACTION opcode (`AT_TOGGLE_REQ`) now carries the same
+/// optional occurrence index the LOOKUP opcode (`AT_ELEMENT_REQ`) has had
+/// since v40.41, and selects under the SAME predicate, in the SAME
+/// enumeration order.
+///
+/// v40.46 built the index on the lookup opcode and left the action opcode
+/// name-only, which is why `t_973ff960` measured a per-stream pavucontrol
+/// row immovable by the wire (3/3 flat) while a coordinate click on the
+/// SAME widget in the SAME session moved 3/3. The client resolved index 2
+/// and sent only the name; the server re-matched and took index 0.
+///
+/// Acceptance: `strings | grep AT_TOGGLE_OCCURRENCE_INDEX_V40_50` >= 1.
+#[used]
+pub(crate) static AT_TOGGLE_OCCURRENCE_INDEX_V40_50_IDENT: &[u8] =
+    b"\x01AT_TOGGLE_OCCURRENCE_INDEX_V40_50\x01";
+
 /// Operator / arithmetic characters that carry no word content. A query made
 /// only of these is a key label (`+`, `-`, `<-` is not a query, `M+` is a name),
 /// never a partial word.
@@ -422,40 +438,73 @@ pub fn element_lookup_via_tree_dump(
     name_query: &str,
     index: u32,
 ) -> Option<ElementBounds> {
+    // Backward-compatible wrapper: `Err(candidates)` (index out of range)
+    // collapses to `None` here, exactly as v40.46 behaved. Only the ACTION
+    // path (`at_toggle_req`) uses the counted form, so no lookup opcode
+    // changes wire behaviour.
+    element_lookup_via_tree_dump_counted(window_id, role, name_query, index).ok().flatten()
+}
+
+/// v40.50: same lookup, but reports the number of candidates the predicate
+/// ACCEPTED — `Ok(None)` for "index out of range" instead of silently
+/// returning nothing that reads as "no such element".
+///
+/// `Err(candidates)` means: the predicate matched `candidates` elements and
+/// the requested index was not among them. Callers on the ACTION path must
+/// turn this into the distinct out-of-range outcome rather than falling
+/// back to the first match. `Ok(None)` means the predicate matched nothing
+/// at all, which is the pre-existing no-match behaviour.
+pub fn element_lookup_via_tree_dump_counted(
+    window_id: u64,
+    role: &str,
+    name_query: &str,
+    index: u32,
+) -> Result<Option<ElementBounds>, u32> {
     let _ = std::hint::black_box(ELEMENT_AX_LOOKUP_V40_14_6);
     let _ = std::hint::black_box(ACTION_NAME_FALLBACK_CHAIN_V40_14_15_IDENT);
     let _ = std::hint::black_box(INNER_SWITCH_RESOLUTION_V40_14_15_IDENT);
     let _ = std::hint::black_box(crate::inject::protocol::AT_ELEMENT_REQ_INDEX_NTH_SIBLING_V40_41);
     let _ = std::hint::black_box(AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46_IDENT);
+    let _ = std::hint::black_box(AT_TOGGLE_OCCURRENCE_INDEX_V40_50_IDENT);
     let roots = acquire_tree_roots(None);
     let mut hits: u32 = 0;
     let found = lookup_nested_tree(&roots, window_id, role, name_query, index, &mut hits);
     // v40.46: the candidate set that was accepted is what turns a G7 "wrong
     // element" into a diagnosable line on the wire. Cheap (capped) and only
     // runs when the lookup misses or is ambiguous.
-    if found.is_none() {
-        let mut candidates = Vec::new();
-        ax_candidate_names(&roots, role, name_query, &mut candidates);
-        tracing::debug!(
-            window_id,
-            role,
-            name_query,
-            index,
-            candidates = ?candidates,
-            "atspi.element_lookup.no_match (AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46)"
-        );
-    } else {
-        tracing::debug!(
-            window_id,
-            role,
-            name_query,
-            index,
-            matched = %found.as_ref().map(|b| b.path.clone()).unwrap_or_default(),
-            matched_nth = hits,
-            "atspi.element_lookup.hit (AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46)"
-        );
+    match found {
+        Some(b) => {
+            tracing::debug!(
+                window_id,
+                role,
+                name_query,
+                index,
+                matched = %b.path,
+                matched_nth = hits,
+                "atspi.element_lookup.hit (AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46)"
+            );
+            Ok(Some(b))
+        }
+        None => {
+            let mut candidates = Vec::new();
+            ax_candidate_names(&roots, role, name_query, &mut candidates);
+            tracing::debug!(
+                window_id,
+                role,
+                name_query,
+                index,
+                candidates = ?candidates,
+                "atspi.element_lookup.no_match (AX_NAME_EXACT_MATCH_PRECEDES_SUBSTRING_V40_46)"
+            );
+            // `hits` is the TRUE count of accepted candidates — the capped,
+            // human-readable list above is only a log line.
+            if hits > 0 {
+                Err(hits)
+            } else {
+                Ok(None)
+            }
+        }
     }
-    found
 }
 
 fn lookup_nested_tree(

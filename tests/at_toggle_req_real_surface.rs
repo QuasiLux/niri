@@ -362,7 +362,7 @@ impl InjectHarness for RealSurfaceHarness<'_> {
     /// requested window's `WlSurface`; `DispatchFocus` cannot be passed here.
     /// After a successful click the reply is `observe_toggle_checked` on the
     /// bounds dest/path, not `unchecked()` merely because `clicked` is true.
-    fn at_toggle_req(&mut self, wid: u64, name: &str) -> ToggleReply {
+    fn at_toggle_req(&mut self, wid: u64, name: &str, index: Option<u32>) -> ToggleReply {
         if wid == 0 || name.trim().is_empty() {
             return ToggleReply::no_action();
         }
@@ -370,10 +370,15 @@ impl InjectHarness for RealSurfaceHarness<'_> {
             wid,
             "toggle button",
             name,
-            0,
+            index.unwrap_or(0),
         )
         .or_else(|| {
-            niri::inject::atspi_ladder::scan_session_dbus_for_element(wid, "toggle button", name, 0)
+            niri::inject::atspi_ladder::scan_session_dbus_for_element(
+                wid,
+                "toggle button",
+                name,
+                index.unwrap_or(0),
+            )
         });
         let Some(b) = bounds else {
             return ToggleReply::no_action();
@@ -454,7 +459,7 @@ fn toggled_focus_is_the_real_window_surface_not_a_stub() {
         let mut state = RealSurfaceState::new();
         let expected = state.windows.get(&KNOWN_WID).unwrap().clone();
         let mut harness = RealSurfaceHarness { state: &mut state };
-        let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
+        let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME, None);
         // Empty dbus dest: the click ran, the checked-bit is unobserved.
         assert_eq!(reply, ToggleReply::no_action());
         let got = harness
@@ -490,7 +495,7 @@ fn at_toggle_dispatches_at_element_center() {
     with_scan_override(|| {
         let mut state = RealSurfaceState::new();
         let mut harness = RealSurfaceHarness { state: &mut state };
-        let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
+        let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME, None);
         // Empty dbus dest: the click ran, the checked-bit is unobserved.
         assert_eq!(reply, ToggleReply::no_action());
         let rec = harness.state.record.lock().unwrap();
@@ -509,7 +514,7 @@ fn unknown_wid_returns_no_action_and_dispatches_nothing() {
     with_scan_override(|| {
         let mut state = RealSurfaceState::new();
         let mut harness = RealSurfaceHarness { state: &mut state };
-        let reply = harness.at_toggle_req(UNKNOWN_WID, TOGGLE_NAME);
+        let reply = harness.at_toggle_req(UNKNOWN_WID, TOGGLE_NAME, None);
         assert_eq!(reply, ToggleReply::no_action());
         let rec = harness.state.record.lock().unwrap();
         assert_eq!(rec.button_count, 0, "unknown wid must not button()");
@@ -533,7 +538,7 @@ fn dispatch_focus_stub_does_not_satisfy_the_gate() {
             Arc::new(Mutex::new(None)),
         );
         let mut harness = DispatchHarness::new(&mut dispatch);
-        let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
+        let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME, None);
         assert_eq!(
             reply,
             ToggleReply::no_action(),
@@ -647,7 +652,7 @@ fn reply_is_the_observation_not_the_click() {
         with_observe_override(observe_checked, || {
             let mut state = RealSurfaceState::new();
             let mut harness = RealSurfaceHarness { state: &mut state };
-            let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
+            let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME, None);
             assert_eq!(reply, ToggleReply::checked());
             assert!(
                 real_surface_buttons() > 0,
@@ -658,7 +663,7 @@ fn reply_is_the_observation_not_the_click() {
         with_observe_override(observe_unchecked, || {
             let mut state = RealSurfaceState::new();
             let mut harness = RealSurfaceHarness { state: &mut state };
-            let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
+            let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME, None);
             assert_eq!(reply, ToggleReply::unchecked());
             assert!(
                 real_surface_buttons() > 0,
@@ -674,7 +679,7 @@ fn reply_is_the_observation_not_the_click() {
         );
         let mut state = RealSurfaceState::new();
         let mut harness = RealSurfaceHarness { state: &mut state };
-        let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME);
+        let reply = harness.at_toggle_req(KNOWN_WID, TOGGLE_NAME, None);
         assert_eq!(reply, ToggleReply::no_action());
         assert!(
             real_surface_buttons() > 0,

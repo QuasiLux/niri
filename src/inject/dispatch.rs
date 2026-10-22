@@ -97,6 +97,10 @@ pub struct FocusDispatchReq {
 pub struct AtToggleDispatchReq {
     pub wid: u64,
     pub name: String,
+    /// v40.50: optional trailing occurrence selector, carried worker→main
+    /// loop unchanged so the main loop selects the SAME row the client
+    /// resolved. `None` = first match (v40.46 behaviour).
+    pub index: Option<u32>,
     pub reply: std::sync::mpsc::Sender<crate::inject::protocol::ToggleReply>,
 }
 
@@ -308,14 +312,17 @@ pub fn post_at_toggle_dispatch(
     tx: &calloop::channel::Sender<AtToggleDispatchReq>,
     wid: u64,
     name: &str,
+    index: Option<u32>,
 ) -> crate::inject::protocol::ToggleReply {
     let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_REAL_SURFACE_V40_33);
     let _ = std::hint::black_box(AT_TOGGLE_REAL_SURFACE_V40_33_IDENT);
     let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
+    let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_OCCURRENCE_INDEX_V40_50);
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     let req = AtToggleDispatchReq {
         wid,
         name: name.to_string(),
+        index,
         reply: reply_tx,
     };
     if tx.send(req).is_err() {
@@ -1389,8 +1396,13 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
     /// widget center through `try_handoff_pointer_click`: that handoff is
     /// the `Frame::Click` shape (global logical). Never click
     /// `DispatchFocus` — that pointer target's `button` is empty.
-    fn at_toggle_req(&mut self, wid: u64, name: &str) -> crate::inject::protocol::ToggleReply {
-        use crate::inject::atspi_ladder::element_lookup_via_tree_dump;
+    fn at_toggle_req(
+        &mut self,
+        wid: u64,
+        name: &str,
+        index: Option<u32>,
+    ) -> crate::inject::protocol::ToggleReply {
+        use crate::inject::atspi_ladder::element_lookup_via_tree_dump_counted;
         let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_REQ_V40_28);
         let _ = std::hint::black_box(crate::inject::protocol::OPC_AT_TOGGLE_REQ_IDENT);
         let _ = std::hint::black_box(crate::inject::protocol::REP_AT_TOGGLE_REPLY_IDENT);
@@ -1399,30 +1411,38 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
         let _ = std::hint::black_box(POINTER_CLICK_HANDOFF_V40_39B);
         let _ = std::hint::black_box(AT_TOGGLE_REQ_VIA_POINTER_HANDOFF_V40_40);
         let _ = std::hint::black_box(AT_TOGGLE_REQ_REACHES_REAL_CLIENT_SURFACE_V40_43);
+        let _ = std::hint::black_box(crate::inject::protocol::AT_TOGGLE_OCCURRENCE_INDEX_V40_50);
         if wid == 0 {
             return crate::inject::protocol::ToggleReply::no_action();
         }
         if name.trim().is_empty() {
             return crate::inject::protocol::ToggleReply::no_action();
         }
-        // Production always has `at_toggle_tx`. Post `{wid, name}` so the
+        // Production always has `at_toggle_tx`. Post `{wid, name, index}` so the
         // main loop re-looks-up and translates window-relative → global.
         // The v40.40 `try_handoff_pointer_click` detour is the wrong shape
         // (CLICK global coords); keep it only as the in-process fallback
         // for tests that bind the CLICK sender and not `at_toggle_tx`.
         if let Some(tx) = self.state.at_toggle_tx.as_ref() {
             let _ = std::hint::black_box(AT_TOGGLE_REQ_REACHES_REAL_CLIENT_SURFACE_V40_43);
-            return post_at_toggle_dispatch(tx, wid, name);
+            return post_at_toggle_dispatch(tx, wid, name, index);
         }
         // In-process fallback (no main-loop channel). The bounds lookup
         // here is the v40.40 path: still wrong-shape for production, kept
         // for tests that bind `pointer_click_tx` only.
-        let bounds = element_lookup_via_tree_dump(wid, "toggle button", name, 0)
-            .or_else(|| {
-                crate::inject::atspi_ladder::scan_session_dbus_for_element(
-                    wid, "toggle button", name, 0,
-                )
-            });
+        let nth = index.unwrap_or(0);
+        let bounds = match element_lookup_via_tree_dump_counted(wid, "toggle button", name, nth) {
+            Ok(Some(b)) => Some(b),
+            Err(candidates) => {
+                return crate::inject::protocol::ToggleReply::index_out_of_range(nth, candidates);
+            }
+            Ok(None) => None,
+        }
+        .or_else(|| {
+            crate::inject::atspi_ladder::scan_session_dbus_for_element(
+                wid, "toggle button", name, nth,
+            )
+        });
         let Some(b) = bounds else {
             return crate::inject::protocol::ToggleReply::no_action();
         };
@@ -1432,13 +1452,18 @@ impl<'a> InjectHarness for DispatchHarness<'a> {
             if !clicked {
                 return crate::inject::protocol::ToggleReply::no_action();
             }
+            let resolved =
+                crate::inject::protocol::ToggleReply::resolved_from_bounds(&b, name);
             match crate::inject::atspi_ladder::observe_toggle_checked(
                 &b.dbus_dest,
                 &b.dbus_path,
             ) {
-                Some(true) => return crate::inject::protocol::ToggleReply::checked(),
-                Some(false) => return crate::inject::protocol::ToggleReply::unchecked(),
-                None => return crate::inject::protocol::ToggleReply::no_action(),
+                Some(true) => return crate::inject::protocol::ToggleReply::checked().with_resolved(resolved),
+                Some(false) => {
+                    return crate::inject::protocol::ToggleReply::unchecked()
+                        .with_resolved(resolved);
+                }
+                None => return crate::inject::protocol::ToggleReply::no_action().with_resolved(resolved),
             }
         }
         // Test harness without any handoff: do not click DispatchFocus.
