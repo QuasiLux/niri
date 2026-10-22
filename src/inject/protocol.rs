@@ -198,6 +198,15 @@ pub static AT_TOGGLE_REQ_DISPATCH_V40_29: &[u8] = b"\x01AT_TOGGLE_REQ_DISPATCH_V
 pub static AT_TOGGLE_OCCURRENCE_INDEX_V40_50: &[u8] =
     b"\x01AT_TOGGLE_OCCURRENCE_INDEX_V40_50\x01";
 
+/// v40.51 gate ident. Acceptance: `strings | grep AT_ACTION_OCCURRENCE_INDEX_V40_51` >= 1.
+/// `#[used]` alone is NOT enough under thin-LTO — lld gc's it. There MUST be a
+/// `std::hint::black_box` read at a LIVE call site; put one in
+/// `parse_at_action_req` AND one in the `Reply::AtActionReply` encoder arm,
+/// plus a `tracing::` line naming it at the ACTION dispatch in socket.rs.
+#[used]
+#[allow(dead_code)]
+pub static AT_ACTION_OCCURRENCE_INDEX_V40_51: &[u8] = b"\x01AT_ACTION_OCCURRENCE_INDEX_V40_51\x01";
+
 /// Render an f64 rect field as a compact integer when it is integral
 /// (AT-SPI extents are integer pixels), so the wire reads
 /// `x=1929 y=305 w=36 h=34` rather than `x=1929.0`.
@@ -505,13 +514,39 @@ impl ToggleReply {
         bounds: &crate::inject::atspi_ladder::ElementBounds,
         name: &str,
     ) -> ResolvedTarget {
-        ResolvedTarget {
+        ResolvedTarget::from_bounds(bounds, name)
+    }
+}
+
+impl ResolvedTarget {
+    /// One construction site for both ACTION and TOGGLE identity replies.
+    pub fn from_bounds(
+        bounds: &crate::inject::atspi_ladder::ElementBounds,
+        name: &str,
+    ) -> Self {
+        Self {
             name: name.to_string(),
             x: bounds.rect.x,
             y: bounds.rect.y,
             w: bounds.rect.w,
             h: bounds.rect.h,
             path: bounds.path.clone(),
+        }
+    }
+}
+
+/// v40.51 distinct out-of-range outcome for AT_ACTION_REQ
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionOccurrence {
+    IndexOutOfRange { requested: u32, candidates: u32 },
+}
+impl ActionOccurrence {
+    pub fn index_out_of_range(requested: u32, candidates: u32) -> Self {
+        Self::IndexOutOfRange { requested, candidates }
+    }
+    pub fn wire(&self) -> String {
+        match self {
+            Self::IndexOutOfRange { requested, candidates } => format!("INDEX_OUT_OF_RANGE index={requested} candidates={candidates}"),
         }
     }
 }
@@ -559,12 +594,20 @@ pub enum Frame {
         /// v40.41: nth-sibling selector (LC/EI only).
         index: Option<u32>,
     },
-    /// `AT_ACTION_REQ <wid> <role> <name> [<action_name>] <index>` — v40.15.3a.
+    /// AT_ACTION_REQ wid role name action_name index nth
+    /// v40.15.3a / v40.51.
     AtActionReq {
         wid: u64,
         role: String,
         name: String,
+        /// AT-SPI action index. Resolved client-side by the producer.
+        /// This is NOT the occurrence selector; that lives in nth.
         index: i32,
+        /// v40.51 occurrence selector. 0-based under the v40.46 exact-first
+        /// predicate. None = omitted on the wire = first match. Never a
+        /// sentinel. Distinct from index (the AT-SPI action index), which
+        /// was already occupied and must keep that meaning.
+        nth: Option<u32>,
     },
     /// v40.28: `AT_TOGGLE_REQ <wid> <name>` — request that the server
     /// synthesize a real `BTN_LEFT` press+release at the matched
@@ -701,7 +744,15 @@ pub enum Reply {
     GrantAckOk,
     GrantAckDenied,
     AtElementReply { payload: String },
-    AtActionReply { ok: bool, error: Option<String>, force_redraw: bool },
+    AtActionReply {
+        ok: bool,
+        error: Option<String>,
+        force_redraw: bool,
+        /// v40.51: identity of the element actually acted on. None on
+        /// every error (nothing was acted on) and on the legacy success
+        /// wire (AT_ACTION_REPLY OK byte-for-byte).
+        resolved: Option<ResolvedTarget>,
+    },
     /// v40.28: `AT_TOGGLE_REPLY checked|unchecked|no_action`. Wire is
     /// `AT_TOGGLE_REPLY <state>\n`. The cua-driver v40.28
     /// `ParsedReply::AtToggleReply` exits 0 on `Checked`/`Unchecked`,
@@ -746,6 +797,28 @@ pub enum Reply {
 }
 
 impl Reply {
+    /// v40.51: successful AT_ACTION_REPLY. resolved None keeps the
+    /// v40.15.3 wire byte-for-byte (OK / OK FORCE_REDRAW).
+    pub fn at_action_ok(force_redraw: bool, resolved: Option<ResolvedTarget>) -> Self {
+        Reply::AtActionReply {
+            ok: true,
+            error: None,
+            force_redraw,
+            resolved,
+        }
+    }
+
+    /// v40.51: occurrence selector out of range. Never a delivered action
+    /// (ok false, resolved None).
+    pub fn at_action_occurrence_out_of_range(requested: u32, candidates: u32) -> Self {
+        Reply::AtActionReply {
+            ok: false,
+            error: Some(ActionOccurrence::index_out_of_range(requested, candidates).wire()),
+            force_redraw: false,
+            resolved: None,
+        }
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let s = match self {
             Reply::HelloOk => format!("{REP_HELLO_OK}\n"),
@@ -769,13 +842,19 @@ impl Reply {
                 ok,
                 error,
                 force_redraw,
+                resolved,
             } => {
                 // Trap 45: live encoder call site (not token_file_path-only).
                 let _ = std::hint::black_box(AT_ACTION_REQ_OPCODE_V40_15_3);
                 let _ = std::hint::black_box(FORCE_ICON_REDRAW_V40_15_5);
+                let _ = std::hint::black_box(AT_ACTION_OCCURRENCE_INDEX_V40_51);
+                let ident = match resolved {
+                    Some(r) => format!(" x={} y={} w={} h={} path={}", fmt_coord(r.x), fmt_coord(r.y), fmt_coord(r.w), fmt_coord(r.h), r.path),
+                    None => String::new(),
+                };
                 match (ok, error, force_redraw) {
-                    (true, _, true) => format!("{REP_AT_ACTION_REPLY} OK FORCE_REDRAW\n"),
-                    (true, _, false) => format!("{REP_AT_ACTION_REPLY} OK\n"),
+                    (true, _, true) => format!("{REP_AT_ACTION_REPLY} OK FORCE_REDRAW{ident}\n"),
+                    (true, _, false) => format!("{REP_AT_ACTION_REPLY} OK{ident}\n"),
                     (false, Some(code), _) => format!("{REP_AT_ACTION_REPLY} ERR {code}\n"),
                     (false, None, _) => format!("{REP_AT_ACTION_REPLY} ERR UNKNOWN\n"),
                 }
@@ -1495,7 +1574,12 @@ fn split_off_optional_index(remainder: &str) -> Result<(&str, Option<u32>), Fram
 /// Wire shapes:
 /// - `AT_ACTION_REQ <wid> <role> <name> <index>`
 /// - `AT_ACTION_REQ <wid> <role> <name> <action_name> <index>`
+/// - v40.51: optional trailing occurrence selector, omitted entirely when
+///   absent: `AT_ACTION_REQ <wid> <role> <name> <index> [<nth>]` and the
+///   two-word-toggle form
+///   `AT_ACTION_REQ <wid> toggle button <w0> <w1> <action_tok> <index> [<nth>]`.
 fn parse_at_action_req(text: &str) -> Result<Frame, FrameError> {
+    let _ = std::hint::black_box(AT_ACTION_OCCURRENCE_INDEX_V40_51);
     let mut parts = text.split_whitespace();
     let _opc = parts.next().ok_or(FrameError::Malformed)?;
     let wid: u64 = parts
@@ -1523,18 +1607,55 @@ fn parse_at_action_req(text: &str) -> Result<Frame, FrameError> {
     if role == "toggle button" && rest.len() >= 3 {
         name = format!("{name} {}", rest.remove(0));
     }
-    let index_tok = rest.last().ok_or(FrameError::Malformed)?;
-    if rest.len() > 2 {
-        return Err(FrameError::Malformed);
-    }
-    let index: i32 = index_tok.parse().map_err(|_| FrameError::Malformed)?;
+    // v40.51: occurrence peel. The ACTION trailing token is ALREADY the AT-SPI
+    // action index, so this gate must NOT be a bare token count (that is the
+    // v40.50 round-1 defect class). The producer encode_at_action_req_line
+    // (qlux-cua-driver fb3b43d7) emits [<action_index>] for a short name,
+    // [<action_tok> <action_index>] for a two-word toggle name, and with the
+    // v40.51 selector [<action_index> <nth>] / [<action_tok> <action_index> <nth>]
+    // -- where action_tok is only ever click or toggle, never numeric. So the
+    // occurrence form is present iff the last TWO tokens both parse as numbers.
+    // THIS IS THE GATE LINE G2 REVERTS.
+    let occurrence_form = rest.len() >= 2
+        && rest[rest.len() - 2].parse::<i32>().is_ok()
+        && rest[rest.len() - 1].parse::<u32>().is_ok();
+    let (index, nth) = if occurrence_form {
+        let nth = rest
+            .pop()
+            .unwrap()
+            .parse::<u32>()
+            .map_err(|_| FrameError::Malformed)?;
+        let index = rest
+            .pop()
+            .unwrap()
+            .parse::<i32>()
+            .map_err(|_| FrameError::Malformed)?;
+        // at most the single dropped action token may remain
+        if rest.len() > 1 {
+            return Err(FrameError::Malformed);
+        }
+        (index, Some(nth))
+    } else {
+        // legacy: the trailing token is the AT-SPI action index
+        if rest.len() > 2 {
+            return Err(FrameError::Malformed);
+        }
+        let index = rest
+            .pop()
+            .ok_or(FrameError::Malformed)?
+            .parse::<i32>()
+            .map_err(|_| FrameError::Malformed)?;
+        (index, None)
+    };
     Ok(Frame::AtActionReq {
         wid,
         role,
         name,
         index,
+        nth,
     })
 }
+
 
 /// v40.28: parse `AT_TOGGLE_REQ` for the niri inject server.
 /// Mirrors cua-driver v40.28 `parse_at_toggle_req` at commit `7c9fc04`.
@@ -1717,6 +1838,47 @@ pub fn encode_at_toggle_reply_resolved(reply: &ToggleReply) -> Vec<u8> {
         resolved: reply.resolved.clone(),
     }
     .to_bytes()
+}
+
+/// v40.51 test-only encoder for Frame::AtActionReq. Mirrors
+/// qlux-cua-driver fb3b43d7 encode_at_action_req_line, plus the optional
+/// trailing occurrence this card defines. Public so the occurrence-index
+/// tests can round-trip the real parser.
+pub fn encode_at_action_req(req: &Frame) -> Vec<u8> {
+    let _ = std::hint::black_box(AT_ACTION_OCCURRENCE_INDEX_V40_51);
+    match req {
+        Frame::AtActionReq {
+            wid,
+            role,
+            name,
+            index,
+            nth,
+        } => {
+            let nth_suffix = nth.map(|n| format!(" {}", n)).unwrap_or_default();
+            let name_words: Vec<&str> = name.split_whitespace().collect();
+            let toggle_role = role.eq_ignore_ascii_case("toggle")
+                || role.eq_ignore_ascii_case("toggle button");
+            if name_words.len() == 2 && toggle_role {
+                let action_tok = if role.eq_ignore_ascii_case("toggle button") {
+                    "click"
+                } else {
+                    "toggle"
+                };
+                format!("{OPC_AT_ACTION_REQ} {wid} toggle button {} {} {action_tok} {index}{nth_suffix}\n", name_words[0], name_words[1])
+                .into_bytes()
+            } else {
+                let role_tok = role.split_whitespace().next().unwrap_or("");
+                let name_tok = if name_words.len() > 1 {
+                    name_words.join("_")
+                } else {
+                    name_words.first().copied().unwrap_or("").to_string()
+                };
+                format!("{OPC_AT_ACTION_REQ} {wid} {role_tok} {name_tok} {index}{nth_suffix}\n")
+                    .into_bytes()
+            }
+        }
+        _ => unreachable!("encode_at_action_req only accepts Frame::AtActionReq"),
+    }
 }
 
 fn parse_at_tree_req(text: &str) -> Result<Frame, FrameError> {
