@@ -21,7 +21,8 @@ use niri::inject::atspi_ladder::{
     element_lookup_via_tree_dump_counted, reset_gap4_test_hooks, set_tree_dump_override, TreeNode,
 };
 use niri::inject::protocol::{
-    encode_at_toggle_reply_resolved, parse_frame, Reply, ToggleReply, ToggleState,
+    encode_at_toggle_reply_resolved, encode_at_toggle_req, parse_frame, Reply, ToggleReply,
+    ToggleState,
 };
 
 const ROW_NAME: &str = "Mute audio";
@@ -261,6 +262,106 @@ fn at_toggle_req_does_not_steal_numeric_name_as_index() {
         niri::inject::Frame::AtToggleReq { name, index, .. } => {
             assert_eq!(name, "123", "a bare numeric name must survive as the NAME");
             assert_eq!(index, None);
+        }
+        other => panic!("expected Frame::AtToggleReq, got {other:?}"),
+    }
+}
+
+/// v40.50b — THE DEFECT THIS FILE WAS MISSING. The live client
+/// `qlux-cua-driver` fb3b43d `encode_at_toggle_req_line` emits
+/// `AT_TOGGLE_REQ <wid> <name_tok> <n>` for every name that is not exactly
+/// two words — a TWO-token remainder. The old peel gate was
+/// `rest.len() > 2`, so it never fired, the tokens fell into the legacy
+/// 3-tuple arm, and the occurrence was taken as the NAME.
+///
+/// Parsing the client's real wire must yield the name and the occurrence,
+/// never the name replaced by a number.
+#[test]
+fn at_toggle_req_two_token_client_wire_keeps_name_and_index() {
+    // What cua-driver fb3b43d actually puts on the wire for
+    // name="Allow", nth=Some(2) — asserted literally so a future change
+    // to the producer cannot silently invalidate this test.
+    let (frame, rest) = parse_frame(b"AT_TOGGLE_REQ 7 Allow 2\n").expect("parse");
+    assert!(rest.is_empty(), "no trailing bytes");
+    match frame {
+        niri::inject::Frame::AtToggleReq { wid, name, index } => {
+            assert_eq!(wid, 7);
+            assert_eq!(
+                name, "Allow",
+                "the NAME must survive; the occurrence must not become the name"
+            );
+            assert_eq!(
+                index,
+                Some(2),
+                "a two-token remainder must peel its trailing numeric as the occurrence"
+            );
+        }
+        other => panic!("expected Frame::AtToggleReq, got {other:?}"),
+    }
+}
+
+/// v40.50b — the other direction: `encode_at_toggle_req` must emit the
+/// two-token shape AND the parser must read it back intact. This is the
+/// round-trip contract `tests/inject.rs:5406` documents; before the fix it
+/// held only for `index: None` and for two-word names.
+#[test]
+fn at_toggle_req_encode_roundtrips_single_token_name_with_index() {
+    let req = niri::inject::Frame::AtToggleReq {
+        wid: 7,
+        name: "Allow".to_string(),
+        index: Some(2),
+    };
+    let bytes = encode_at_toggle_req(&req);
+    let line = String::from_utf8(bytes.clone()).expect("ascii wire");
+    assert_eq!(
+        line, "AT_TOGGLE_REQ 7 Allow 2\n",
+        "single-token name + occurrence must encode as the two-token shape"
+    );
+
+    let (parsed, rest) = parse_frame(&bytes).expect("parse");
+    assert!(rest.is_empty(), "no trailing bytes");
+    match parsed {
+        niri::inject::Frame::AtToggleReq { wid, name, index } => {
+            assert_eq!(wid, 7);
+            assert_eq!(name, "Allow", "round-trip must preserve the name");
+            assert_eq!(index, Some(2), "round-trip must preserve the index");
+        }
+        other => panic!("expected Frame::AtToggleReq, got {other:?}"),
+    }
+}
+
+/// v40.50b — the no-steal invariant at the NEW boundary. A single-token
+/// remainder still has nothing to peel, so a numeric NAME survives as the
+/// NAME even when it parses as a `u32`. This is the property that stops a
+/// future "just remove the guard" edit from stealing an element's name.
+///
+/// Also pins the genuinely ambiguous shape: `<name> <n>` where the NAME is
+/// itself a bare number (`AT_TOGGLE_REQ 4 7 2`) is now read as name=7,
+/// index=Some(2). That is the documented consequence of lowering the gate,
+/// and it is safe because the live client never emits a purely-numeric
+/// name — it emits a resolved accessible name, never a number.
+#[test]
+fn at_toggle_req_single_token_numeric_name_is_never_stolen() {
+    let (frame, rest) = parse_frame(b"AT_TOGGLE_REQ 4 123\n").expect("parse");
+    assert!(rest.is_empty(), "no trailing bytes");
+    match frame {
+        niri::inject::Frame::AtToggleReq { name, index, .. } => {
+            assert_eq!(name, "123", "a bare numeric name must survive as the NAME");
+            assert_eq!(
+                index, None,
+                "a one-token remainder has nothing to peel and must stay None"
+            );
+        }
+        other => panic!("expected Frame::AtToggleReq, got {other:?}"),
+    }
+
+    // The 2-token form with a numeric name is unambiguously <name> <n>.
+    let (frame, rest) = parse_frame(b"AT_TOGGLE_REQ 4 7 2\n").expect("parse");
+    assert!(rest.is_empty(), "no trailing bytes");
+    match frame {
+        niri::inject::Frame::AtToggleReq { name, index, .. } => {
+            assert_eq!(name, "7");
+            assert_eq!(index, Some(2));
         }
         other => panic!("expected Frame::AtToggleReq, got {other:?}"),
     }
