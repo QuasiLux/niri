@@ -11,7 +11,9 @@
 //! Tests 1, 3 and 5 FAIL on the pre-v40.51 baseline (first-match selection,
 //! no identity fields on the reply) and PASS here. Test 2 pins backward
 //! compatibility. Test 4 guards the substitution class. Tests 7, 8, 9, 10
-//! are the peel-gate tests (7 is the producer-framing gate).
+//! are the peel-gate tests (7 is the producer-framing gate). Test 12 pins
+//! the v40.53 numeric-name two-token remainder VERDICT (reading A; reading B
+//! is structurally unreachable).
 
 use niri::inject::atspi_ladder::{
     element_lookup_via_tree_dump_counted, reset_gap4_test_hooks, set_tree_dump_override, TreeNode,
@@ -369,4 +371,103 @@ fn at_action_reply_without_resolved_keeps_legacy_wire() {
         "AT_ACTION_REPLY ERR ACTION_NOT_FOUND\n",
         "error replies stay the legacy ERR wire, resolved None"
     );
+}
+
+/// v40.53 VERDICT -- `AT_ACTION_REQ 42 toggle 2 0` two-token remainder:
+/// reading A (legacy) vs reading B (occurrence) is structurally decided,
+/// not heuristically gated. This pins the resolution; it is not a parser
+/// fix.
+///
+/// The two readings of the measured consumer frame (`t_01e30445` /
+/// cua-driver `eeb23f7`):
+/// - reading A (legacy):     `name = "2"`, `action_index = 0`, no occurrence
+/// - reading B (occurrence): `name` absent, `action_index = 2`, `nth = 0`
+///
+/// `parse_at_action_req` consumes the accessible NAME positionally BEFORE
+/// the numeric tail gate (`occurrence_form`) runs, so name arity is
+/// recoverable structurally from the prefix. Traced on the real frame:
+/// role `toggle`, `name = "2"`, `rest = ["0"]`; `rest.len() >= 2` is false
+/// -> `occurrence_form = false` -> legacy arm -> `index = 0`, `nth = None`.
+/// Reading A is what the parser produces. Reading B is not a possible
+/// parse of this frame at all: it requires the NAME to be absent, and
+/// `parse_at_action_req` returns `FrameError::Malformed` whenever the
+/// name is absent (`if rest.is_empty() { return Err(Malformed) }` then
+/// `rest.remove(0)`). A nameless `AT_ACTION_REQ` is rejected outright.
+///
+/// Precondition (why this is UNREACHABLE for any client this project
+/// drives): an AT-SPI action name is a localized toolkit string from the
+/// GTK 4 / ATK vocabulary sourced from GTK 4 master
+/// `gtk/a11y/gtkatspiaction.c` (`switch_actions[].name` /
+/// `button_actions[].name`) at `src/inject/atspi_ladder.rs:275-286`:
+/// `click    toggle    activate    press    release    expand    menu`.
+/// Test-fixture `action_name` values observed in-tree are `"click"` and
+/// `"toggle"`. No bare-integer action name exists anywhere in the tree.
+/// The producer always emits the action token in the two-word toggle
+/// form (`encode_at_action_req`), so the residual still-ambiguous shape
+/// (`AT_ACTION_REQ 4 toggle button Channel 2 0`, a two-word toggle name
+/// whose SECOND word is numeric and the action token omitted) is also
+/// unreachable: the name-join arm only fires on
+/// `role == "toggle button" && rest.len() >= 3`.
+///
+/// If a future client ever emitted a numeric action name this gate would
+/// need revisiting.
+#[test]
+fn at_action_req_numeric_name_two_token_remainder_resolves_reading_a_by_name_arity() {
+    let (frame, rest) = parse_frame(b"AT_ACTION_REQ 42 toggle 2 0\n").expect("parse");
+    assert!(rest.is_empty(), "no trailing bytes");
+    match frame {
+        niri::inject::Frame::AtActionReq { wid, role, name, index, nth } => {
+            assert_eq!(wid, 42);
+            assert_eq!(role, "toggle");
+            assert_eq!(
+                name, "2",
+                "precondition: name is consumed positionally before the numeric tail gate, so AT_ACTION_REQ 42 toggle 2 0 is reading A (name=\"2\"), not a nameless occurrence peel"
+            );
+            assert_eq!(
+                index, 0,
+                "precondition: reading A keeps the trailing token as the AT-SPI action index"
+            );
+            assert_eq!(
+                nth, None,
+                "precondition: rest after name is one token, so occurrence_form is false and nth stays None"
+            );
+            assert_ne!(
+                (index, nth),
+                (2, Some(0)),
+                "guard: reading A (index=0, nth=None) must differ from reading B (index=2, nth=Some(0)), else this test is vacuous"
+            );
+        }
+        other => panic!("expected Frame::AtActionReq, got {other:?}"),
+    }
+
+    let (frame, rest) = parse_frame(b"AT_ACTION_REQ 42 toggle 2 0 3\n").expect("parse");
+    assert!(rest.is_empty(), "no trailing bytes");
+    match frame {
+        niri::inject::Frame::AtActionReq { name, index, nth, .. } => {
+            assert_eq!(
+                name, "2",
+                "precondition: occurrence form still keeps the numeric NAME as the NAME"
+            );
+            assert_eq!(index, 0, "precondition: action index stays 0");
+            assert_eq!(
+                nth,
+                Some(3),
+                "precondition: consumer eeb23f7 frame AT_ACTION_REQ 42 toggle 2 0 3 peels nth=3"
+            );
+        }
+        other => panic!("expected Frame::AtActionReq, got {other:?}"),
+    }
+
+    match parse_frame(b"AT_ACTION_REQ 42 toggle 0\n") {
+        Err(err) => {
+            assert_eq!(
+                err,
+                niri::inject::FrameError::Malformed,
+                "precondition: a nameless AT_ACTION_REQ is FrameError::Malformed, so reading B is not a possible parse of AT_ACTION_REQ 42 toggle 2 0"
+            );
+        }
+        Ok((frame, _)) => {
+            panic!("nameless AT_ACTION_REQ 42 toggle 0 must be Malformed, got {frame:?}")
+        }
+    }
 }
