@@ -207,6 +207,19 @@ pub static AT_TOGGLE_OCCURRENCE_INDEX_V40_50: &[u8] =
 #[allow(dead_code)]
 pub static AT_ACTION_OCCURRENCE_INDEX_V40_51: &[u8] = b"\x01AT_ACTION_OCCURRENCE_INDEX_V40_51\x01";
 
+/// v40.53: AT_ACTION_REQ numeric-name ambiguity VERDICT. Pins reading A for
+/// `AT_ACTION_REQ 42 toggle 2 0` (`name="2"`, `index=0`, `nth=None`). Reading B
+/// is structurally impossible: the accessible name is consumed positionally
+/// before the numeric tail gate, and a nameless frame is `FrameError::Malformed`.
+/// `#[used]` alone is NOT enough under thin-LTO — lld gc's it. There MUST be a
+/// `std::hint::black_box` read at a LIVE call site; put one in
+/// `parse_at_action_req` AND one in the `Reply::AtActionReply` encoder arm.
+/// Acceptance: `strings | grep AT_ACTION_NUMERIC_NAME_AMBIGUITY_VERDICT_V40_53` >= 1.
+#[used]
+#[allow(dead_code)]
+pub static AT_ACTION_NUMERIC_NAME_AMBIGUITY_VERDICT_V40_53: &[u8] =
+    b"\x01AT_ACTION_NUMERIC_NAME_AMBIGUITY_VERDICT_V40_53\x01";
+
 /// Render an f64 rect field as a compact integer when it is integral
 /// (AT-SPI extents are integer pixels), so the wire reads
 /// `x=1929 y=305 w=36 h=34` rather than `x=1929.0`.
@@ -848,6 +861,7 @@ impl Reply {
                 let _ = std::hint::black_box(AT_ACTION_REQ_OPCODE_V40_15_3);
                 let _ = std::hint::black_box(FORCE_ICON_REDRAW_V40_15_5);
                 let _ = std::hint::black_box(AT_ACTION_OCCURRENCE_INDEX_V40_51);
+                let _ = std::hint::black_box(AT_ACTION_NUMERIC_NAME_AMBIGUITY_VERDICT_V40_53);
                 let ident = match resolved {
                     Some(r) => format!(" x={} y={} w={} h={} path={}", fmt_coord(r.x), fmt_coord(r.y), fmt_coord(r.w), fmt_coord(r.h), r.path),
                     None => String::new(),
@@ -1578,8 +1592,18 @@ fn split_off_optional_index(remainder: &str) -> Result<(&str, Option<u32>), Fram
 ///   absent: `AT_ACTION_REQ <wid> <role> <name> <index> [<nth>]` and the
 ///   two-word-toggle form
 ///   `AT_ACTION_REQ <wid> toggle button <w0> <w1> <action_tok> <index> [<nth>]`.
+///
+/// v40.53 VERDICT (UNREACHABLE, no parser change): `AT_ACTION_REQ 42 toggle 2 0`
+/// resolves as reading A (`name="2"`, `index=0`, `nth=None`) because the accessible
+/// name is consumed positionally before the numeric tail gate, so name arity is
+/// structurally recoverable. Reading B (`index=2`, `nth=Some(0)`, nameless) is
+/// impossible: a nameless `AT_ACTION_REQ` is `FrameError::Malformed`. Precondition:
+/// AT-SPI action names are GTK 4 / ATK vocabulary strings (`click`, `toggle`,
+/// `activate`, `press`, `release`, `expand`, `menu`), never a bare integer, and
+/// the producer always emits the action token in the two-word toggle form.
 fn parse_at_action_req(text: &str) -> Result<Frame, FrameError> {
     let _ = std::hint::black_box(AT_ACTION_OCCURRENCE_INDEX_V40_51);
+    let _ = std::hint::black_box(AT_ACTION_NUMERIC_NAME_AMBIGUITY_VERDICT_V40_53);
     let mut parts = text.split_whitespace();
     let _opc = parts.next().ok_or(FrameError::Malformed)?;
     let wid: u64 = parts
