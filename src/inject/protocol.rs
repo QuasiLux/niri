@@ -198,6 +198,24 @@ pub static AT_TOGGLE_REQ_DISPATCH_V40_29: &[u8] = b"\x01AT_TOGGLE_REQ_DISPATCH_V
 pub static AT_TOGGLE_OCCURRENCE_INDEX_V40_50: &[u8] =
     b"\x01AT_TOGGLE_OCCURRENCE_INDEX_V40_50\x01";
 
+/// v40.71: production `AT_TOGGLE_REPLY` carries resolved identity in the
+/// cua-driver v40.50 positional layout
+/// `AT_TOGGLE_REPLY <wid> <name> <state> <x> <y> <w> <h> <path>`.
+///
+/// v40.50 already attached `ToggleReply.resolved` on
+/// `NiriInjectHarness::at_toggle_req`. The encoder then emitted the
+/// ACTION-shaped kv form `x= y= w= h= path=`. cua-driver
+/// `parse_toggle_reply_identity_toks` requires the first token after the
+/// opcode to be a window id; a state-first kv line is treated as the
+/// legacy state-only form (`identity: None`) → `UNVERIFIED_TARGET` on
+/// every successful toggle (measured G2, `t_865ad02b`).
+///
+/// `#[used]` alone is NOT enough under thin-LTO. There MUST be a
+/// `std::hint::black_box` read at the live `Reply::AtToggleReply` encoder.
+/// Acceptance: `strings | grep AT_REPLY_RESOLVED_IDENTITY_V40_71` >= 1.
+#[used]
+pub static AT_REPLY_RESOLVED_IDENTITY_V40_71: &[u8] = b"AT_REPLY_RESOLVED_IDENTITY_V40_71\0";
+
 /// v40.51 gate ident. Acceptance: `strings | grep AT_ACTION_OCCURRENCE_INDEX_V40_51` >= 1.
 /// `#[used]` alone is NOT enough under thin-LTO — lld gc's it. There MUST be a
 /// `std::hint::black_box` read at a LIVE call site; put one in
@@ -229,6 +247,17 @@ pub(crate) fn fmt_coord(v: f64) -> String {
     } else {
         format!("{v}")
     }
+}
+
+/// Parse `atspi://<wid>#...` into the window id the v40.50 positional
+/// `AT_TOGGLE_REPLY` layout leads with. Missing / non-numeric → 0 so the
+/// first token is still a u64 (cua-driver rejects a non-numeric first
+/// token as "no identity").
+fn window_id_from_atspi_path(path: &str) -> u64 {
+    path.strip_prefix("atspi://")
+        .and_then(|s| s.split_once('#'))
+        .and_then(|(wid, _)| wid.parse().ok())
+        .unwrap_or(0)
 }
 
 /// v40.33: production `AT_TOGGLE_REQ` resolves a real `WlSurface` pointer
@@ -771,10 +800,12 @@ pub enum Reply {
     /// `ParsedReply::AtToggleReply` exits 0 on `Checked`/`Unchecked`,
     /// 2 on `NoAction` (soft-fail).
     ///
-    /// v40.50: `resolved` appends `x= y= w= h= path=` so the caller can
-    /// verify WHERE the action landed. `None` keeps the v40.46 three-token
+    /// v40.50/v40.71: `resolved` appends the cua-driver positional identity
+    /// ` <wid> <name> <state> <x> <y> <w> <h> <path>` so the caller can
+    /// verify WHERE the action landed. `None` keeps the v40.28 two-token
     /// wire byte-for-byte (backward compatible with a peer that ignores
-    /// the extra fields).
+    /// the extra fields). Do NOT emit ACTION-shaped `x=` tokens here —
+    /// cua-driver's TOGGLE parser is positional, not kv.
     AtToggleReply {
         state: ToggleState,
         resolved: Option<ResolvedTarget>,
@@ -946,6 +977,7 @@ impl Reply {
                 let _ = std::hint::black_box(OPC_AT_TOGGLE_REQ_IDENT);
                 let _ = std::hint::black_box(AT_TOGGLE_REQ_V40_28);
                 let _ = std::hint::black_box(AT_TOGGLE_OCCURRENCE_INDEX_V40_50);
+                let _ = std::hint::black_box(AT_REPLY_RESOLVED_IDENTITY_V40_71);
                 let word = state.as_wire();
                 // v40.50: an out-of-range occurrence index is a DISTINCT
                 // wire outcome naming the candidate count. Never
@@ -961,12 +993,15 @@ impl Reply {
                     )
                     .into_bytes();
                 }
-                // v40.50: the resolved identity follows the state token, so
-                // a caller can verify WHERE the action landed instead of
-                // trusting an rc=0 that a mis-delivery also returns.
+                // v40.71: cua-driver v40.50 parses
+                // `AT_TOGGLE_REPLY <wid> <name> <state> <x> <y> <w> <h> <path>`.
+                // The first token MUST be a window id — a state-first
+                // `x=` line is treated as the legacy state-only form.
                 match resolved {
                     Some(r) => format!(
-                        "{REP_AT_TOGGLE_REPLY} {word} x={} y={} w={} h={} path={}\n",
+                        "{REP_AT_TOGGLE_REPLY} {} {} {word} {} {} {} {} {}\n",
+                        window_id_from_atspi_path(&r.path),
+                        r.name,
                         fmt_coord(r.x),
                         fmt_coord(r.y),
                         fmt_coord(r.w),
