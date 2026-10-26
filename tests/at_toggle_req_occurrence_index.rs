@@ -132,11 +132,11 @@ fn at_toggle_reply_reports_resolved_bounds() {
     let wire = String::from_utf8(encode_at_toggle_reply_resolved(&reply)).expect("ascii wire");
 
     assert!(
-        wire.contains("x=1929 y=305 w=36 h=34"),
+        wire.contains("1929 305 36 34"),
         "reply must report the resolved index-2 geometry, got: {wire}"
     );
     assert!(
-        !wire.contains("x=1968"),
+        !wire.contains("1968 49"),
         "reply must NOT report the index-0 aggregate geometry, got: {wire}"
     );
 }
@@ -217,7 +217,7 @@ fn at_toggle_nth_dispatches_to_per_stream_row_not_role_aggregate() {
         .with_resolved(ToggleReply::resolved_from_bounds(&resolved, ROW_NAME));
     let wire = String::from_utf8(encode_at_toggle_reply_resolved(&reply)).expect("ascii wire");
     assert!(
-        wire.contains("path=atspi://4#toggle"),
+        wire.contains("atspi://4#toggle"),
         "reply must carry the atspi path of the row it acted on, got: {wire}"
     );
     assert_eq!(reply.state, ToggleState::Unchecked);
